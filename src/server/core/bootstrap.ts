@@ -42,7 +42,7 @@ export function defaultAppConfig(): AppConfig {
     qoder: { command: "qodercli" },
     copilot: { command: "copilot" }
   };
-  return { version: 1, tools, terminal: { mode: "new-window" } };
+  return { version: 1, tools, terminal: { mode: "new-window" }, agents: { cliPath: "" } };
 }
 
 export function ensureConfigFiles(dataDir: string): AppConfig {
@@ -80,7 +80,8 @@ export function normalizeConfig(config: AppConfig): AppConfig {
       qoder: { ...defaults.tools.qoder, ...(config.tools?.qoder ?? {}) },
       copilot: { ...defaults.tools.copilot, ...(config.tools?.copilot ?? {}) }
     },
-    terminal: { mode: isTerminalMode(config.terminal?.mode) ? config.terminal.mode : defaults.terminal.mode }
+    terminal: { mode: isTerminalMode(config.terminal?.mode) ? config.terminal.mode : defaults.terminal.mode },
+    agents: { cliPath: typeof config.agents?.cliPath === "string" ? config.agents.cliPath.trim() : defaults.agents.cliPath }
   };
 }
 

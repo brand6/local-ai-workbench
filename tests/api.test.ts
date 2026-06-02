@@ -88,6 +88,7 @@ describe("API", () => {
 
     const current = await request(app).get("/api/config").set("x-local-api-token", context.token).expect(200);
     expect(current.body.terminal.mode).toBe("new-window");
+    expect(current.body.agents.cliPath).toBe("");
 
     const updated = await request(app)
       .patch("/api/config")
@@ -102,6 +103,21 @@ describe("API", () => {
       .set("x-local-api-token", context.token)
       .send({ terminal: { mode: "last" } })
       .expect(400);
+  });
+
+  it("persists the agents CLI path setting", async () => {
+    directory = testDir("api-config-agents-cli-path");
+    context = new AppContext(directory);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+
+    const updated = await request(app)
+      .patch("/api/config")
+      .set("x-local-api-token", context.token)
+      .send({ agents: { cliPath: "E:\\github\\agents" } })
+      .expect(200);
+
+    expect(updated.body.agents.cliPath).toBe("E:\\github\\agents");
+    expect(context.config().agents.cliPath).toBe("E:\\github\\agents");
   });
 
   it("rejects direct resume launch for non-ready sessions", async () => {
@@ -479,74 +495,63 @@ describe("API", () => {
 
   it("returns project agents status before the project is initialized", async () => {
     directory = testDir("api-agents-status-uninitialized");
-    const previousAgentsCliPath = process.env.AGENTS_CLI_PATH;
     const projectRoot = path.join(directory, "repo");
     const fakeCli = writeFakeAgentsCli(directory);
     fs.mkdirSync(projectRoot, { recursive: true });
-    process.env.AGENTS_CLI_PATH = fakeCli;
-    try {
-      context = new AppContext(directory);
-      const app = await createHttpApp(context, { dev: false, serveClient: false });
-      const project = context.database().addProject(projectRoot, true).project;
+    context = new AppContext(directory);
+    context.config().agents.cliPath = fakeCli;
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+    const project = context.database().addProject(projectRoot, true).project;
 
-      const status = await request(app)
-        .get(`/api/projects/${project.id}/agents/status`)
-        .set("x-local-api-token", context.token)
-        .expect(200);
+    const status = await request(app)
+      .get(`/api/projects/${project.id}/agents/status`)
+      .set("x-local-api-token", context.token)
+      .expect(200);
 
-      expect(status.body).toMatchObject({
-        projectId: project.id,
-        projectRoot,
-        available: true,
-        initialized: false,
-        status: null,
-        error: null
-      });
-    } finally {
-      process.env.AGENTS_CLI_PATH = previousAgentsCliPath;
-    }
+    expect(status.body).toMatchObject({
+      projectId: project.id,
+      projectRoot,
+      available: true,
+      initialized: false,
+      status: null,
+      error: null
+    });
   });
 
   it("treats agents sync check exit code 2 as pending changes", async () => {
     directory = testDir("api-agents-sync-check");
-    const previousAgentsCliPath = process.env.AGENTS_CLI_PATH;
     const projectRoot = path.join(directory, "repo");
     const fakeCli = writeFakeAgentsCli(directory);
     fs.mkdirSync(path.join(projectRoot, ".agents"), { recursive: true });
     fs.writeFileSync(path.join(projectRoot, ".agents", "agents.json"), "{}");
-    process.env.AGENTS_CLI_PATH = fakeCli;
-    try {
-      context = new AppContext(directory);
-      const app = await createHttpApp(context, { dev: false, serveClient: false });
-      const project = context.database().addProject(projectRoot, true).project;
+    context = new AppContext(directory);
+    context.config().agents.cliPath = fakeCli;
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+    const project = context.database().addProject(projectRoot, true).project;
 
-      const result = await request(app)
-        .post(`/api/projects/${project.id}/agents/sync`)
-        .set("x-local-api-token", context.token)
-        .send({ check: true })
-        .expect(200);
+    const result = await request(app)
+      .post(`/api/projects/${project.id}/agents/sync`)
+      .set("x-local-api-token", context.token)
+      .send({ check: true })
+      .expect(200);
 
-      expect(result.body).toMatchObject({
-        action: "sync-check",
-        exitCode: 2,
-        ok: true,
-        changed: [".codex/config.toml"],
+    expect(result.body).toMatchObject({
+      action: "sync-check",
+      exitCode: 2,
+      ok: true,
+      changed: [".codex/config.toml"],
+      status: {
+        initialized: true,
         status: {
-          initialized: true,
-          status: {
-            enabledIntegrations: ["codex", "gemini"],
-            selectedMcpServers: ["filesystem"]
-          }
+          enabledIntegrations: ["codex", "gemini"],
+          selectedMcpServers: ["filesystem"]
         }
-      });
-    } finally {
-      process.env.AGENTS_CLI_PATH = previousAgentsCliPath;
-    }
+      }
+    });
   });
 
   it("runs agents sync against a child project directory only when it is under the managed root", async () => {
     directory = testDir("api-agents-child-sync");
-    const previousAgentsCliPath = process.env.AGENTS_CLI_PATH;
     const projectRoot = path.join(directory, "repo");
     const childRoot = path.join(projectRoot, "packages", "app");
     const outsideRoot = path.join(directory, "outside");
@@ -554,35 +559,52 @@ describe("API", () => {
     fs.mkdirSync(path.join(childRoot, ".agents"), { recursive: true });
     fs.mkdirSync(outsideRoot, { recursive: true });
     fs.writeFileSync(path.join(childRoot, ".agents", "agents.json"), "{}");
-    process.env.AGENTS_CLI_PATH = fakeCli;
-    try {
-      context = new AppContext(directory);
-      const app = await createHttpApp(context, { dev: false, serveClient: false });
-      const project = context.database().addProject(projectRoot, true).project;
+    context = new AppContext(directory);
+    context.config().agents.cliPath = fakeCli;
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+    const project = context.database().addProject(projectRoot, true).project;
 
-      const result = await request(app)
-        .post(`/api/projects/${project.id}/agents/sync`)
-        .set("x-local-api-token", context.token)
-        .send({ check: true, rootPath: childRoot })
-        .expect(200);
+    const result = await request(app)
+      .post(`/api/projects/${project.id}/agents/sync`)
+      .set("x-local-api-token", context.token)
+      .send({ check: true, rootPath: childRoot })
+      .expect(200);
 
-      expect(result.body).toMatchObject({
+    expect(result.body).toMatchObject({
+      projectRoot: childRoot,
+      status: {
         projectRoot: childRoot,
-        status: {
-          projectRoot: childRoot,
-          configPath: path.join(childRoot, ".agents", "agents.json"),
-          status: { projectRoot: childRoot }
-        }
-      });
+        configPath: path.join(childRoot, ".agents", "agents.json"),
+        status: { projectRoot: childRoot }
+      }
+    });
 
-      await request(app)
-        .post(`/api/projects/${project.id}/agents/sync`)
-        .set("x-local-api-token", context.token)
-        .send({ check: true, rootPath: outsideRoot })
-        .expect(400);
-    } finally {
-      process.env.AGENTS_CLI_PATH = previousAgentsCliPath;
-    }
+    await request(app)
+      .post(`/api/projects/${project.id}/agents/sync`)
+      .set("x-local-api-token", context.token)
+      .send({ check: true, rootPath: outsideRoot })
+      .expect(400);
+  });
+
+  it("keeps agents sync disabled until a CLI path is configured", async () => {
+    directory = testDir("api-agents-disabled-by-default");
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    context = new AppContext(directory);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+    const project = context.database().addProject(projectRoot, true).project;
+
+    const status = await request(app)
+      .get(`/api/projects/${project.id}/agents/status`)
+      .set("x-local-api-token", context.token)
+      .expect(200);
+
+    expect(status.body).toMatchObject({
+      available: false,
+      initialized: false,
+      command: "未配置"
+    });
+    expect(status.body.error).toContain("请先在设置中填写 agents CLI 路径");
   });
 
   it("repairs a missing-cwd project by merging it into an existing target project", async () => {

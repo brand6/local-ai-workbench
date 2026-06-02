@@ -40,6 +40,7 @@ export interface AppConfig {
   version: 1;
   tools: Record<ToolId, { command: string; sessionSources?: string[] }>;
   terminal: { mode: TerminalMode };
+  agents: { cliPath: string };
 }
 
 export interface Project {

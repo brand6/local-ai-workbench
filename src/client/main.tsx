@@ -272,8 +272,9 @@ function App() {
           config={config}
           busy={busy}
           onClose={() => setSettingsOpen(false)}
-          onSave={(dataDir) => void runAction(() => updateWorkingDirectory(dataDir))}
+          onSaveDataDir={(dataDir) => void runAction(() => updateWorkingDirectory(dataDir))}
           onSaveTerminalMode={(mode) => void runAction(() => updateTerminalMode(mode))}
+          onSaveAgentsCliPath={(cliPath) => void runAction(() => updateAgentsCliPath(cliPath))}
           onPickDirectory={pickDirectory}
         />
       ) : null}
@@ -361,8 +362,13 @@ function App() {
   async function updateTerminalMode(mode: TerminalMode) {
     const nextConfig = await client.updateConfig({ terminal: { mode } });
     setConfig(nextConfig);
-    setSettingsOpen(false);
     setMessage("窗口打开方式已更新");
+  }
+
+  async function updateAgentsCliPath(cliPath: string) {
+    const nextConfig = await client.updateConfig({ agents: { cliPath } });
+    setConfig(nextConfig);
+    setMessage(cliPath ? "agents CLI 路径已更新" : "多 agents 同步已关闭");
   }
 
   async function refreshProject(projectId: string) {
@@ -631,34 +637,52 @@ function SettingsDialog({
   config,
   busy,
   onClose,
-  onSave,
+  onSaveDataDir,
   onSaveTerminalMode,
+  onSaveAgentsCliPath,
   onPickDirectory
 }: {
   bootstrap: BootstrapState;
   config: AppConfig | null;
   busy: boolean;
   onClose: () => void;
-  onSave: (dataDir: string) => void;
+  onSaveDataDir: (dataDir: string) => void;
   onSaveTerminalMode: (mode: TerminalMode) => void;
+  onSaveAgentsCliPath: (cliPath: string) => void;
   onPickDirectory: () => Promise<string | null>;
 }) {
-  const [dataDir, setDataDir] = useState(bootstrap.dataDir ?? bootstrap.defaultDataDir);
   const [terminalMode, setTerminalMode] = useState<TerminalMode>(config?.terminal.mode ?? "new-window");
-  const trimmed = dataDir.trim();
-  const unchanged = trimmed === (bootstrap.dataDir ?? "");
-  const terminalUnchanged = terminalMode === (config?.terminal.mode ?? "new-window");
+  const [pickingTarget, setPickingTarget] = useState<"data-dir" | "agents" | null>(null);
+  const [pickError, setPickError] = useState("");
 
   useEffect(() => {
     setTerminalMode(config?.terminal.mode ?? "new-window");
   }, [config?.terminal.mode]);
+
+  async function chooseDirectory(target: "data-dir" | "agents") {
+    setPickingTarget(target);
+    setPickError("");
+    try {
+      const selected = await onPickDirectory();
+      const trimmed = selected?.trim() ?? "";
+      if (!trimmed) return;
+      if (target === "data-dir") {
+        onSaveDataDir(trimmed);
+      } else {
+        onSaveAgentsCliPath(trimmed);
+      }
+    } catch (error) {
+      setPickError(error instanceof Error ? error.message : "目录选择失败");
+    } finally {
+      setPickingTarget(null);
+    }
+  }
 
   return (
     <div className="settings-backdrop" role="presentation">
       <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <header>
           <div>
-            <span className="eyebrow">设置</span>
             <h2 id="settings-title">应用设置</h2>
           </div>
           <button className="secondary" type="button" onClick={onClose} disabled={busy}>
@@ -671,19 +695,14 @@ function SettingsDialog({
             <span>当前工作目录</span>
             <code>{bootstrap.dataDir ?? "未设置"}</code>
           </div>
-          <DirectoryChooser
-            label="新的工作目录"
-            value={dataDir}
-            disabled={busy}
-            onChange={setDataDir}
-            onPickDirectory={onPickDirectory}
-          />
           <div className="settings-actions">
-            <button className="secondary" type="button" onClick={onClose} disabled={busy}>
-              取消
-            </button>
-            <button className="primary" type="button" disabled={busy || trimmed.length === 0 || unchanged} onClick={() => onSave(trimmed)}>
-              保存工作目录
+            <button
+              className="primary"
+              type="button"
+              disabled={busy || pickingTarget !== null}
+              onClick={() => void chooseDirectory("data-dir")}
+            >
+              {pickingTarget === "data-dir" ? "选择中..." : "更换工作目录"}
             </button>
           </div>
         </div>
@@ -698,23 +717,40 @@ function SettingsDialog({
                   value={mode}
                   checked={terminalMode === mode}
                   disabled={busy || !config}
-                  onChange={() => setTerminalMode(mode)}
+                  onChange={() => {
+                    setTerminalMode(mode);
+                    if (mode !== (config?.terminal.mode ?? "new-window")) {
+                      onSaveTerminalMode(mode);
+                    }
+                  }}
                 />
                 <span>{terminalModeLabel(mode)}</span>
               </label>
             ))}
           </div>
+        </div>
+        <div className="setting-section">
+          <h3>多 agents 同步</h3>
+          <div className="field current-root">
+            <span>当前 agents CLI 目录</span>
+            <code>{config?.agents.cliPath || "未启用"}</code>
+          </div>
           <div className="settings-actions">
             <button
               className="primary"
               type="button"
-              disabled={busy || !config || terminalUnchanged}
-              onClick={() => onSaveTerminalMode(terminalMode)}
+              disabled={busy || !config || pickingTarget !== null}
+              onClick={() => void chooseDirectory("agents")}
             >
-              保存窗口方式
+              {pickingTarget === "agents" ? "选择中..." : "选择项目目录"}
             </button>
           </div>
         </div>
+        {pickError ? (
+          <div className="field-error" role="alert">
+            {pickError}
+          </div>
+        ) : null}
       </section>
     </div>
   );
@@ -751,10 +787,11 @@ function DirectoryChooser({
 
   return (
     <div className="directory-chooser">
-      <div className="field current-root directory-value">
+      <label className="field current-root directory-value">
         <span>{label}</span>
+        <input type="text" value={value} disabled={disabled || picking} onChange={(event) => onChange(event.target.value)} placeholder="输入路径或使用文件夹选择" />
         <code aria-live="polite">{value.trim() || "尚未选择"}</code>
-      </div>
+      </label>
       <button className="secondary" type="button" disabled={disabled || picking} onClick={() => void chooseDirectory()}>
         {picking ? "选择中..." : "选择文件夹"}
       </button>

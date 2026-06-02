@@ -3,6 +3,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   agentsIntegrationNames,
+  type AppConfig,
   type AgentsCommandResult,
   type AgentsConfigSyncStatus,
   type AgentsIntegrationName,
@@ -30,10 +31,8 @@ interface RawCommandResult {
   stderr: string;
 }
 
-const LOCAL_AGENTS_BIN = "E:\\github\\agents\\bin\\agents";
-
-export function getAgentsStatus(project: AgentsTarget): AgentsConfigSyncStatus {
-  const cli = resolveAgentsCli();
+export function getAgentsStatus(config: AppConfig, project: AgentsTarget): AgentsConfigSyncStatus {
+  const cli = resolveAgentsCli(config);
   const configPath = agentsConfigPath(project.rootPath);
   const initialized = fs.existsSync(configPath);
 
@@ -58,13 +57,14 @@ export function getAgentsStatus(project: AgentsTarget): AgentsConfigSyncStatus {
   return statusEnvelope(project, cli, true, parsed, null);
 }
 
-export function initializeAgentsProject(project: AgentsTarget): AgentsCommandResult {
-  const result = runProjectCommand(project, "init", ["init", "--path", project.rootPath], [0]);
+export function initializeAgentsProject(config: AppConfig, project: AgentsTarget): AgentsCommandResult {
+  const result = runProjectCommand(config, project, "init", ["init", "--path", project.rootPath], [0]);
   return result;
 }
 
-export function syncAgentsProject(project: AgentsTarget, check: boolean): AgentsCommandResult {
+export function syncAgentsProject(config: AppConfig, project: AgentsTarget, check: boolean): AgentsCommandResult {
   return runProjectCommand(
+    config,
     project,
     check ? "sync-check" : "sync",
     ["sync", "--path", project.rootPath, ...(check ? ["--check"] : [])],
@@ -72,8 +72,8 @@ export function syncAgentsProject(project: AgentsTarget, check: boolean): Agents
   );
 }
 
-export function updateAgentsIntegrations(project: AgentsTarget, enabledIntegrations: AgentsIntegrationName[]): AgentsCommandResult {
-  const current = getAgentsStatus(project);
+export function updateAgentsIntegrations(config: AppConfig, project: AgentsTarget, enabledIntegrations: AgentsIntegrationName[]): AgentsCommandResult {
+  const current = getAgentsStatus(config, project);
   if (!current.initialized) {
     throw new Error("请先初始化 agents 配置");
   }
@@ -87,7 +87,7 @@ export function updateAgentsIntegrations(project: AgentsTarget, enabledIntegrati
   const toEnable = next.filter((name) => !currentEnabled.includes(name));
 
   let last: RawCommandResult | null = null;
-  const cli = resolveAgentsCli();
+  const cli = resolveAgentsCli(config);
   if (!cli.available) {
     throw new Error(cli.reason ?? "未找到 agents CLI");
   }
@@ -103,7 +103,7 @@ export function updateAgentsIntegrations(project: AgentsTarget, enabledIntegrati
   }
 
   if (!last) {
-    const status = getAgentsStatus(project);
+    const status = getAgentsStatus(config, project);
     return {
       projectId: project.id,
       projectRoot: project.rootPath,
@@ -118,7 +118,7 @@ export function updateAgentsIntegrations(project: AgentsTarget, enabledIntegrati
     };
   }
 
-  const status = getAgentsStatus(project);
+  const status = getAgentsStatus(config, project);
   return {
     projectId: project.id,
     projectRoot: project.rootPath,
@@ -134,18 +134,19 @@ export function updateAgentsIntegrations(project: AgentsTarget, enabledIntegrati
 }
 
 function runProjectCommand(
+  config: AppConfig,
   project: AgentsTarget,
   action: AgentsCommandResult["action"],
   args: string[],
   allowedExitCodes: number[]
 ): AgentsCommandResult {
-  const cli = resolveAgentsCli();
+  const cli = resolveAgentsCli(config);
   if (!cli.available) {
     throw new Error(cli.reason ?? "未找到 agents CLI");
   }
   const result = runAgentsCli(cli, project.rootPath, args);
   assertAllowedExit(result, allowedExitCodes);
-  const status = getAgentsStatus(project);
+  const status = getAgentsStatus(config, project);
   return {
     projectId: project.id,
     projectRoot: project.rootPath,
@@ -181,25 +182,18 @@ function runAgentsCli(cli: ResolvedAgentsCli, cwd: string, args: string[]): RawC
   };
 }
 
-function resolveAgentsCli(env: NodeJS.ProcessEnv = process.env): ResolvedAgentsCli {
-  const configuredPath = env.AGENTS_CLI_PATH;
-  if (configuredPath) {
-    if (!fs.existsSync(configuredPath)) {
-      return unavailable(`未找到 AGENTS_CLI_PATH：${configuredPath}`, configuredPath);
-    }
-    return commandForPath(configuredPath);
+function resolveAgentsCli(config: AppConfig): ResolvedAgentsCli {
+  const configuredPath = config.agents.cliPath.trim();
+  if (!configuredPath) {
+    return unavailable("未启用多 agents 同步；请先在设置中填写 agents CLI 路径或 agents 项目目录", "未配置");
   }
 
-  if (fs.existsSync(LOCAL_AGENTS_BIN)) {
-    return commandForPath(LOCAL_AGENTS_BIN);
+  const resolvedPath = resolveCliPath(configuredPath);
+  if (!resolvedPath) {
+    return unavailable(`未找到 agents CLI：${configuredPath}`, configuredPath);
   }
 
-  const globalPath = findGlobalAgents();
-  if (globalPath) {
-    return commandForPath(globalPath);
-  }
-
-  return unavailable("未找到 agents CLI；请安装 @agents-dev/cli，或设置 AGENTS_CLI_PATH 指向 E:\\github\\agents\\bin\\agents", "agents");
+  return commandForPath(resolvedPath);
 }
 
 function commandForPath(filePath: string): ResolvedAgentsCli {
@@ -225,12 +219,24 @@ function commandForPath(filePath: string): ResolvedAgentsCli {
   };
 }
 
-function findGlobalAgents(): string | null {
-  const lookup = process.platform === "win32" ? "where.exe" : "command";
-  const args = process.platform === "win32" ? ["agents"] : ["-v", "agents"];
-  const result = spawnSync(lookup, args, { encoding: "utf8", shell: process.platform !== "win32" });
-  if (result.status !== 0) return null;
-  return (result.stdout ?? "").split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null;
+function resolveCliPath(inputPath: string): string | null {
+  if (fs.existsSync(inputPath) && fs.statSync(inputPath).isFile()) {
+    return inputPath;
+  }
+
+  if (fs.existsSync(inputPath) && fs.statSync(inputPath).isDirectory()) {
+    const candidates = [
+      path.join(inputPath, "bin", "agents"),
+      path.join(inputPath, "bin", "agents.cmd"),
+      path.join(inputPath, "bin", "agents.bat"),
+      path.join(inputPath, "agents"),
+      path.join(inputPath, "agents.cmd"),
+      path.join(inputPath, "agents.bat")
+    ];
+    return candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile()) ?? null;
+  }
+
+  return null;
 }
 
 function unavailable(reason: string, displayCommand: string): ResolvedAgentsCli {

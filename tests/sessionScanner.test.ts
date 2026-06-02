@@ -136,7 +136,7 @@ describe("session scanner", () => {
       indexedAt: "2026-06-01T01:00:00.000Z"
     });
 
-    const result = refreshProjectSessions(db, project);
+    const result = refreshProjectSessions(db, configWithClaudeSource(claudeProjects, directory), project);
     const sessions = db.listSessions();
     const warnings = db.listParserWarnings();
     db.close();
@@ -240,12 +240,52 @@ describe("session scanner", () => {
     db.upsertSession(session("claude:project-123", "Read", projectRoot, projectSource));
     db.upsertSession(session("claude:other-123", "Other", otherRoot, otherSource));
 
-    const result = refreshProjectSessions(db, project);
+    const result = refreshProjectSessions(db, configWithClaudeSource(directory, directory), project);
 
     expect(result.indexedCount).toBe(1);
     expect(db.getSession("claude:project-123")?.title).toBe("更新项目会话标题");
     expect(db.getSession("claude:other-123")?.title).toBe("Other");
     db.close();
+  });
+
+  it("discovers new Codex session files when refreshing an existing project", () => {
+    directory = testDir("scanner-project-discovers-codex");
+    const projectRoot = path.join(directory, "repo");
+    const sessionSource = path.join(directory, "codex-sessions");
+    const oldSource = path.join(sessionSource, "old-session.jsonl");
+    const newSource = path.join(sessionSource, "new-session.jsonl");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.mkdirSync(sessionSource, { recursive: true });
+    fs.writeFileSync(
+      oldSource,
+      JSON.stringify({
+        session_meta: { payload: { id: "old-123", cwd: projectRoot } },
+        title: "旧会话",
+        timestamp: "2026-06-02T04:00:00Z"
+      })
+    );
+    fs.writeFileSync(
+      newSource,
+      JSON.stringify({
+        session_meta: { payload: { id: "new-123", cwd: projectRoot } },
+        title: "下午新增会话",
+        timestamp: "2026-06-02T12:30:00Z"
+      })
+    );
+
+    const db = new AppDatabase(directory);
+    const project = db.addProject(projectRoot).project;
+    db.upsertSession(session("codex:old-123", "旧会话", projectRoot, oldSource, "codex"));
+
+    const result = refreshProjectSessions(db, configWithCodexSource(sessionSource, directory), project);
+    const sessionIds = db
+      .listSessionsForProject(project)
+      .map((entry) => entry.nativeSessionId)
+      .sort();
+    db.close();
+
+    expect(result.indexedCount).toBe(2);
+    expect(sessionIds).toEqual(["new-123", "old-123"]);
   });
 
   it("indexes multiple OpenCode sessions from the SQLite database source", () => {
@@ -297,7 +337,24 @@ function configWithClaudeSource(claudeProjects: string, directory: string): AppC
       qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] }
     },
-    terminal: { mode: "new-window" }
+    terminal: { mode: "new-window" },
+    agents: { cliPath: "" }
+  };
+}
+
+function configWithCodexSource(codexSessions: string, directory: string): AppConfig {
+  return {
+    version: 1,
+    tools: {
+      codex: { command: "codex", sessionSources: [codexSessions] },
+      claude: { command: "claude", sessionSources: [path.join(directory, "missing-claude-sessions")] },
+      opencode: { command: "opencode", sessionSources: [path.join(directory, "missing-opencode-sessions")] },
+      qwen: { command: "qwen", sessionSources: [path.join(directory, "missing-qwen-sessions")] },
+      qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
+      copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] }
+    },
+    terminal: { mode: "new-window" },
+    agents: { cliPath: "" }
   };
 }
 
@@ -312,7 +369,8 @@ function configWithCopilotSource(copilotState: string, directory: string): AppCo
       qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
       copilot: { command: "copilot", sessionSources: [copilotState] }
     },
-    terminal: { mode: "new-window" }
+    terminal: { mode: "new-window" },
+    agents: { cliPath: "" }
   };
 }
 
@@ -327,22 +385,23 @@ function configWithOpencodeSource(opencodeDb: string, directory: string): AppCon
       qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] }
     },
-    terminal: { mode: "new-window" }
+    terminal: { mode: "new-window" },
+    agents: { cliPath: "" }
   };
 }
 
-function session(id: string, title: string, cwd: string, sourceFile: string): SessionEntry {
+function session(id: string, title: string, cwd: string, sourceFile: string, toolId: "codex" | "claude" = "claude"): SessionEntry {
   return {
     id,
-    toolId: "claude",
-    nativeSessionId: id.replace(/^claude:/, ""),
+    toolId,
+    nativeSessionId: id.replace(/^[^:]+:/, ""),
     title,
     summary: null,
     originalCwd: cwd,
     normalizedCwd: cwd.toLowerCase(),
     updatedAt: "2026-06-01T01:00:00.000Z",
     sourceFile,
-    sourceFormat: "claude-jsonl",
+    sourceFormat: `${toolId}-jsonl`,
     parserVersion: "test",
     resumeStatus: "ready",
     indexedAt: "2026-06-01T01:00:00.000Z"

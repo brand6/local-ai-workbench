@@ -61,13 +61,19 @@ export function installApi(app: Express, context: AppContext): void {
 
   app.patch("/api/config", (request, response) => {
     const mode = request.body?.terminal?.mode;
-    if (!isTerminalMode(mode)) {
+    const cliPath = typeof request.body?.agents?.cliPath === "string" ? request.body.agents.cliPath.trim() : null;
+    if (mode !== undefined && !isTerminalMode(mode)) {
       response.status(400).json({ error: "terminal.mode must be new-window, per-tool, or per-project" });
+      return;
+    }
+    if (request.body?.agents !== undefined && cliPath === null) {
+      response.status(400).json({ error: "agents.cliPath must be a string" });
       return;
     }
     const nextConfig: AppConfig = {
       ...context.config(),
-      terminal: { mode }
+      terminal: { mode: isTerminalMode(mode) ? mode : context.config().terminal.mode },
+      agents: { cliPath: cliPath ?? context.config().agents.cliPath }
     };
     response.json(context.setConfig(nextConfig));
   });
@@ -117,7 +123,7 @@ export function installApi(app: Express, context: AppContext): void {
       response.status(404).json({ error: "project-not-found" });
       return;
     }
-    response.json(refreshProjectSessions(context.database(), project));
+    response.json(refreshProjectSessions(context.database(), context.config(), project));
   });
 
   app.get("/api/projects/:id/repair-candidates", (request, response) => {
@@ -140,7 +146,7 @@ export function installApi(app: Express, context: AppContext): void {
       response.status(400).json({ error: "invalid-agents-root-path" });
       return;
     }
-    response.json(getAgentsStatus(target));
+    response.json(getAgentsStatus(context.config(), target));
   });
 
   app.post("/api/projects/:id/agents/init", (request, response) => {
@@ -155,7 +161,7 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     try {
-      response.json(initializeAgentsProject(target));
+      response.json(initializeAgentsProject(context.config(), target));
     } catch (error) {
       response.status(400).json({ error: "agents-init-failed", reason: error instanceof Error ? error.message : "agents-init-failed" });
     }
@@ -173,7 +179,7 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     try {
-      response.json(syncAgentsProject(target, Boolean(request.body?.check)));
+      response.json(syncAgentsProject(context.config(), target, Boolean(request.body?.check)));
     } catch (error) {
       response.status(400).json({ error: "agents-sync-failed", reason: error instanceof Error ? error.message : "agents-sync-failed" });
     }
@@ -196,7 +202,7 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     try {
-      response.json(updateAgentsIntegrations(target, enabledIntegrations));
+      response.json(updateAgentsIntegrations(context.config(), target, enabledIntegrations));
     } catch (error) {
       response.status(400).json({ error: "agents-integrations-failed", reason: error instanceof Error ? error.message : "agents-integrations-failed" });
     }

@@ -59,7 +59,9 @@ describe("HomePage", () => {
     clientMock.tools.mockResolvedValue([]);
     clientMock.warnings.mockResolvedValue([]);
     clientMock.config.mockResolvedValue(appConfigFixture());
-    clientMock.updateConfig.mockImplementation((config: Pick<AppConfig, "terminal">) => Promise.resolve(appConfigFixture(config.terminal.mode)));
+    clientMock.updateConfig.mockImplementation((config: Partial<Pick<AppConfig, "terminal" | "agents">>) =>
+      Promise.resolve(appConfigFixture(config.terminal?.mode ?? "new-window", config.agents?.cliPath ?? ""))
+    );
     clientMock.repairCandidates.mockResolvedValue([]);
     clientMock.agentsStatus.mockImplementation((projectId: string, rootPath?: string) =>
       Promise.resolve(agentsStatusFixture(projectId, rootPath ?? "E:\\old"))
@@ -231,11 +233,13 @@ describe("HomePage", () => {
     expect(within(dialog).getByText("当前工作目录")).toBeInTheDocument();
     expect(screen.getAllByText("C:\\tmp\\github-repo-manager").length).toBeGreaterThan(0);
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "选择文件夹" }));
-    expect(await screen.findByText("C:\\tmp\\github-repo-manager-next")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "保存工作目录" }));
+    expect(within(dialog).queryByText("设置")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("新的工作目录")).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "保存工作目录" })).not.toBeInTheDocument();
 
-    expect(clientMock.setDataDir).toHaveBeenCalledWith("C:\\tmp\\github-repo-manager-next");
+    fireEvent.click(within(dialog).getByRole("button", { name: "更换工作目录" }));
+
+    await waitFor(() => expect(clientMock.setDataDir).toHaveBeenCalledWith("C:\\tmp\\github-repo-manager-next"));
     expect(await screen.findByText("工作目录已更新")).toBeInTheDocument();
   });
 
@@ -250,10 +254,28 @@ describe("HomePage", () => {
 
     const dialog = screen.getByRole("dialog", { name: "应用设置" });
     fireEvent.click(within(dialog).getByRole("radio", { name: "同项目一个窗口" }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "保存窗口方式" }));
 
     expect(clientMock.updateConfig).toHaveBeenCalledWith({ terminal: { mode: "per-project" } });
     expect(await screen.findByText("窗口打开方式已更新")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "保存窗口方式" })).not.toBeInTheDocument();
+  });
+
+  it("saves the agents CLI project directory from settings", async () => {
+    clientMock.pickDirectory.mockResolvedValueOnce({ path: "E:\\github\\agents", cancelled: false });
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+
+    const dialog = screen.getByRole("dialog", { name: "应用设置" });
+    expect(within(dialog).getByText("当前 agents CLI 目录")).toBeInTheDocument();
+    expect(within(dialog).queryByText(/默认关闭/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "保存 agents 路径" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "选择项目目录" }));
+
+    await waitFor(() => expect(clientMock.updateConfig).toHaveBeenCalledWith({ agents: { cliPath: "E:\\github\\agents" } }));
+    expect(await screen.findByText("agents CLI 路径已更新")).toBeInTheDocument();
   });
 
   it("opens a folder picker before adding a project", async () => {
@@ -967,7 +989,7 @@ function toolStatusFixture(toolId: ToolId): ToolStatus {
   };
 }
 
-function appConfigFixture(mode: AppConfig["terminal"]["mode"] = "new-window"): AppConfig {
+function appConfigFixture(mode: AppConfig["terminal"]["mode"] = "new-window", agentsCliPath = ""): AppConfig {
   return {
     version: 1,
     tools: {
@@ -978,7 +1000,8 @@ function appConfigFixture(mode: AppConfig["terminal"]["mode"] = "new-window"): A
       qoder: { command: "qodercli" },
       copilot: { command: "copilot" }
     },
-    terminal: { mode }
+    terminal: { mode },
+    agents: { cliPath: agentsCliPath }
   };
 }
 

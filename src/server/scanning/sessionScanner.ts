@@ -7,6 +7,7 @@ import type { ToolAdapter } from "../tools/toolAdapter.js";
 import { parseOpencodeDatabaseFile } from "./opencodeDatabase.js";
 import { parseSessionFile } from "./sessionParser.js";
 import type { AppConfig } from "../../shared/types.js";
+import { isStrictChildPath } from "../core/pathUtils.js";
 
 const SESSION_EXTENSIONS = new Set([".jsonl", ".json"]);
 const OPENCODE_DATABASE_FILE = "opencode.db";
@@ -38,23 +39,57 @@ export function refreshAllSessions(database: AppDatabase, config: AppConfig, opt
   return { scanRun: completed, indexedCount, skippedCount, warningCount, addedProjectCount };
 }
 
-export function refreshProjectSessions(database: AppDatabase, project: Project): RefreshResult {
-  return refreshSessionFiles(
-    database,
-    [
-      ...database.listSessionsForProject(project).map((session) => ({
-        toolId: session.toolId,
-        sourceFile: session.sourceFile
-      })),
-      ...database
-        .listParserWarningsForProject(project)
-        .filter((warning) => warning.toolId && warning.sourceFile)
-        .map((warning) => ({
-          toolId: warning.toolId as ToolId,
-          sourceFile: warning.sourceFile as string
-        }))
-    ]
-  );
+export function refreshProjectSessions(database: AppDatabase, config: AppConfig, project: Project): RefreshResult {
+  const adapters = Object.values(toolAdapters).filter((adapter) => adapter.capabilities.scanHistory);
+  const scanRun = database.createScanRun("project-sessions", [project.rootPath]);
+  const targets = new Map<string, { toolId: ToolId; sourceFile: string }>();
+
+  for (const session of database.listSessionsForProject(project)) {
+    targets.set(targetKey(session.toolId, session.sourceFile), {
+      toolId: session.toolId,
+      sourceFile: session.sourceFile
+    });
+  }
+
+  for (const warning of database.listParserWarningsForProject(project)) {
+    if (!warning.toolId || !warning.sourceFile) continue;
+    targets.set(targetKey(warning.toolId, warning.sourceFile), {
+      toolId: warning.toolId,
+      sourceFile: warning.sourceFile
+    });
+  }
+
+  let indexedCount = 0;
+  let skippedCount = 0;
+
+  for (const target of targets.values()) {
+    const adapter = toolAdapters[target.toolId];
+    const result = refreshParsedSourceFile(database, adapter, target.sourceFile, scanRun.id);
+    indexedCount += result.indexedCount;
+    skippedCount += result.skippedCount;
+  }
+
+  for (const adapter of adapters) {
+    const sources = existingSources(adapter.detect(config).sessionSources);
+    for (const file of sources.flatMap((source) => sessionFiles(adapter, source))) {
+      const key = targetKey(adapter.id, file);
+      if (targets.has(key)) continue;
+
+      const parsed = parseSourceFile(adapter, file, scanRun.id);
+      if (!parsedSourceBelongsToProject(parsed.sessions, project) && !warningSourceBelongsToProject(adapter, file, project)) {
+        continue;
+      }
+
+      targets.set(key, { toolId: adapter.id, sourceFile: file });
+      const result = refreshParsedSourceFile(database, adapter, file, scanRun.id, parsed);
+      indexedCount += result.indexedCount;
+      skippedCount += result.skippedCount;
+    }
+  }
+
+  const warningCount = database.countParserWarningsForRun(scanRun.id);
+  const completed = database.completeScanRun(scanRun.id, { indexedCount, skippedCount, warningCount });
+  return { scanRun: completed, indexedCount, skippedCount, warningCount };
 }
 
 export function refreshSessionFiles(
@@ -136,6 +171,35 @@ function scanAdapterSources(database: AppDatabase, adapter: ToolAdapter, sources
   return { indexedCount, skippedCount };
 }
 
+function refreshParsedSourceFile(
+  database: AppDatabase,
+  adapter: ToolAdapter,
+  sourceFile: string,
+  scanRunId: string,
+  parsed = parseSourceFile(adapter, sourceFile, scanRunId)
+) {
+  database.deleteParserWarningsBySourceFile(adapter.id, sourceFile);
+
+  for (const warning of parsed.warnings) {
+    database.addParserWarning(warning);
+  }
+
+  if (parsed.sessions.length > 0) {
+    database.deleteSessionsBySourceFile(adapter.id, sourceFile);
+    for (const session of parsed.sessions) {
+      database.upsertSession(session);
+    }
+    return { indexedCount: parsed.sessions.length, skippedCount: 0 };
+  }
+
+  if (parsed.skipped) {
+    database.deleteSessionsBySourceFile(adapter.id, sourceFile);
+    return { indexedCount: 0, skippedCount: 1 };
+  }
+
+  return { indexedCount: 0, skippedCount: 0 };
+}
+
 function parseSourceFile(adapter: ToolAdapter, sourceFile: string, scanRunId: string) {
   if (adapter.id === "opencode" && isOpencodeDatabase(sourceFile)) {
     return parseOpencodeDatabaseFile({
@@ -158,6 +222,33 @@ function parseSourceFile(adapter: ToolAdapter, sourceFile: string, scanRunId: st
     warnings: parsed.warnings,
     skipped: parsed.skipped
   };
+}
+
+function targetKey(toolId: ToolId, sourceFile: string): string {
+  return `${toolId}:${path.resolve(sourceFile)}`;
+}
+
+function parsedSourceBelongsToProject(sessions: Array<{ normalizedCwd: string | null }>, project: Project): boolean {
+  return sessions.some((session) => {
+    if (!session.normalizedCwd) return false;
+    if (session.normalizedCwd === project.normalizedRootPath) return true;
+    return project.includeSubdirectories && isStrictChildPath(project.normalizedRootPath, session.normalizedCwd);
+  });
+}
+
+function warningSourceBelongsToProject(adapter: ToolAdapter, sourceFile: string, project: Project): boolean {
+  if (adapter.id !== "claude") return false;
+  return claudeProjectPathSegment(sourceFile) === encodeClaudeProjectPath(project.rootPath);
+}
+
+function encodeClaudeProjectPath(input: string): string {
+  return path.resolve(input).replace(/[:\\/]/g, "-");
+}
+
+function claudeProjectPathSegment(sourceFile: string): string | null {
+  const parts = path.normalize(sourceFile).split(/[\\/]+/);
+  const projectsIndex = parts.findIndex((part, index) => part === "projects" && parts[index - 1] === ".claude");
+  return projectsIndex >= 0 ? parts[projectsIndex + 1] ?? null : null;
 }
 
 function sessionFiles(adapter: ToolAdapter, source: string): string[] {
