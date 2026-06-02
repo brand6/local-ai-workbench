@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import type { AppConfig, BootstrapState } from "../shared/types.js";
-import { ensureConfigFiles, resolveBootstrapState, writeBootstrap } from "./core/bootstrap.js";
+import { ensureConfigFiles, normalizeConfig, resolveBootstrapState, writeAppConfig, writeBootstrap } from "./core/bootstrap.js";
 import { AppDatabase } from "./storage/database.js";
 
 export class AppContext {
@@ -42,6 +42,17 @@ export class AppContext {
       throw new Error("Data directory is not initialized");
     }
     return this.configInstance;
+  }
+
+  setConfig(config: AppConfig): AppConfig {
+    const dataDir = this.state.dataDir;
+    if (!dataDir) {
+      throw new Error("Data directory is not initialized");
+    }
+    const normalized = normalizeConfig(config);
+    writeAppConfig(dataDir, normalized);
+    this.configInstance = normalized;
+    return normalized;
   }
 
   close(): void {

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ParserWarning, SessionEntry, ToolId } from "../../shared/types.js";
+import type { ParserWarning, ResumeStatus, SessionEntry, ToolId } from "../../shared/types.js";
 import { normalizeFsPath } from "../core/pathUtils.js";
 import { maxIso, nowIso, toIso } from "../core/time.js";
 
@@ -28,6 +28,9 @@ export function parseSessionFile(context: ParseContext): ParsedValue {
     return { session: null, warnings, skipped: true };
   }
   if (context.toolId === "copilot" && isCopilotMetadataFile(context.sourceFile)) {
+    return { session: null, warnings, skipped: true };
+  }
+  if (context.toolId === "qwen" && isQwenMetadataFile(context.sourceFile)) {
     return { session: null, warnings, skipped: true };
   }
 
@@ -111,7 +114,18 @@ export function parseSessionFile(context: ParseContext): ParsedValue {
   const updatedAt =
     maxIso(events.flatMap((event) => findAllTimestamps(event))) ?? stat.mtime.toISOString();
 
-  const resumeStatus = !nativeSessionId ? "missing_session_id" : !cwd ? "missing_cwd" : fs.existsSync(cwd) ? "ready" : "cwd_missing";
+  let resumeStatus: ResumeStatus = !nativeSessionId ? "missing_session_id" : !cwd ? "missing_cwd" : fs.existsSync(cwd) ? "ready" : "cwd_missing";
+  if (resumeStatus === "ready" && context.toolId === "qwen" && cwd && !isQwenSourceStoredForCwd(context.sourceFile, cwd)) {
+    resumeStatus = "source_mismatch";
+    warnings.push({
+      scanRunId: context.scanRunId,
+      toolId: context.toolId,
+      sourceFile: context.sourceFile,
+      errorType: "qwen-project-source-mismatch",
+      message: "Qwen session source is stored under a different project directory; resume is disabled",
+      line: null
+    });
+  }
   const id = stableSessionId(context.toolId, nativeSessionId, context.sourceFile);
   const session: SessionEntry = {
     id,
@@ -143,6 +157,26 @@ function isClaudeToolResultFile(sourceFile: string): boolean {
 
 function isCopilotMetadataFile(sourceFile: string): boolean {
   return path.basename(sourceFile).toLowerCase() === "vscode.metadata.json";
+}
+
+function isQwenMetadataFile(sourceFile: string): boolean {
+  const basename = path.basename(sourceFile).toLowerCase();
+  return basename === "extract-cursor.json" || basename === "meta.json";
+}
+
+function isQwenSourceStoredForCwd(sourceFile: string, cwd: string): boolean {
+  const parts = path.normalize(sourceFile).split(/[\\/]+/);
+  for (let index = 0; index < parts.length - 2; index += 1) {
+    if (parts[index]?.toLowerCase() !== "projects") continue;
+    if (parts[index + 2]?.toLowerCase() !== "chats") continue;
+    return parts[index + 1] === qwenProjectId(cwd);
+  }
+  return true;
+}
+
+function qwenProjectId(cwd: string): string {
+  const normalized = process.platform === "win32" ? cwd.toLowerCase() : cwd;
+  return normalized.replace(/[^a-zA-Z0-9]/g, "-");
 }
 
 function stableSessionId(toolId: ToolId, nativeSessionId: string | null, sourceFile: string): string {
@@ -375,9 +409,13 @@ function isContextOnlyUserMessage(content: string): boolean {
 function userMessageContent(record: Record<string, unknown>): string | null {
   const message = record.message;
   if (message && typeof message === "object" && !Array.isArray(message)) {
-    const content = (message as Record<string, unknown>).content;
+    const messageRecord = message as Record<string, unknown>;
+    const content = messageRecord.content;
     const extracted = textContent(content);
     if (extracted) return extracted;
+    const parts = messageRecord.parts;
+    const partsExtracted = textContent(parts);
+    if (partsExtracted) return partsExtracted;
   }
   return textContent(record.content);
 }

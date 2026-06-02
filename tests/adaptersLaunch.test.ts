@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultAppConfig } from "../src/server/core/bootstrap.js";
-import { buildTerminalHost, launchInTerminal } from "../src/server/launch/terminal.js";
+import { buildTerminalHost, launchInTerminal, terminalWindowTarget } from "../src/server/launch/terminal.js";
 import { adapterFor, claudeAdapter, codexAdapter, opencodeAdapter, projectVisibleToolStatuses } from "../src/server/tools/adapters.js";
 import type { SessionEntry, ToolId } from "../src/shared/types.js";
 import { cleanup, testDir } from "./helpers.js";
@@ -110,7 +110,28 @@ describe("tool adapters and terminal launcher", () => {
     expect(host).toEqual({
       kind: "windows-terminal",
       executable: "wt.exe",
-      args: ["-d", "E:\\repo", "powershell.exe", "-NoExit", "-Command", "& 'opencode' '--session' 'ses_1'"]
+      args: ["-w", "new", "new-tab", "-d", "E:\\repo", "powershell.exe", "-NoExit", "-Command", "& 'opencode' '--session' 'ses_1'"]
     });
+  });
+
+  it("targets stable Windows Terminal windows for the configured launch mode", () => {
+    expect(terminalWindowTarget("new-window", { toolId: "codex", cwd: "E:\\repo" })).toBe("new");
+    expect(terminalWindowTarget("per-tool", { toolId: "claude", cwd: "E:\\repo" })).toBe("grm-tool-claude");
+    expect(terminalWindowTarget("per-project", { toolId: "codex", projectRootPath: "E:\\tools\\github-repo-manager" })).toMatch(
+      /^grm-project-github-repo-manager-[a-f0-9]{12}$/
+    );
+
+    const host = buildTerminalHost(
+      { command: "codex", args: [], cwd: "E:\\tools\\github-repo-manager\\src" },
+      { platform: "win32", windowsTerminalAvailable: true, windowTarget: "grm-project-github-repo-manager-123456789abc" }
+    );
+
+    expect(host.args.slice(0, 5)).toEqual([
+      "-w",
+      "grm-project-github-repo-manager-123456789abc",
+      "new-tab",
+      "-d",
+      "E:\\tools\\github-repo-manager\\src"
+    ]);
   });
 });

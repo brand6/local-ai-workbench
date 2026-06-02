@@ -193,22 +193,19 @@ function scoreCandidate(
   const candidateSlug = slug(path.basename(candidate.rootPath));
   const candidatePathTokens = keywords(path.basename(candidate.rootPath));
   const candidateMetadataTokens = keywords(readProjectSignalText(candidate.rootPath));
-  const candidateContentTokens = mergeTokenSets(keywords(sessionText(candidate.sessions)), candidateMetadataTokens);
   const candidateFileSignals = projectFileSignals(candidate.rootPath);
   const pathOverlap = overlap(sourceSignals.pathTokens, candidatePathTokens).slice(0, 4);
   const projectNameOverlap = overlap(sourceSignals.contentTokens, candidatePathTokens).slice(0, 4);
-  const contentOverlap = overlap(sourceSignals.contentTokens, candidateContentTokens).slice(0, 6);
   const metadataNameOverlap = overlap(sourceSignals.contentTokens, candidateMetadataTokens).filter(isHanToken).slice(0, 4);
   const relativeFilePathOverlap = overlap(sourceSignals.fileSignals.relativePaths, candidateFileSignals.relativePaths).slice(0, 6);
   const fileNameOverlap = overlap(sourceSignals.fileSignals.fileNames, candidateFileSignals.fileNames).slice(0, 8);
   const sameName = Boolean(sourceSignals.slug && sourceSignals.slug === candidateSlug);
   const strongPathMatch = pathOverlap.length >= 2;
   const strongProjectNameMatch = projectNameOverlap.length > 0;
-  const strongContentMatch = contentOverlap.length >= 2;
   const strongMetadataNameMatch = metadataNameOverlap.length >= 2;
   const strongFileMatch = relativeFilePathOverlap.length > 0 || fileNameOverlap.length > 0;
 
-  if (!sameName && !strongPathMatch && !strongProjectNameMatch && !strongContentMatch && !strongMetadataNameMatch && !strongFileMatch) {
+  if (!sameName && !strongPathMatch && !strongProjectNameMatch && !strongMetadataNameMatch && !strongFileMatch) {
     return null;
   }
 
@@ -237,11 +234,6 @@ function scoreCandidate(
   if (projectNameOverlap.length > 0) {
     score += projectNameOverlap.length * 45;
     reasons.push(`项目名关键词匹配：${projectNameOverlap.join("、")}`);
-  }
-
-  if (contentOverlap.length > 0) {
-    score += contentOverlap.length * 25;
-    reasons.push(`内容关键词匹配：${contentOverlap.join("、")}`);
   }
 
   if (metadataNameOverlap.length > 0) {
@@ -484,10 +476,6 @@ function readProjectSignalText(rootPath: string): string {
     }
   }
   return chunks.join("\n");
-}
-
-function mergeTokenSets(...sets: Set<string>[]): Set<string> {
-  return new Set(sets.flatMap((set) => [...set]));
 }
 
 function slug(value: string): string {

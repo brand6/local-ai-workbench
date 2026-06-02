@@ -331,4 +331,65 @@ describe("session parser", () => {
       }).session
     ).toMatchObject({ nativeSessionId: "copilot-123", originalCwd: cwd, resumeStatus: "ready" });
   });
+
+  it("marks Qwen chat files from a mismatched project bucket as non-resumable", () => {
+    directory = testDir("parser-qwen-project-mismatch");
+    const cwd = path.join(directory, "old-project");
+    fs.mkdirSync(cwd);
+    const sourceFile = path.join(directory, ".qwen", "projects", "d--work-project", "chats", "e83d984f-d610-4eae-bff9-8273372bea97.jsonl");
+    fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+    fs.writeFileSync(
+      sourceFile,
+      JSON.stringify({
+        type: "user",
+        sessionId: "e83d984f-d610-4eae-bff9-8273372bea97",
+        cwd,
+        message: { role: "user", parts: [{ text: "继续旧项目" }] },
+        timestamp: "2026-06-02T01:00:00Z"
+      })
+    );
+
+    const result = parseSessionFile({
+      toolId: "qwen",
+      parserVersion: "test",
+      sourceFormat: "qwen-json",
+      sourceFile,
+      scanRunId: "scan-qwen-mismatch"
+    });
+
+    expect(result.session).toMatchObject({
+      nativeSessionId: "e83d984f-d610-4eae-bff9-8273372bea97",
+      title: "继续旧项目",
+      originalCwd: cwd,
+      resumeStatus: "source_mismatch"
+    });
+    expect(result.warnings.map((warning) => warning.errorType)).not.toContain("missing-title");
+    expect(result.warnings.map((warning) => warning.errorType)).toContain("qwen-project-source-mismatch");
+  });
+
+  it("skips Qwen project metadata files because they are not resumable sessions", () => {
+    directory = testDir("parser-qwen-metadata");
+    const sourceFile = path.join(directory, ".qwen", "projects", "d--work-project", "extract-cursor.json");
+    fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+    fs.writeFileSync(
+      sourceFile,
+      JSON.stringify({
+        sessionId: "e83d984f-d610-4eae-bff9-8273372bea97",
+        processedOffset: 20,
+        updatedAt: "2026-05-14T01:33:14.911Z"
+      })
+    );
+
+    const result = parseSessionFile({
+      toolId: "qwen",
+      parserVersion: "test",
+      sourceFormat: "qwen-json",
+      sourceFile,
+      scanRunId: "scan-qwen-metadata"
+    });
+
+    expect(result.session).toBeNull();
+    expect(result.skipped).toBe(true);
+    expect(result.warnings).toHaveLength(0);
+  });
 });

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AppConfig, BootstrapState, ToolId } from "../../shared/types.js";
+import { isTerminalMode, type AppConfig, type BootstrapState, type ToolId } from "../../shared/types.js";
 
 export interface BootstrapFile {
   version: 1;
@@ -80,7 +80,7 @@ export function normalizeConfig(config: AppConfig): AppConfig {
       qoder: { ...defaults.tools.qoder, ...(config.tools?.qoder ?? {}) },
       copilot: { ...defaults.tools.copilot, ...(config.tools?.copilot ?? {}) }
     },
-    terminal: { mode: config.terminal?.mode ?? "new-window" }
+    terminal: { mode: isTerminalMode(config.terminal?.mode) ? config.terminal.mode : defaults.terminal.mode }
   };
 }
 

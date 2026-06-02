@@ -1,10 +1,12 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import type { LaunchCommand, LaunchResponse } from "../../shared/types.js";
+import type { LaunchCommand, LaunchResponse, TerminalMode, ToolId } from "../../shared/types.js";
 
 interface TerminalHostOptions {
   platform?: NodeJS.Platform;
   windowsTerminalAvailable?: boolean;
+  windowTarget?: string | null;
 }
 
 export function validateLaunchCommand(command: LaunchCommand): string | null {
@@ -13,13 +15,15 @@ export function validateLaunchCommand(command: LaunchCommand): string | null {
   return null;
 }
 
-export function launchInTerminal(command: LaunchCommand, options: { dryRun?: boolean } = {}): LaunchResponse {
+export function launchInTerminal(command: LaunchCommand, options: { dryRun?: boolean; windowTarget?: string | null } = {}): LaunchResponse {
   const reason = validateLaunchCommand(command);
   if (reason) {
     return { launched: false, command, host: "direct", reason };
   }
 
-  const host = buildTerminalHost(command);
+  const hostOptions: TerminalHostOptions = {};
+  if (options.windowTarget !== undefined) hostOptions.windowTarget = options.windowTarget;
+  const host = buildTerminalHost(command, hostOptions);
   if (!options.dryRun) {
     const child = spawn(host.executable, host.args, {
       cwd: command.cwd,
@@ -39,10 +43,11 @@ export function buildTerminalHost(command: LaunchCommand, options: TerminalHostO
     const powershellArgs = powerShellHostArgs(command);
     const windowsTerminalAvailable = options.windowsTerminalAvailable ?? isExecutableAvailable("wt.exe", platform);
     if (windowsTerminalAvailable) {
+      const windowTarget = options.windowTarget?.trim() || "new";
       return {
         kind: "windows-terminal",
         executable: "wt.exe",
-        args: ["-d", command.cwd, "powershell.exe", ...powershellArgs]
+        args: ["-w", windowTarget, "new-tab", "-d", command.cwd, "powershell.exe", ...powershellArgs]
       };
     }
 
@@ -54,6 +59,17 @@ export function buildTerminalHost(command: LaunchCommand, options: TerminalHostO
   }
 
   return { kind: "direct", executable: command.command, args: command.args };
+}
+
+export function terminalWindowTarget(
+  mode: TerminalMode,
+  context: { toolId: ToolId; cwd?: string | null; projectRootPath?: string | null }
+): string {
+  if (mode === "new-window") return "new";
+  if (mode === "per-tool") return `grm-tool-${context.toolId}`;
+  const projectKey = context.projectRootPath?.trim() || context.cwd?.trim() || context.toolId;
+  const label = slug(lastPathSegment(projectKey)) || "project";
+  return `grm-project-${label}-${shortHash(projectKey)}`;
 }
 
 export function isExecutableAvailable(command: string, platform: NodeJS.Platform = process.platform): boolean {
@@ -73,4 +89,21 @@ function powerShellInvoke(command: string, args: string[]): string {
 
 function quotePowerShell(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+function lastPathSegment(value: string): string {
+  const normalized = value.replace(/[\\/]+$/, "");
+  return normalized.split(/[\\/]+/).pop() ?? normalized;
+}
+
+function slug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+}
+
+function shortHash(value: string): string {
+  return crypto.createHash("sha1").update(value.toLowerCase()).digest("hex").slice(0, 12);
 }

@@ -293,12 +293,23 @@ function isCrossDeviceRenameError(error: unknown): boolean {
 }
 
 function relocatedSourceFile(change: RelocationChange): string | null {
-  if (change.toolId !== "claude") return null;
-  const parsed = parseClaudeProjectSourceFile(change.sourceFile);
-  if (!parsed) return null;
-  const newSegment = encodeClaudeProjectPath(change.newCwd);
-  if (parsed.projectSegment === newSegment) return null;
-  return path.join(parsed.projectsRoot, newSegment, parsed.relativePath);
+  if (change.toolId === "claude") {
+    const parsed = parseClaudeProjectSourceFile(change.sourceFile);
+    if (!parsed) return null;
+    const newSegment = encodeClaudeProjectPath(change.newCwd);
+    if (parsed.projectSegment === newSegment) return null;
+    return path.join(parsed.projectsRoot, newSegment, parsed.relativePath);
+  }
+
+  if (change.toolId === "qwen") {
+    const parsed = parseQwenProjectSourceFile(change.sourceFile);
+    if (!parsed) return null;
+    const newSegment = encodeQwenProjectPath(change.newCwd);
+    if (parsed.projectSegment === newSegment) return null;
+    return path.join(parsed.projectsRoot, newSegment, parsed.relativePath);
+  }
+
+  return null;
 }
 
 function parseClaudeProjectSourceFile(sourceFile: string): { projectsRoot: string; projectSegment: string; relativePath: string } | null {
@@ -313,6 +324,21 @@ function parseClaudeProjectSourceFile(sourceFile: string): { projectsRoot: strin
 
 function encodeClaudeProjectPath(input: string): string {
   return path.resolve(input).replace(/[:\\/]/g, "-");
+}
+
+function parseQwenProjectSourceFile(sourceFile: string): { projectsRoot: string; projectSegment: string; relativePath: string } | null {
+  const match = path.normalize(sourceFile).match(/^(.*[\\/]\.qwen[\\/]projects)[\\/]([^\\/]+)[\\/](.+)$/);
+  if (!match?.[1] || !match[2] || !match[3]) return null;
+  return {
+    projectsRoot: match[1],
+    projectSegment: match[2],
+    relativePath: match[3]
+  };
+}
+
+function encodeQwenProjectPath(input: string): string {
+  const normalized = process.platform === "win32" ? input.toLowerCase() : input;
+  return normalized.replace(/[^a-zA-Z0-9]/g, "-");
 }
 
 function validateSourceFilePlans(plans: SourceFilePlan[]): void {

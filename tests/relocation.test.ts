@@ -172,6 +172,63 @@ describe("project relocation", () => {
     expect(session.sourceFile).toBe(newSourceFile);
   });
 
+  it("moves Qwen project-scoped source files to the relocated project path", async () => {
+    directory = testDir("relocation-qwen-source");
+    const oldRoot = path.join(directory, "old-project");
+    const newRoot = path.join(directory, "new-project");
+    const qwenProjects = path.join(directory, ".qwen", "projects");
+    const nativeSessionId = "e83d984f-d610-4eae-bff9-8273372bea97";
+    const sourceFile = path.join(qwenProjects, encodeQwenProjectPath(oldRoot), "chats", `${nativeSessionId}.jsonl`);
+    const newSourceFile = path.join(qwenProjects, encodeQwenProjectPath(newRoot), "chats", `${nativeSessionId}.jsonl`);
+    fs.mkdirSync(oldRoot, { recursive: true });
+    fs.mkdirSync(newRoot, { recursive: true });
+    fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+    fs.writeFileSync(
+      sourceFile,
+      JSON.stringify({
+        sessionId: nativeSessionId,
+        cwd: oldRoot,
+        type: "user",
+        message: { role: "user", parts: [{ text: "继续 Qwen 会话" }] },
+        timestamp: "2026-06-01T01:00:00Z"
+      })
+    );
+
+    context = new AppContext(directory);
+    context.config().tools.codex.sessionSources = [path.join(directory, "missing-codex-sessions")];
+    context.config().tools.claude.sessionSources = [path.join(directory, "missing-claude-sessions")];
+    context.config().tools.opencode.sessionSources = [path.join(directory, "missing-opencode-sessions")];
+    context.config().tools.qwen.sessionSources = [qwenProjects];
+    context.config().tools.qoder.sessionSources = [path.join(directory, "missing-qoder-sessions")];
+    context.config().tools.copilot.sessionSources = [path.join(directory, "missing-copilot-sessions")];
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+    const project = context.database().addProject(oldRoot, true).project;
+
+    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+
+    const confirmed = await request(app)
+      .post("/api/relocations/confirm")
+      .set("x-local-api-token", context.token)
+      .send({ oldRoot, newRoot, confirmation: "RELOCATE" })
+      .expect(200);
+
+    expect(confirmed.body.refreshResult.scanRun.roots).toEqual([newSourceFile]);
+    expect(fs.existsSync(sourceFile)).toBe(false);
+    expect(fs.existsSync(newSourceFile)).toBe(true);
+
+    const line = JSON.parse(fs.readFileSync(newSourceFile, "utf8"));
+    expect(line.cwd).toBe(newRoot);
+
+    const detail = await request(app)
+      .get(`/api/projects/${project.id}/detail`)
+      .set("x-local-api-token", context.token)
+      .expect(200);
+    const session = detail.body.groups[0].tools[0].sessions[0];
+    expect(session.originalCwd).toBe(newRoot);
+    expect(session.sourceFile).toBe(newSourceFile);
+    expect(session.resumeStatus).toBe("ready");
+  });
+
   it("merges the source project when relocation targets an existing managed project", async () => {
     directory = testDir("relocation-existing-target");
     const oldRoot = path.join(directory, "old-repo");
@@ -288,4 +345,8 @@ describe("project relocation", () => {
 
 function encodeClaudeProjectPath(input: string): string {
   return path.resolve(input).replace(/[:\\/]/g, "-");
+}
+
+function encodeQwenProjectPath(input: string): string {
+  return path.resolve(input).toLowerCase().replace(/[^a-zA-Z0-9]/g, "-");
 }

@@ -1,6 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  AgentsCommandResult,
+  AgentsConfigSyncStatus,
+  AppConfig,
   Project,
   ProjectDetail,
   ProjectRepairCandidate,
@@ -19,17 +22,25 @@ const clientMock = vi.hoisted(() => ({
   tools: vi.fn(),
   warnings: vi.fn(),
   setDataDir: vi.fn(),
+  config: vi.fn(),
+  updateConfig: vi.fn(),
   drives: vi.fn(),
   pickDirectory: vi.fn(),
   startScan: vi.fn(),
   addProject: vi.fn(),
   removeProject: vi.fn(),
+  deleteSession: vi.fn(),
+  resume: vi.fn(),
   refreshProject: vi.fn(),
   refreshSessions: vi.fn(),
   confirmCandidates: vi.fn(),
   relocateProject: vi.fn(),
   repairCandidates: vi.fn(),
-  repairProject: vi.fn()
+  repairProject: vi.fn(),
+  agentsStatus: vi.fn(),
+  initAgents: vi.fn(),
+  syncAgents: vi.fn(),
+  updateAgentsIntegrations: vi.fn()
 }));
 
 vi.mock("../src/client/api.js", () => ({ client: clientMock }));
@@ -47,7 +58,15 @@ describe("HomePage", () => {
     clientMock.detail.mockResolvedValue(detailFixture(projectFixture("E:\\old")));
     clientMock.tools.mockResolvedValue([]);
     clientMock.warnings.mockResolvedValue([]);
+    clientMock.config.mockResolvedValue(appConfigFixture());
+    clientMock.updateConfig.mockImplementation((config: Pick<AppConfig, "terminal">) => Promise.resolve(appConfigFixture(config.terminal.mode)));
     clientMock.repairCandidates.mockResolvedValue([]);
+    clientMock.agentsStatus.mockImplementation((projectId: string, rootPath?: string) =>
+      Promise.resolve(agentsStatusFixture(projectId, rootPath ?? "E:\\old"))
+    );
+    clientMock.initAgents.mockResolvedValue(agentsCommandResultFixture());
+    clientMock.syncAgents.mockResolvedValue(agentsCommandResultFixture());
+    clientMock.updateAgentsIntegrations.mockResolvedValue(agentsCommandResultFixture());
     clientMock.drives.mockResolvedValue([{ root: "E:\\", label: "E:\\" }]);
     clientMock.pickDirectory.mockResolvedValue({ path: "E:\\picked", cancelled: false });
     clientMock.setDataDir.mockResolvedValue({
@@ -59,9 +78,24 @@ describe("HomePage", () => {
     clientMock.startScan.mockResolvedValue({ scanRunId: "scan-1", candidates: [] });
     clientMock.addProject.mockResolvedValue({ project: projectFixture("E:\\old"), mergedIntoParent: false, removedChildren: [] });
     clientMock.removeProject.mockResolvedValue({ removed: true });
+    clientMock.deleteSession.mockResolvedValue({
+      deleted: true,
+      sessionId: "claude:1",
+      sourceFile: "C:\\Users\\brand\\.claude\\projects\\E--new-ai-game\\1.jsonl",
+      sourceFormat: "claude-jsonl",
+      deletedSourceFile: true,
+      deletedNativeSession: true,
+      removedIndexCount: 1
+    });
     clientMock.refreshProject.mockResolvedValue(refreshResultFixture());
     clientMock.refreshSessions.mockResolvedValue(refreshResultFixture());
     clientMock.confirmCandidates.mockResolvedValue([]);
+    clientMock.resume.mockResolvedValue({
+      launched: true,
+      command: { command: "qwen", args: ["--resume", "session-1"], cwd: "E:\\old" },
+      host: "direct",
+      reason: null
+    });
     clientMock.relocateProject.mockResolvedValue(emptyRelocationResult("E:\\old", "E:\\picked"));
   });
 
@@ -192,7 +226,7 @@ describe("HomePage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
 
-    const dialog = screen.getByRole("dialog", { name: "管理工作目录" });
+    const dialog = screen.getByRole("dialog", { name: "应用设置" });
     expect(dialog).toBeInTheDocument();
     expect(within(dialog).getByText("当前工作目录")).toBeInTheDocument();
     expect(screen.getAllByText("C:\\tmp\\github-repo-manager").length).toBeGreaterThan(0);
@@ -203,6 +237,23 @@ describe("HomePage", () => {
 
     expect(clientMock.setDataDir).toHaveBeenCalledWith("C:\\tmp\\github-repo-manager-next");
     expect(await screen.findByText("工作目录已更新")).toBeInTheDocument();
+  });
+
+  it("updates the terminal window mode from settings", async () => {
+    clientMock.config.mockResolvedValue(appConfigFixture("new-window"));
+    clientMock.updateConfig.mockResolvedValue(appConfigFixture("per-project"));
+
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+
+    const dialog = screen.getByRole("dialog", { name: "应用设置" });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "同项目一个窗口" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存窗口方式" }));
+
+    expect(clientMock.updateConfig).toHaveBeenCalledWith({ terminal: { mode: "per-project" } });
+    expect(await screen.findByText("窗口打开方式已更新")).toBeInTheDocument();
   });
 
   it("opens a folder picker before adding a project", async () => {
@@ -288,7 +339,9 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={vi.fn()}
         onResume={vi.fn()}
+        onDeleteSession={vi.fn()}
         repairCandidates={[]}
+        {...projectAgentsProps(project)}
         onRepairProject={vi.fn()}
         onRelocateProject={onRelocateProject}
       />
@@ -338,8 +391,10 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={vi.fn()}
         onResume={vi.fn()}
+        onDeleteSession={vi.fn()}
         onRepairProject={onRepairProject}
         onRelocateProject={vi.fn()}
+        {...projectAgentsProps(project)}
       />
     );
 
@@ -372,14 +427,139 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={vi.fn()}
         onResume={vi.fn()}
+        onDeleteSession={vi.fn()}
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
+        {...projectAgentsProps(project)}
       />
     );
 
     expect(screen.getByRole("region", { name: "修复缺失 cwd" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "修复提示" })).toBeInTheDocument();
     expect(screen.getByText("历史 cwd 不存在：E:\\ai-game-space")).toBeInTheDocument();
+  });
+
+  it("offers a repair-and-resume action for Qwen source path mismatches", () => {
+    const project = { ...projectFixture("E:\\ai-working-space\\old-project"), sessionCount: 1 };
+    const onResume = vi.fn();
+
+    render(
+      <ProjectDetailView
+        project={project}
+        detail={detailWithQwenSourceMismatch(project)}
+        tools={[]}
+        query=""
+        warnings={[]}
+        repairCandidates={[]}
+        busy={false}
+        setQuery={vi.fn()}
+        onLaunch={vi.fn()}
+        onResume={onResume}
+        onDeleteSession={vi.fn()}
+        onRepairProject={vi.fn()}
+        onRelocateProject={vi.fn()}
+        {...projectAgentsProps(project)}
+      />
+    );
+
+    expect(screen.getByRole("region", { name: "修复提示" })).toBeInTheDocument();
+    expect(screen.getByText("会话存储目录与 cwd 不匹配")).toBeInTheDocument();
+    expect(screen.getByText("会话文件仍在旧工具项目目录；点击“修复并恢复”会先移动这条记录再打开终端")).toBeInTheDocument();
+
+    const repairButton = screen.getByRole("button", { name: "修复并恢复" });
+    expect(repairButton).not.toBeDisabled();
+    fireEvent.click(repairButton);
+    expect(onResume).toHaveBeenCalledWith("qwen:e83d984f-d610-4eae-bff9-8273372bea97");
+  });
+
+  it("updates agents integrations from the project detail panel", () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const project = projectFixture("E:\\old");
+    const onUpdateAgentsIntegrations = vi.fn();
+
+    render(
+      <ProjectDetailView
+        project={project}
+        detail={detailFixture(project)}
+        tools={[]}
+        query=""
+        warnings={[]}
+        repairCandidates={[]}
+        busy={false}
+        setQuery={vi.fn()}
+        onLaunch={vi.fn()}
+        onResume={vi.fn()}
+        onDeleteSession={vi.fn()}
+        onRepairProject={vi.fn()}
+        onRelocateProject={vi.fn()}
+        {...projectAgentsProps(project, { onUpdateAgentsIntegrations })}
+      />
+    );
+
+    const panel = screen.getByRole("region", { name: "多 agents 配置同步：old（根目录）" });
+    fireEvent.click(within(panel).getByRole("checkbox", { name: "Gemini CLI" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "保存工具选择并同步" }));
+
+    expect(onUpdateAgentsIntegrations).toHaveBeenCalledWith(project.rootPath, ["codex", "gemini"]);
+    confirmSpy.mockRestore();
+  });
+
+  it("renders independent agents sync panels for root and child groups", () => {
+    const project = projectFixture("E:\\repo");
+    const childRoot = "E:\\repo\\packages\\app";
+    const onCheckAgentsSync = vi.fn();
+
+    render(
+      <ProjectDetailView
+        project={project}
+        detail={detailWithChildGroup(project, childRoot)}
+        tools={[]}
+        query=""
+        warnings={[]}
+        repairCandidates={[]}
+        busy={false}
+        setQuery={vi.fn()}
+        onLaunch={vi.fn()}
+        onResume={vi.fn()}
+        onDeleteSession={vi.fn()}
+        onRepairProject={vi.fn()}
+        onRelocateProject={vi.fn()}
+        {...projectAgentsProps(project, {
+          agentsStatuses: {
+            [project.rootPath]: agentsStatusFixture(project.id, project.rootPath),
+            [childRoot]: agentsStatusFixture(project.id, childRoot)
+          },
+          onCheckAgentsSync
+        })}
+      />
+    );
+
+    expect(screen.getByRole("region", { name: "多 agents 配置同步：repo（根目录）" })).toBeInTheDocument();
+    const childPanel = screen.getByRole("region", { name: "多 agents 配置同步：packages\\app" });
+    fireEvent.click(within(childPanel).getByRole("button", { name: "检查同步" }));
+    expect(onCheckAgentsSync).toHaveBeenCalledWith(childRoot);
+  });
+
+  it("refreshes project detail after repairing and resuming a Qwen source mismatch", async () => {
+    const project = { ...projectFixture("E:\\ai-working-space\\old-project"), sessionCount: 1 };
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail
+      .mockResolvedValueOnce(detailWithQwenSourceMismatch(project))
+      .mockResolvedValue(detailWithQwenReady(project));
+
+    render(<App />);
+
+    await screen.findByText("old-project");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+
+    const repairButton = await screen.findByRole("button", { name: "修复并恢复" });
+    fireEvent.click(repairButton);
+
+    await waitFor(() => expect(clientMock.resume).toHaveBeenCalledWith("qwen:e83d984f-d610-4eae-bff9-8273372bea97"));
+    await waitFor(() => expect(clientMock.detail).toHaveBeenLastCalledWith(project.id, ""));
+    expect(await screen.findByText("已打开恢复终端：qwen")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "修复并恢复" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "恢复" })).not.toBeDisabled();
   });
 
   it("clears stale detail filters when opening a project from the overview", async () => {
@@ -502,6 +682,28 @@ describe("HomePage", () => {
     expect(screen.getByText("3 个会话")).toBeInTheDocument();
   });
 
+  it("deletes a session from project detail after confirmation and refreshes detail", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const project = { ...projectFixture("E:\\new-ai-game"), sessionCount: 1 };
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailWithSession(project));
+
+    render(<App />);
+
+    await screen.findByText("new-ai-game");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    expect(await screen.findByText("开罗小游戏，主题是骑士对决")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+
+    await waitFor(() => expect(clientMock.deleteSession).toHaveBeenCalledWith("claude:1"));
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(await screen.findByText("会话已删除，原始记录已移除")).toBeInTheDocument();
+    expect(clientMock.projects).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(clientMock.detail).toHaveBeenLastCalledWith(project.id, ""));
+    confirmSpy.mockRestore();
+  });
+
   it("renders tool groups collapsed until clicked", () => {
     const project = { ...projectFixture("E:\\new-ai-game"), sessionCount: 3 };
     const { container } = render(
@@ -516,8 +718,10 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={vi.fn()}
         onResume={vi.fn()}
+        onDeleteSession={vi.fn()}
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
+        {...projectAgentsProps(project)}
       />
     );
 
@@ -582,6 +786,32 @@ function detailFixture(project: Project): ProjectDetail {
   };
 }
 
+function detailWithChildGroup(project: Project, childRoot: string): ProjectDetail {
+  return {
+    project,
+    groups: [
+      {
+        key: project.normalizedRootPath,
+        label: "repo（根目录）",
+        fullPath: project.rootPath,
+        isRoot: true,
+        latestActivity: null,
+        sessionCount: 0,
+        tools: []
+      },
+      {
+        key: childRoot.toLowerCase(),
+        label: "packages\\app",
+        fullPath: childRoot,
+        isRoot: false,
+        latestActivity: null,
+        sessionCount: 0,
+        tools: []
+      }
+    ]
+  };
+}
+
 function detailWithSession(project: Project): ProjectDetail {
   return {
     project,
@@ -613,6 +843,71 @@ function detailWithSession(project: Project): ProjectDetail {
                 parserVersion: "test",
                 resumeStatus: "cwd_missing",
                 indexedAt: "2026-06-01T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+}
+
+function detailWithQwenSourceMismatch(project: Project): ProjectDetail {
+  return {
+    project,
+    groups: [
+      {
+        key: project.normalizedRootPath,
+        label: "old-project（根目录）",
+        fullPath: project.rootPath,
+        isRoot: true,
+        latestActivity: "2026-05-14T00:57:44Z",
+        sessionCount: 1,
+        tools: [
+          {
+            toolId: "qwen",
+            sessionCount: 1,
+            latestActivity: "2026-05-14T00:57:44Z",
+            sessions: [
+              {
+                id: "qwen:e83d984f-d610-4eae-bff9-8273372bea97",
+                toolId: "qwen",
+                nativeSessionId: "e83d984f-d610-4eae-bff9-8273372bea97",
+                title: "qwen code和qoder的区别是什么？",
+                summary: null,
+                originalCwd: project.rootPath,
+                normalizedCwd: project.normalizedRootPath,
+                updatedAt: "2026-05-14T00:57:44Z",
+                sourceFile: "C:\\Users\\brand\\.qwen\\projects\\d--work-project\\chats\\e83d984f-d610-4eae-bff9-8273372bea97.jsonl",
+                sourceFormat: "qwen-json",
+                parserVersion: "test",
+                resumeStatus: "source_mismatch",
+                indexedAt: "2026-06-02T01:00:00Z"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+}
+
+function detailWithQwenReady(project: Project): ProjectDetail {
+  const detail = detailWithQwenSourceMismatch(project);
+  const session = detail.groups[0].tools[0].sessions[0];
+  return {
+    ...detail,
+    groups: [
+      {
+        ...detail.groups[0],
+        tools: [
+          {
+            ...detail.groups[0].tools[0],
+            sessions: [
+              {
+                ...session,
+                sourceFile: "C:\\Users\\brand\\.qwen\\projects\\e--ai-working-space-old-project\\chats\\e83d984f-d610-4eae-bff9-8273372bea97.jsonl",
+                resumeStatus: "ready"
               }
             ]
           }
@@ -669,6 +964,89 @@ function toolStatusFixture(toolId: ToolId): ToolStatus {
     },
     reason: null,
     sessionSources: [`C:\\sessions\\${toolId}`]
+  };
+}
+
+function appConfigFixture(mode: AppConfig["terminal"]["mode"] = "new-window"): AppConfig {
+  return {
+    version: 1,
+    tools: {
+      codex: { command: "codex" },
+      claude: { command: "claude" },
+      opencode: { command: "opencode" },
+      qwen: { command: "qwen" },
+      qoder: { command: "qodercli" },
+      copilot: { command: "copilot" }
+    },
+    terminal: { mode }
+  };
+}
+
+function agentsStatusFixture(projectId = "project-1", projectRoot = "E:\\old"): AgentsConfigSyncStatus {
+  return {
+    projectId,
+    projectRoot,
+    available: true,
+    initialized: true,
+    command: "node E:\\github\\agents\\bin\\agents",
+    configPath: `${projectRoot}\\.agents\\agents.json`,
+    error: null,
+    status: {
+      projectRoot,
+      enabledIntegrations: ["codex"],
+      syncMode: "source-only",
+      selectedMcpServers: ["filesystem"],
+      mcp: {
+        configured: 1,
+        localOverrides: 0
+      },
+      files: {
+        ".agents/agents.json": true,
+        ".codex/config.toml": true
+      },
+      probes: {},
+      probesSkipped: true
+    }
+  };
+}
+
+function agentsCommandResultFixture(): AgentsCommandResult {
+  const status = agentsStatusFixture();
+  return {
+    projectId: status.projectId,
+    projectRoot: status.projectRoot,
+    action: "sync-check",
+    command: "node E:\\github\\agents\\bin\\agents --no-update-check sync --check",
+    exitCode: 0,
+    ok: true,
+    changed: [],
+    stdout: "",
+    stderr: "",
+    status
+  };
+}
+
+function projectAgentsProps(
+  project: Project,
+  overrides: Partial<{
+    agentsStatuses: Record<string, AgentsConfigSyncStatus>;
+    lastAgentsResults: Record<string, AgentsCommandResult | null>;
+    onRefreshAgents: (rootPath: string) => void;
+    onInitializeAgents: (rootPath: string) => void;
+    onCheckAgentsSync: (rootPath: string) => void;
+    onApplyAgentsSync: (rootPath: string) => void;
+    onUpdateAgentsIntegrations: (rootPath: string, enabledIntegrations: NonNullable<AgentsConfigSyncStatus["status"]>["enabledIntegrations"]) => void;
+  }> = {}
+) {
+  return {
+    agentsStatuses: { [project.rootPath]: agentsStatusFixture(project.id, project.rootPath) },
+    lastAgentsResults: {},
+    onRefreshAgents: vi.fn(),
+    onInitializeAgents: vi.fn(),
+    onCheckAgentsSync: vi.fn(),
+    onApplyAgentsSync: vi.fn(),
+    onUpdateAgentsIntegrations: vi.fn(),
+    ...overrides
   };
 }
 

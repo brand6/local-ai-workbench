@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import request from "supertest";
 import { afterEach, describe, expect, it } from "vitest";
 import { AppContext } from "../src/server/appContext.js";
 import { createHttpApp } from "../src/server/http/app.js";
+import type { SessionEntry } from "../src/shared/types.js";
 import { cleanup, testDir } from "./helpers.js";
 import { createOpencodeDb } from "./opencodeDb.js";
 
@@ -77,6 +79,110 @@ describe("API", () => {
       process.env.APPDATA = previousAppData;
       process.env.LOCALAPPDATA = previousLocalAppData;
     }
+  });
+
+  it("persists the terminal window mode setting", async () => {
+    directory = testDir("api-config-terminal-mode");
+    context = new AppContext(directory);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+
+    const current = await request(app).get("/api/config").set("x-local-api-token", context.token).expect(200);
+    expect(current.body.terminal.mode).toBe("new-window");
+
+    const updated = await request(app)
+      .patch("/api/config")
+      .set("x-local-api-token", context.token)
+      .send({ terminal: { mode: "per-project" } })
+      .expect(200);
+
+    expect(updated.body.terminal.mode).toBe("per-project");
+    expect(context.config().terminal.mode).toBe("per-project");
+    await request(app)
+      .patch("/api/config")
+      .set("x-local-api-token", context.token)
+      .send({ terminal: { mode: "last" } })
+      .expect(400);
+  });
+
+  it("rejects direct resume launch for non-ready sessions", async () => {
+    directory = testDir("api-resume-not-ready");
+    const projectRoot = path.join(directory, "repo");
+    const sourceFile = path.join(directory, "qwen", "session.jsonl");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+    context = new AppContext(directory);
+    context.database().upsertSession(sessionEntry({
+      id: "qwen:qwen-mismatch",
+      toolId: "qwen",
+      nativeSessionId: "qwen-mismatch",
+      originalCwd: projectRoot,
+      normalizedCwd: projectRoot.toLowerCase(),
+      sourceFile,
+      resumeStatus: "source_mismatch"
+    }));
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+
+    const response = await request(app)
+      .post("/api/launch/resume")
+      .set("x-local-api-token", context.token)
+      .send({ sessionId: "qwen:qwen-mismatch", dryRun: true })
+      .expect(409);
+
+    expect(response.body).toEqual({ error: "session-not-resumable", reason: "source_mismatch" });
+  });
+
+  it("repairs stale ready Qwen source paths before resume launch", async () => {
+    directory = testDir("api-resume-revalidate-qwen");
+    const sessionId = "e83d984f-d610-4eae-bff9-8273372bea97";
+    const projectRoot = path.join(directory, "old-project");
+    const sourceFile = path.join(directory, ".qwen", "projects", "d--work-project", "chats", `${sessionId}.jsonl`);
+    const repairedSourceFile = path.join(directory, ".qwen", "projects", encodeQwenProjectPath(projectRoot), "chats", `${sessionId}.jsonl`);
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+    fs.writeFileSync(
+      sourceFile,
+      JSON.stringify({
+        type: "user",
+        sessionId,
+        cwd: projectRoot,
+        message: { role: "user", parts: [{ text: "继续旧项目" }] },
+        timestamp: "2026-06-02T01:00:00Z"
+      })
+    );
+
+    context = new AppContext(directory);
+    context.config().tools.qwen.command = "node";
+    context.database().upsertSession(sessionEntry({
+      id: `qwen:${sessionId}`,
+      toolId: "qwen",
+      nativeSessionId: sessionId,
+      originalCwd: projectRoot,
+      normalizedCwd: projectRoot.toLowerCase(),
+      sourceFile,
+      resumeStatus: "ready"
+    }));
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+
+    const response = await request(app)
+      .post("/api/launch/resume")
+      .set("x-local-api-token", context.token)
+      .send({ sessionId: `qwen:${sessionId}`, dryRun: true })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      launched: true,
+      command: {
+        command: "node",
+        args: ["--resume", sessionId],
+        cwd: projectRoot
+      }
+    });
+    expect(fs.existsSync(sourceFile)).toBe(false);
+    expect(fs.existsSync(repairedSourceFile)).toBe(true);
+    expect(context.database().getSession(`qwen:${sessionId}`)).toMatchObject({
+      sourceFile: repairedSourceFile,
+      resumeStatus: "ready"
+    });
   });
 
   it("refreshes sessions before scanning project candidates", async () => {
@@ -184,6 +290,124 @@ describe("API", () => {
     expect(projects.body.map((project: { rootPath: string }) => project.rootPath)).not.toContain(codexRoot);
   });
 
+  it("deletes a JSONL-backed session and removes the source file", async () => {
+    directory = testDir("api-delete-jsonl-session");
+    const projectRoot = path.join(directory, "repo");
+    const sessionSource = path.join(directory, "sessions");
+    const sourceFile = path.join(sessionSource, "codex-session.jsonl");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.mkdirSync(sessionSource, { recursive: true });
+    fs.writeFileSync(
+      sourceFile,
+      JSON.stringify({
+        session_meta: { payload: { id: "codex-delete-1", cwd: projectRoot } },
+        title: "待删除会话",
+        timestamp: "2026-06-01T01:00:00Z"
+      })
+    );
+
+    context = new AppContext(directory);
+    context.config().tools.codex.sessionSources = [sessionSource];
+    context.config().tools.claude.sessionSources = [path.join(directory, "missing-claude-sessions")];
+    pointMvpBToolsAtMissingSources(context, directory);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+    const project = context.database().addProject(projectRoot, true).project;
+    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+
+    const session = context.database().listSessions()[0];
+    expect(session?.id).toBe("codex:codex-delete-1");
+
+    const deleted = await request(app)
+      .delete(`/api/sessions/${encodeURIComponent(session.id)}`)
+      .set("x-local-api-token", context.token)
+      .expect(200);
+
+    expect(deleted.body).toMatchObject({
+      deleted: true,
+      sessionId: session.id,
+      sourceFile,
+      sourceFormat: "codex-jsonl",
+      deletedSourceFile: true,
+      deletedNativeSession: true,
+      removedIndexCount: 1
+    });
+    expect(fs.existsSync(sourceFile)).toBe(false);
+    expect(context.database().getSession(session.id)).toBeNull();
+
+    const detail = await request(app)
+      .get(`/api/projects/${project.id}/detail`)
+      .set("x-local-api-token", context.token)
+      .expect(200);
+    expect(detail.body.groups[0].sessionCount).toBe(0);
+  });
+
+  it("deletes one OpenCode SQLite session without removing other sessions in the database", async () => {
+    directory = testDir("api-delete-opencode-session");
+    const projectRoot = path.join(directory, "opencode-game-studios");
+    const opencodeDb = path.join(directory, "opencode", "opencode.db");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    createOpencodeDb(opencodeDb, [
+      {
+        id: "ses_keep",
+        directory: projectRoot,
+        title: "保留会话",
+        timeUpdated: 1780000001000,
+        parts: [{ type: "text", text: "keep" }]
+      },
+      {
+        id: "ses_delete",
+        directory: projectRoot,
+        title: "删除会话",
+        timeUpdated: 1780000002000,
+        parts: [{ type: "text", text: "delete" }]
+      }
+    ]);
+
+    context = new AppContext(directory);
+    context.config().tools.codex.sessionSources = [path.join(directory, "missing-codex-sessions")];
+    context.config().tools.claude.sessionSources = [path.join(directory, "missing-claude-sessions")];
+    context.config().tools.opencode.sessionSources = [opencodeDb];
+    context.config().tools.qwen.sessionSources = [path.join(directory, "missing-qwen-sessions")];
+    context.config().tools.qoder.sessionSources = [path.join(directory, "missing-qoder-sessions")];
+    context.config().tools.copilot.sessionSources = [path.join(directory, "missing-copilot-sessions")];
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+    const project = context.database().addProject(projectRoot, true).project;
+    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+
+    const deleted = await request(app)
+      .delete(`/api/sessions/${encodeURIComponent("opencode:ses_delete")}`)
+      .set("x-local-api-token", context.token)
+      .expect(200);
+
+    expect(deleted.body).toMatchObject({
+      deleted: true,
+      sessionId: "opencode:ses_delete",
+      sourceFile: opencodeDb,
+      sourceFormat: "opencode-sqlite",
+      deletedSourceFile: false,
+      deletedNativeSession: true,
+      removedIndexCount: 1
+    });
+    expect(fs.existsSync(opencodeDb)).toBe(true);
+    expect(context.database().listSessions().map((session) => session.id)).toEqual(["opencode:ses_keep"]);
+
+    const raw = new DatabaseSync(opencodeDb, { readOnly: true });
+    try {
+      expect(raw.prepare("SELECT COUNT(*) AS count FROM session WHERE id = ?").get("ses_delete")?.count).toBe(0);
+      expect(raw.prepare("SELECT COUNT(*) AS count FROM session WHERE id = ?").get("ses_keep")?.count).toBe(1);
+      expect(raw.prepare("SELECT COUNT(*) AS count FROM part WHERE session_id = ?").get("ses_delete")?.count).toBe(0);
+    } finally {
+      raw.close();
+    }
+
+    const detail = await request(app)
+      .get(`/api/projects/${project.id}/detail`)
+      .set("x-local-api-token", context.token)
+      .expect(200);
+    expect(detail.body.groups[0].sessionCount).toBe(1);
+    expect(detail.body.groups[0].tools[0].sessions[0].id).toBe("opencode:ses_keep");
+  });
+
   it("can confirm zero-session scan candidates when requested", async () => {
     directory = testDir("api-scan-include-empty");
     const traceOnlyRoot = path.join(directory, "trace-only");
@@ -251,6 +475,114 @@ describe("API", () => {
       .expect(200);
 
     expect(filtered.body.map((warning: { message: string }) => warning.message)).toEqual(["current project warning"]);
+  });
+
+  it("returns project agents status before the project is initialized", async () => {
+    directory = testDir("api-agents-status-uninitialized");
+    const previousAgentsCliPath = process.env.AGENTS_CLI_PATH;
+    const projectRoot = path.join(directory, "repo");
+    const fakeCli = writeFakeAgentsCli(directory);
+    fs.mkdirSync(projectRoot, { recursive: true });
+    process.env.AGENTS_CLI_PATH = fakeCli;
+    try {
+      context = new AppContext(directory);
+      const app = await createHttpApp(context, { dev: false, serveClient: false });
+      const project = context.database().addProject(projectRoot, true).project;
+
+      const status = await request(app)
+        .get(`/api/projects/${project.id}/agents/status`)
+        .set("x-local-api-token", context.token)
+        .expect(200);
+
+      expect(status.body).toMatchObject({
+        projectId: project.id,
+        projectRoot,
+        available: true,
+        initialized: false,
+        status: null,
+        error: null
+      });
+    } finally {
+      process.env.AGENTS_CLI_PATH = previousAgentsCliPath;
+    }
+  });
+
+  it("treats agents sync check exit code 2 as pending changes", async () => {
+    directory = testDir("api-agents-sync-check");
+    const previousAgentsCliPath = process.env.AGENTS_CLI_PATH;
+    const projectRoot = path.join(directory, "repo");
+    const fakeCli = writeFakeAgentsCli(directory);
+    fs.mkdirSync(path.join(projectRoot, ".agents"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, ".agents", "agents.json"), "{}");
+    process.env.AGENTS_CLI_PATH = fakeCli;
+    try {
+      context = new AppContext(directory);
+      const app = await createHttpApp(context, { dev: false, serveClient: false });
+      const project = context.database().addProject(projectRoot, true).project;
+
+      const result = await request(app)
+        .post(`/api/projects/${project.id}/agents/sync`)
+        .set("x-local-api-token", context.token)
+        .send({ check: true })
+        .expect(200);
+
+      expect(result.body).toMatchObject({
+        action: "sync-check",
+        exitCode: 2,
+        ok: true,
+        changed: [".codex/config.toml"],
+        status: {
+          initialized: true,
+          status: {
+            enabledIntegrations: ["codex", "gemini"],
+            selectedMcpServers: ["filesystem"]
+          }
+        }
+      });
+    } finally {
+      process.env.AGENTS_CLI_PATH = previousAgentsCliPath;
+    }
+  });
+
+  it("runs agents sync against a child project directory only when it is under the managed root", async () => {
+    directory = testDir("api-agents-child-sync");
+    const previousAgentsCliPath = process.env.AGENTS_CLI_PATH;
+    const projectRoot = path.join(directory, "repo");
+    const childRoot = path.join(projectRoot, "packages", "app");
+    const outsideRoot = path.join(directory, "outside");
+    const fakeCli = writeFakeAgentsCli(directory);
+    fs.mkdirSync(path.join(childRoot, ".agents"), { recursive: true });
+    fs.mkdirSync(outsideRoot, { recursive: true });
+    fs.writeFileSync(path.join(childRoot, ".agents", "agents.json"), "{}");
+    process.env.AGENTS_CLI_PATH = fakeCli;
+    try {
+      context = new AppContext(directory);
+      const app = await createHttpApp(context, { dev: false, serveClient: false });
+      const project = context.database().addProject(projectRoot, true).project;
+
+      const result = await request(app)
+        .post(`/api/projects/${project.id}/agents/sync`)
+        .set("x-local-api-token", context.token)
+        .send({ check: true, rootPath: childRoot })
+        .expect(200);
+
+      expect(result.body).toMatchObject({
+        projectRoot: childRoot,
+        status: {
+          projectRoot: childRoot,
+          configPath: path.join(childRoot, ".agents", "agents.json"),
+          status: { projectRoot: childRoot }
+        }
+      });
+
+      await request(app)
+        .post(`/api/projects/${project.id}/agents/sync`)
+        .set("x-local-api-token", context.token)
+        .send({ check: true, rootPath: outsideRoot })
+        .expect(400);
+    } finally {
+      process.env.AGENTS_CLI_PATH = previousAgentsCliPath;
+    }
   });
 
   it("repairs a missing-cwd project by merging it into an existing target project", async () => {
@@ -480,7 +812,7 @@ describe("API", () => {
       .expect(200);
 
     expect(candidates.body[0]).toMatchObject({ projectId: finalChargeProject.id, rootPath: finalChargeRoot });
-    expect(candidates.body[0].reasons.join("；")).toContain("内容关键词匹配");
+    expect(candidates.body[0].reasons.join("；")).toContain("项目元信息匹配");
     expect(candidates.body.map((candidate: { projectId: string }) => candidate.projectId)).not.toContain(unrelatedProject.id);
   });
 
@@ -621,6 +953,7 @@ describe("API", () => {
 
     expect(candidates.body[0]).toMatchObject({ projectId: targetProject.id, rootPath: newRoot });
     expect(candidates.body.map((candidate: { rootPath: string }) => candidate.rootPath)).not.toEqual(expect.arrayContaining(noisyRoots));
+    expect(candidates.body.flatMap((candidate: { reasons: string[] }) => candidate.reasons).join("；")).not.toContain("内容关键词匹配");
   });
 
   it("matches repair targets from project-relative file paths recorded in session tool calls", async () => {
@@ -761,8 +1094,46 @@ describe("API", () => {
   });
 });
 
+function writeFakeAgentsCli(root: string): string {
+  const fakeCli = path.join(root, "fake-agents-cli.js");
+  fs.writeFileSync(
+    fakeCli,
+    [
+      "const args = process.argv.slice(2);",
+      "if (args.includes('status')) {",
+      "  console.log(JSON.stringify({",
+      "    projectRoot: args[args.indexOf('--path') + 1],",
+      "    enabledIntegrations: ['codex', 'gemini'],",
+      "    syncMode: 'source-only',",
+      "    selectedMcpServers: ['filesystem'],",
+      "    mcp: { configured: 1, localOverrides: 0 },",
+      "    files: { '.agents/agents.json': true, '.codex/config.toml': false },",
+      "    probes: {},",
+      "    probesSkipped: true",
+      "  }));",
+      "  process.exit(0);",
+      "}",
+      "if (args.includes('sync') && args.includes('--check')) {",
+      "  console.log('Would update 1 item(s):');",
+      "  console.log('  → .codex/config.toml');",
+      "  process.exit(2);",
+      "}",
+      "if (args.includes('init')) {",
+      "  process.exit(0);",
+      "}",
+      "process.exit(0);"
+    ].join("\n")
+  );
+  return fakeCli;
+}
+
 function claudeProjectSource(root: string, cwd: string, fileName: string): string {
   return path.join(root, ".claude", "projects", cwd.replace(/[:\\/]/g, "-"), "subagents", fileName);
+}
+
+function encodeQwenProjectPath(input: string): string {
+  const normalized = process.platform === "win32" ? input.toLowerCase() : input;
+  return normalized.replace(/[^a-zA-Z0-9]/g, "-");
 }
 
 function pointMvpBToolsAtMissingSources(appContext: AppContext, root: string): void {
@@ -770,4 +1141,22 @@ function pointMvpBToolsAtMissingSources(appContext: AppContext, root: string): v
   appContext.config().tools.qwen.sessionSources = [path.join(root, "missing-qwen-sessions")];
   appContext.config().tools.qoder.sessionSources = [path.join(root, "missing-qoder-sessions")];
   appContext.config().tools.copilot.sessionSources = [path.join(root, "missing-copilot-sessions")];
+}
+
+function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, "id" | "toolId" | "nativeSessionId" | "sourceFile">): SessionEntry {
+  return {
+    id: overrides.id,
+    toolId: overrides.toolId,
+    nativeSessionId: overrides.nativeSessionId,
+    title: overrides.title ?? "会话",
+    summary: overrides.summary ?? null,
+    originalCwd: overrides.originalCwd ?? null,
+    normalizedCwd: overrides.normalizedCwd ?? null,
+    updatedAt: overrides.updatedAt ?? "2026-06-02T01:00:00.000Z",
+    sourceFile: overrides.sourceFile,
+    sourceFormat: overrides.sourceFormat ?? "qwen-json",
+    parserVersion: overrides.parserVersion ?? "test",
+    resumeStatus: overrides.resumeStatus ?? "ready",
+    indexedAt: overrides.indexedAt ?? "2026-06-02T01:00:00.000Z"
+  };
 }

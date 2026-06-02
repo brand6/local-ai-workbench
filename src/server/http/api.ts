@@ -1,12 +1,17 @@
+import fs from "node:fs";
 import express, { type Express, type Request, type Response } from "express";
-import type { ToolId } from "../../shared/types.js";
+import { agentsIntegrationNames, isTerminalMode, type AgentsIntegrationName, type AppConfig, type ToolId } from "../../shared/types.js";
 import { adapterFor, listToolStatuses } from "../tools/adapters.js";
-import { refreshAllSessions, refreshProjectSessions } from "../scanning/sessionScanner.js";
+import { refreshAllSessions, refreshProjectSessions, refreshSessionFiles } from "../scanning/sessionScanner.js";
+import { deleteSession as deleteIndexedSession } from "../scanning/sessionDeletion.js";
 import { confirmScanCandidates, scanProjectCandidates } from "../scanning/projectScanner.js";
-import { launchInTerminal } from "../launch/terminal.js";
+import { launchInTerminal, terminalWindowTarget } from "../launch/terminal.js";
 import { confirmRelocation, previewRelocation, relocateManagedProject } from "../relocation/relocation.js";
 import { confirmProjectRepair, listProjectRepairCandidates } from "../repair/projectRepair.js";
+import { repairQwenSourcePathForSession } from "../repair/qwenSourceRepair.js";
+import { getAgentsStatus, initializeAgentsProject, syncAgentsProject, updateAgentsIntegrations } from "../agents/agentsCli.js";
 import { listScanDrives, pickDirectory } from "../core/localFilesystem.js";
+import { displayPath, isPathInsideOrEqual, isStrictChildPath } from "../core/pathUtils.js";
 import type { AppContext } from "../appContext.js";
 
 export function installApi(app: Express, context: AppContext): void {
@@ -48,6 +53,23 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     next();
+  });
+
+  app.get("/api/config", (_request, response) => {
+    response.json(context.config());
+  });
+
+  app.patch("/api/config", (request, response) => {
+    const mode = request.body?.terminal?.mode;
+    if (!isTerminalMode(mode)) {
+      response.status(400).json({ error: "terminal.mode must be new-window, per-tool, or per-project" });
+      return;
+    }
+    const nextConfig: AppConfig = {
+      ...context.config(),
+      terminal: { mode }
+    };
+    response.json(context.setConfig(nextConfig));
   });
 
   app.get("/api/projects", (_request, response) => {
@@ -105,6 +127,79 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     response.json(listProjectRepairCandidates(context.database(), request.params.id));
+  });
+
+  app.get("/api/projects/:id/agents/status", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    const target = agentsTarget(request, project, "query");
+    if (!target) {
+      response.status(400).json({ error: "invalid-agents-root-path" });
+      return;
+    }
+    response.json(getAgentsStatus(target));
+  });
+
+  app.post("/api/projects/:id/agents/init", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    const target = agentsTarget(request, project, "body");
+    if (!target) {
+      response.status(400).json({ error: "invalid-agents-root-path" });
+      return;
+    }
+    try {
+      response.json(initializeAgentsProject(target));
+    } catch (error) {
+      response.status(400).json({ error: "agents-init-failed", reason: error instanceof Error ? error.message : "agents-init-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/agents/sync", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    const target = agentsTarget(request, project, "body");
+    if (!target) {
+      response.status(400).json({ error: "invalid-agents-root-path" });
+      return;
+    }
+    try {
+      response.json(syncAgentsProject(target, Boolean(request.body?.check)));
+    } catch (error) {
+      response.status(400).json({ error: "agents-sync-failed", reason: error instanceof Error ? error.message : "agents-sync-failed" });
+    }
+  });
+
+  app.patch("/api/projects/:id/agents/integrations", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    const target = agentsTarget(request, project, "body");
+    if (!target) {
+      response.status(400).json({ error: "invalid-agents-root-path" });
+      return;
+    }
+    const enabledIntegrations = agentsIntegrationsBody(request);
+    if (enabledIntegrations === null) {
+      response.status(400).json({ error: "enabledIntegrations must be an array of supported agents integration ids" });
+      return;
+    }
+    try {
+      response.json(updateAgentsIntegrations(target, enabledIntegrations));
+    } catch (error) {
+      response.status(400).json({ error: "agents-integrations-failed", reason: error instanceof Error ? error.message : "agents-integrations-failed" });
+    }
   });
 
   app.post("/api/projects/:id/repair", (request, response) => {
@@ -170,6 +265,19 @@ export function installApi(app: Express, context: AppContext): void {
     );
   });
 
+  app.delete("/api/sessions/:id", (request, response) => {
+    try {
+      const result = deleteIndexedSession(context.database(), request.params.id);
+      if (!result) {
+        response.status(404).json({ error: "session-not-found" });
+        return;
+      }
+      response.json(result);
+    } catch (error) {
+      response.status(400).json({ error: error instanceof Error ? error.message : "session-delete-failed" });
+    }
+  });
+
   app.post("/api/relocations/preview", (request, response) => {
     const oldRoot = stringBody(request, "oldRoot");
     const newRoot = stringBody(request, "newRoot");
@@ -224,17 +332,24 @@ export function installApi(app: Express, context: AppContext): void {
   app.post("/api/launch/new", (request, response) => {
     const toolId = request.body?.toolId as ToolId;
     const cwd = stringBody(request, "cwd");
+    const projectRootPath = stringBody(request, "projectRootPath");
     if (!isToolId(toolId) || !cwd) {
       response.status(400).json({ error: "toolId and cwd are required" });
       return;
     }
-    const status = adapterFor(toolId).detect(context.config());
+    const config = context.config();
+    const status = adapterFor(toolId).detect(config);
     if (!status.available) {
       response.status(409).json({ error: "tool-unavailable", reason: status.reason });
       return;
     }
-    const command = adapterFor(toolId).buildNewSessionCommand(context.config(), cwd);
-    response.json(launchInTerminal(command, { dryRun: Boolean(request.body?.dryRun) }));
+    const command = adapterFor(toolId).buildNewSessionCommand(config, cwd);
+    response.json(
+      launchInTerminal(command, {
+        dryRun: Boolean(request.body?.dryRun),
+        windowTarget: terminalWindowTarget(config.terminal.mode, { toolId, cwd, projectRootPath })
+      })
+    );
   });
 
   app.post("/api/launch/resume", (request, response) => {
@@ -243,18 +358,47 @@ export function installApi(app: Express, context: AppContext): void {
       response.status(400).json({ error: "sessionId is required" });
       return;
     }
-    const session = context.database().getSession(sessionId);
+    let session = context.database().getSession(sessionId);
     if (!session) {
       response.status(404).json({ error: "session-not-found" });
       return;
     }
-    const status = adapterFor(session.toolId).detect(context.config());
+    if (session.resumeStatus === "ready") {
+      if (!fs.existsSync(session.sourceFile)) {
+        response.status(409).json({ error: "session-not-resumable", reason: "unknown" });
+        return;
+      }
+      refreshSessionFiles(context.database(), [{ toolId: session.toolId, sourceFile: session.sourceFile }]);
+      session = context.database().getSession(sessionId);
+      if (!session) {
+        response.status(409).json({ error: "session-not-resumable", reason: "unknown" });
+        return;
+      }
+    }
+    if (session.resumeStatus === "source_mismatch") {
+      session = repairQwenSourcePathForSession(context.database(), session) ?? session;
+    }
+    if (session.resumeStatus !== "ready") {
+      response.status(409).json({ error: "session-not-resumable", reason: session.resumeStatus });
+      return;
+    }
+    const config = context.config();
+    const status = adapterFor(session.toolId).detect(config);
     if (!status.available) {
       response.status(409).json({ error: "tool-unavailable", reason: status.reason });
       return;
     }
-    const command = adapterFor(session.toolId).buildResumeCommand(context.config(), session);
-    response.json(launchInTerminal(command, { dryRun: Boolean(request.body?.dryRun) }));
+    const command = adapterFor(session.toolId).buildResumeCommand(config, session);
+    response.json(
+      launchInTerminal(command, {
+        dryRun: Boolean(request.body?.dryRun),
+        windowTarget: terminalWindowTarget(config.terminal.mode, {
+          toolId: session.toolId,
+          cwd: session.originalCwd,
+          projectRootPath: projectRootPathForSession(context, session.normalizedCwd)
+        })
+      })
+    );
   });
 
   app.get("/api/parser-warnings", (request, response) => {
@@ -297,4 +441,41 @@ function toolIdsBody(request: Request): ToolId[] | undefined | null {
     if (!toolIds.includes(item)) toolIds.push(item);
   }
   return toolIds;
+}
+
+function agentsIntegrationsBody(request: Request): AgentsIntegrationName[] | null {
+  if (!Array.isArray(request.body?.enabledIntegrations)) return null;
+  const allowed = new Set<string>(agentsIntegrationNames);
+  const integrations: AgentsIntegrationName[] = [];
+  for (const item of request.body.enabledIntegrations) {
+    if (typeof item !== "string" || !allowed.has(item)) return null;
+    const integration = item as AgentsIntegrationName;
+    if (!integrations.includes(integration)) integrations.push(integration);
+  }
+  return integrations;
+}
+
+function agentsTarget(request: Request, project: { id: string; rootPath: string }, source: "query" | "body"): { id: string; rootPath: string } | null {
+  const raw = source === "query" ? request.query.rootPath : request.body?.rootPath;
+  const rootPath = typeof raw === "string" && raw.trim().length > 0 ? displayPath(raw) : project.rootPath;
+  if (!isPathInsideOrEqual(project.rootPath, rootPath)) {
+    return null;
+  }
+  if (!fs.existsSync(rootPath) || !fs.statSync(rootPath).isDirectory()) {
+    return null;
+  }
+  return { id: project.id, rootPath };
+}
+
+function projectRootPathForSession(context: AppContext, normalizedCwd: string | null): string | null {
+  if (!normalizedCwd) return null;
+  const project = context
+    .database()
+    .listProjects()
+    .filter((candidate) => {
+      if (candidate.normalizedRootPath === normalizedCwd) return true;
+      return candidate.includeSubdirectories && isStrictChildPath(candidate.normalizedRootPath, normalizedCwd);
+    })
+    .sort((a, b) => b.normalizedRootPath.length - a.normalizedRootPath.length)[0];
+  return project?.rootPath ?? null;
 }

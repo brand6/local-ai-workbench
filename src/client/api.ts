@@ -1,5 +1,10 @@
 import type {
+  AgentsCommandResult,
+  AgentsConfigSyncStatus,
+  AgentsIntegrationName,
+  AppConfig,
   BootstrapState,
+  DeleteSessionResult,
   DirectoryPickResponse,
   LaunchResponse,
   ParserWarning,
@@ -56,6 +61,8 @@ async function handle<T>(response: Response): Promise<T> {
 export const client = {
   bootstrap: () => apiGet<BootstrapState>("/api/bootstrap"),
   setDataDir: (dataDir: string) => apiPost<BootstrapState>("/api/bootstrap/data-dir", { dataDir }),
+  config: () => apiGet<AppConfig>("/api/config"),
+  updateConfig: (config: Pick<AppConfig, "terminal">) => apiPatch<AppConfig>("/api/config", config),
   projects: () => apiGet<Project[]>("/api/projects"),
   drives: () => apiGet<ScanDrive[]>("/api/local-filesystem/drives"),
   pickDirectory: () => apiPost<DirectoryPickResponse>("/api/local-filesystem/pick-directory"),
@@ -73,13 +80,21 @@ export const client = {
   repairProject: (id: string, targetProjectId: string, targetRootPath?: string) =>
     apiPost<ProjectRepairResult>(`/api/projects/${id}/repair`, { targetProjectId, targetRootPath }),
   relocateProject: (id: string, newRoot: string) => apiPost<RelocationResult>(`/api/projects/${id}/relocate`, { newRoot }),
+  agentsStatus: (id: string, rootPath?: string) =>
+    apiGet<AgentsConfigSyncStatus>(`/api/projects/${id}/agents/status${rootPath ? `?rootPath=${encodeURIComponent(rootPath)}` : ""}`),
+  initAgents: (id: string, rootPath?: string) => apiPost<AgentsCommandResult>(`/api/projects/${id}/agents/init`, rootPath ? { rootPath } : {}),
+  syncAgents: (id: string, check: boolean, rootPath?: string) =>
+    apiPost<AgentsCommandResult>(`/api/projects/${id}/agents/sync`, { check, ...(rootPath ? { rootPath } : {}) }),
+  updateAgentsIntegrations: (id: string, enabledIntegrations: AgentsIntegrationName[], rootPath?: string) =>
+    apiPatch<AgentsCommandResult>(`/api/projects/${id}/agents/integrations`, { enabledIntegrations, ...(rootPath ? { rootPath } : {}) }),
   refreshSessions: (toolIds?: string[]) => apiPost<RefreshResult>("/api/sessions/refresh", toolIds?.length ? { toolIds } : {}),
+  deleteSession: (sessionId: string) => apiDelete<DeleteSessionResult>(`/api/sessions/${encodeURIComponent(sessionId)}`),
   tools: () => apiGet<ToolStatus[]>("/api/tools/status"),
   startScan: (roots: string[], scope: "directory" | "drive" | "all-fixed" = "directory") =>
     apiPost<{ scanRunId: string; candidates: ScanCandidate[] }>("/api/scan-runs", { scope, roots }),
   confirmCandidates: (scanRunId: string, candidateIds: string[], includeEmptyCandidates = false) =>
     apiPost<Project[]>(`/api/scan-runs/${scanRunId}/confirm`, { candidateIds, includeEmptyCandidates }),
-  launchNew: (toolId: string, cwd: string) => apiPost<LaunchResponse>("/api/launch/new", { toolId, cwd }),
+  launchNew: (toolId: string, cwd: string, projectRootPath?: string) => apiPost<LaunchResponse>("/api/launch/new", { toolId, cwd, projectRootPath }),
   resume: (sessionId: string) => apiPost<LaunchResponse>("/api/launch/resume", { sessionId }),
   previewRelocation: (oldRoot: string, newRoot: string) =>
     apiPost<RelocationPreview>("/api/relocations/preview", { oldRoot, newRoot }),

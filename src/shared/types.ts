@@ -1,10 +1,31 @@
 export type ToolId = "codex" | "claude" | "opencode" | "qwen" | "qoder" | "copilot";
+export const terminalModes = ["new-window", "per-tool", "per-project"] as const;
+export type TerminalMode = (typeof terminalModes)[number];
+export const agentsIntegrationNames = [
+  "codex",
+  "claude",
+  "claude_desktop",
+  "gemini",
+  "copilot_vscode",
+  "copilot_cli",
+  "cursor",
+  "antigravity",
+  "windsurf",
+  "opencode",
+  "junie"
+] as const;
+export type AgentsIntegrationName = (typeof agentsIntegrationNames)[number];
+
+export function isTerminalMode(value: unknown): value is TerminalMode {
+  return terminalModes.includes(value as TerminalMode);
+}
 
 export type ResumeStatus =
   | "ready"
   | "missing_session_id"
   | "missing_cwd"
   | "cwd_missing"
+  | "source_mismatch"
   | "tool_unavailable"
   | "unknown";
 
@@ -18,7 +39,7 @@ export interface BootstrapState {
 export interface AppConfig {
   version: 1;
   tools: Record<ToolId, { command: string; sessionSources?: string[] }>;
-  terminal: { mode: "new-window" | "per-tool" | "per-project" };
+  terminal: { mode: TerminalMode };
 }
 
 export interface Project {
@@ -139,10 +160,21 @@ export interface LaunchCommand {
 export interface LaunchRequest {
   toolId: ToolId;
   cwd: string;
+  projectRootPath?: string;
 }
 
 export interface ResumeRequest {
   sessionId: string;
+}
+
+export interface DeleteSessionResult {
+  deleted: boolean;
+  sessionId: string;
+  sourceFile: string;
+  sourceFormat: string;
+  deletedSourceFile: boolean;
+  deletedNativeSession: boolean;
+  removedIndexCount: number;
 }
 
 export interface LaunchResponse {
@@ -220,4 +252,42 @@ export interface ProjectRepairResult {
   targetProjectId: string;
   targetRootPath: string;
   relocation: RelocationResult;
+}
+
+export interface AgentsStatusPayload {
+  projectRoot: string;
+  enabledIntegrations: AgentsIntegrationName[];
+  syncMode: string;
+  selectedMcpServers: string[];
+  mcp: {
+    configured: number;
+    localOverrides: number;
+  };
+  files: Record<string, boolean>;
+  probes: Record<string, string>;
+  probesSkipped: boolean;
+}
+
+export interface AgentsConfigSyncStatus {
+  projectId: string;
+  projectRoot: string;
+  available: boolean;
+  initialized: boolean;
+  command: string;
+  configPath: string;
+  status: AgentsStatusPayload | null;
+  error: string | null;
+}
+
+export interface AgentsCommandResult {
+  projectId: string;
+  projectRoot: string;
+  action: "init" | "sync-check" | "sync" | "integrations";
+  command: string;
+  exitCode: number;
+  ok: boolean;
+  changed: string[];
+  stdout: string;
+  stderr: string;
+  status: AgentsConfigSyncStatus;
 }

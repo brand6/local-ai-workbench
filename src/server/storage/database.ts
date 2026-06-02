@@ -408,6 +408,11 @@ export class AppDatabase {
     return row ? this.sessionFromRow(row) : null;
   }
 
+  deleteSession(id: string): number {
+    const result = this.db.prepare("DELETE FROM sessions WHERE id = ?").run(id);
+    return Number(result.changes);
+  }
+
   listSessionsForProject(project: Project, query = ""): SessionEntry[] {
     const normalizedQuery = query.trim().toLowerCase();
     return this.listSessions().filter((session) => {
