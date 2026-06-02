@@ -1,0 +1,105 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { AppConfig, BootstrapState, ToolId } from "../../shared/types.js";
+
+export interface BootstrapFile {
+  version: 1;
+  dataDir: string;
+}
+
+export function getDefaultDataDir(env: NodeJS.ProcessEnv = process.env): string {
+  const base = env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local");
+  return path.join(base, "github-repo-manager");
+}
+
+export function getBootstrapPath(env: NodeJS.ProcessEnv = process.env): string {
+  const base = env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming");
+  return path.join(base, "github-repo-manager", "bootstrap.json");
+}
+
+export function readBootstrap(bootstrapPath = getBootstrapPath()): BootstrapFile | null {
+  if (!fs.existsSync(bootstrapPath)) return null;
+  const parsed = JSON.parse(fs.readFileSync(bootstrapPath, "utf8")) as Partial<BootstrapFile>;
+  if (parsed.version !== 1 || typeof parsed.dataDir !== "string" || parsed.dataDir.length === 0) {
+    throw new Error(`Invalid bootstrap config: ${bootstrapPath}`);
+  }
+  return { version: 1, dataDir: parsed.dataDir };
+}
+
+export function writeBootstrap(dataDir: string, bootstrapPath = getBootstrapPath()): void {
+  fs.mkdirSync(path.dirname(bootstrapPath), { recursive: true });
+  const payload: BootstrapFile = { version: 1, dataDir };
+  fs.writeFileSync(bootstrapPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+}
+
+export function defaultAppConfig(): AppConfig {
+  const tools: Record<ToolId, { command: string; sessionSources?: string[] }> = {
+    codex: { command: "codex" },
+    claude: { command: "claude" },
+    opencode: { command: "opencode" },
+    qwen: { command: "qwen" },
+    qoder: { command: "qodercli" },
+    copilot: { command: "copilot" }
+  };
+  return { version: 1, tools, terminal: { mode: "new-window" } };
+}
+
+export function ensureConfigFiles(dataDir: string): AppConfig {
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(path.join(dataDir, "backups"), { recursive: true });
+  const configPath = path.join(dataDir, "config.json");
+  if (!fs.existsSync(configPath)) {
+    const config = defaultAppConfig();
+    fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    return config;
+  }
+
+  const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as AppConfig;
+  return normalizeConfig(config);
+}
+
+export function writeAppConfig(dataDir: string, config: AppConfig): void {
+  fs.mkdirSync(dataDir, { recursive: true });
+  const configPath = path.join(dataDir, "config.json");
+  if (fs.existsSync(configPath)) {
+    fs.copyFileSync(configPath, path.join(dataDir, "config.json.bak"));
+  }
+  fs.writeFileSync(configPath, `${JSON.stringify(normalizeConfig(config), null, 2)}\n`, "utf8");
+}
+
+export function normalizeConfig(config: AppConfig): AppConfig {
+  const defaults = defaultAppConfig();
+  return {
+    version: 1,
+    tools: {
+      codex: { ...defaults.tools.codex, ...(config.tools?.codex ?? {}) },
+      claude: { ...defaults.tools.claude, ...(config.tools?.claude ?? {}) },
+      opencode: { ...defaults.tools.opencode, ...(config.tools?.opencode ?? {}) },
+      qwen: { ...defaults.tools.qwen, ...(config.tools?.qwen ?? {}) },
+      qoder: { ...defaults.tools.qoder, ...(config.tools?.qoder ?? {}) },
+      copilot: { ...defaults.tools.copilot, ...(config.tools?.copilot ?? {}) }
+    },
+    terminal: { mode: config.terminal?.mode ?? "new-window" }
+  };
+}
+
+export function resolveBootstrapState(dataDirArg: string | null): BootstrapState {
+  const defaultDataDir = getDefaultDataDir();
+  if (dataDirArg) {
+    return {
+      initialized: true,
+      dataDir: dataDirArg,
+      defaultDataDir,
+      overriddenByArg: true
+    };
+  }
+
+  const bootstrap = readBootstrap();
+  return {
+    initialized: Boolean(bootstrap),
+    dataDir: bootstrap?.dataDir ?? null,
+    defaultDataDir,
+    overriddenByArg: false
+  };
+}

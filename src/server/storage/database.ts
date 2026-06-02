@@ -1,0 +1,763 @@
+import fs from "node:fs";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import type {
+  ParserWarning,
+  Project,
+  RelocationProjectMerge,
+  RelocationProjectChange,
+  ScanCandidate,
+  ScanRun,
+  SessionEntry,
+  ToolId
+} from "../../shared/types.js";
+import { json, parseJson } from "../core/json.js";
+import { candidateSortKey, isPathInsideOrEqual, isStrictChildPath, normalizeFsPath, rebasePath, relativeLabel } from "../core/pathUtils.js";
+import { nowIso } from "../core/time.js";
+
+type Row = Record<string, unknown>;
+
+export interface AppDatabaseOptions {
+  busyTimeoutMs?: number;
+}
+
+export interface AppliedProjectRelocation {
+  projectId: string;
+  oldRootPath: string;
+  newRootPath: string;
+  mode: "updated" | "merged";
+  targetProjectId: string | null;
+  sourceProject: Project;
+  targetProjectBefore: Project | null;
+}
+
+export class AppDatabase {
+  private db: DatabaseSync;
+
+  constructor(private readonly dataDir: string, options: AppDatabaseOptions = {}) {
+    const busyTimeoutMs = options.busyTimeoutMs ?? 5000;
+    fs.mkdirSync(dataDir, { recursive: true });
+    this.db = new DatabaseSync(path.join(dataDir, "index.sqlite"));
+    try {
+      this.db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs};`);
+      this.db.exec("PRAGMA journal_mode = WAL;");
+      this.db.exec("PRAGMA foreign_keys = ON;");
+      this.migrate();
+      this.normalizeProjectHierarchy();
+    } catch (error) {
+      this.db.close();
+      if (isSqliteLockedError(error)) {
+        throw new Error(
+          `Database is locked: ${path.join(dataDir, "index.sqlite")}. ` +
+            "Another github-repo-manager process is probably using this data directory. " +
+            "Stop the existing process or start with --data-dir <different-directory>.",
+          { cause: error }
+        );
+      }
+      throw error;
+    }
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  migrate(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS tool_metadata (
+        tool_id TEXT PRIMARY KEY,
+        command TEXT NOT NULL,
+        parser_version TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        root_path TEXT NOT NULL,
+        normalized_root_path TEXT NOT NULL UNIQUE,
+        include_subdirectories INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        tool_id TEXT NOT NULL,
+        native_session_id TEXT,
+        title TEXT NOT NULL,
+        summary TEXT,
+        original_cwd TEXT,
+        normalized_cwd TEXT,
+        updated_at TEXT NOT NULL,
+        source_file TEXT NOT NULL,
+        source_format TEXT NOT NULL,
+        parser_version TEXT NOT NULL,
+        resume_status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        indexed_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(normalized_cwd);
+      CREATE INDEX IF NOT EXISTS idx_sessions_tool ON sessions(tool_id);
+      CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
+
+      CREATE TABLE IF NOT EXISTS scan_runs (
+        id TEXT PRIMARY KEY,
+        scope TEXT NOT NULL,
+        roots_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        indexed_count INTEGER NOT NULL DEFAULT 0,
+        skipped_count INTEGER NOT NULL DEFAULT 0,
+        warning_count INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS scan_candidates (
+        id TEXT PRIMARY KEY,
+        scan_run_id TEXT NOT NULL REFERENCES scan_runs(id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        normalized_path TEXT NOT NULL,
+        detected_tools_json TEXT NOT NULL,
+        session_counts_json TEXT NOT NULL,
+        child_candidates_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_scan_candidates_run ON scan_candidates(scan_run_id);
+      CREATE INDEX IF NOT EXISTS idx_scan_candidates_path ON scan_candidates(normalized_path);
+
+      CREATE TABLE IF NOT EXISTS parser_warnings (
+        id TEXT PRIMARY KEY,
+        scan_run_id TEXT,
+        tool_id TEXT,
+        source_file TEXT,
+        error_type TEXT NOT NULL,
+        message TEXT NOT NULL,
+        line INTEGER,
+        created_at TEXT NOT NULL
+      );
+    `);
+
+    this.db.prepare("INSERT OR REPLACE INTO schema_metadata (key, value) VALUES (?, ?)").run("schema_version", "1");
+  }
+
+  setSetting(key: string, value: unknown): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)")
+      .run(key, json(value), nowIso());
+  }
+
+  getSetting<T>(key: string, fallback: T): T {
+    const row = this.db.prepare("SELECT value_json FROM settings WHERE key = ?").get(key);
+    return parseJson(String(row?.value_json ?? ""), fallback);
+  }
+
+  listProjects(): Project[] {
+    const rows = this.db.prepare("SELECT * FROM projects ORDER BY updated_at DESC").all();
+    return rows.map((row) => this.projectFromRow(row));
+  }
+
+  getProject(id: string): Project | null {
+    const row = this.db.prepare("SELECT * FROM projects WHERE id = ?").get(id);
+    return row ? this.projectFromRow(row) : null;
+  }
+
+  getProjectByNormalizedPath(normalizedPath: string): Project | null {
+    const row = this.db.prepare("SELECT * FROM projects WHERE normalized_root_path = ?").get(normalizedPath);
+    return row ? this.projectFromRow(row) : null;
+  }
+
+  addProject(rootPath: string, includeSubdirectories = false): { project: Project; mergedIntoParent: boolean; removedChildren: Project[] } {
+    const normalized = normalizeFsPath(rootPath);
+    const existing = this.getProjectByNormalizedPath(normalized);
+    if (existing) {
+      return { project: existing, mergedIntoParent: false, removedChildren: [] };
+    }
+
+    const projects = this.listProjects();
+    const parent = projects
+      .filter((project) => isStrictChildPath(project.normalizedRootPath, normalized))
+      .sort((a, b) => candidateSortKey(b.normalizedRootPath) - candidateSortKey(a.normalizedRootPath))[0];
+
+    if (parent) {
+      this.updateProject(parent.id, { includeSubdirectories: true });
+      const updatedParent = this.getProject(parent.id);
+      if (!updatedParent) throw new Error("Parent project disappeared during update");
+      return { project: updatedParent, mergedIntoParent: true, removedChildren: [] };
+    }
+
+    const children = projects.filter((project) => isStrictChildPath(normalized, project.normalizedRootPath));
+    const id = crypto.randomUUID();
+    const timestamp = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO projects (id, root_path, normalized_root_path, include_subdirectories, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(id, rootPath, normalized, includeSubdirectories || children.length > 0 ? 1 : 0, timestamp, timestamp);
+
+    for (const child of children) {
+      this.db.prepare("DELETE FROM projects WHERE id = ?").run(child.id);
+    }
+
+    const project = this.getProject(id);
+    if (!project) throw new Error("Failed to create project");
+    return { project, mergedIntoParent: false, removedChildren: children };
+  }
+
+  updateProject(id: string, fields: { includeSubdirectories?: boolean }): Project | null {
+    const project = this.getProject(id);
+    if (!project) return null;
+    const include = fields.includeSubdirectories ?? project.includeSubdirectories;
+    this.db
+      .prepare("UPDATE projects SET include_subdirectories = ?, updated_at = ? WHERE id = ?")
+      .run(include ? 1 : 0, nowIso(), id);
+    return this.getProject(id);
+  }
+
+  removeProject(id: string): boolean {
+    const result = this.db.prepare("DELETE FROM projects WHERE id = ?").run(id);
+    return result.changes > 0;
+  }
+
+  addSessionProjectsForTools(toolIds: ToolId[] = []): number {
+    const selectedTools = toolIds.length > 0 ? new Set<ToolId>(toolIds) : null;
+    const sessionProjects = new Map<string, string>();
+
+    for (const session of this.listSessions()) {
+      if (!session.originalCwd || !session.normalizedCwd) continue;
+      if (selectedTools && !selectedTools.has(session.toolId)) continue;
+      if (!sessionProjects.has(session.normalizedCwd)) {
+        sessionProjects.set(session.normalizedCwd, session.originalCwd);
+      }
+    }
+
+    let addedCount = 0;
+    const candidates = [...sessionProjects.entries()].sort((a, b) => {
+      return candidateSortKey(a[0]) - candidateSortKey(b[0]) || a[0].localeCompare(b[0]);
+    });
+
+    for (const [normalizedCwd, originalCwd] of candidates) {
+      if (this.getProjectByNormalizedPath(normalizedCwd)) continue;
+      const result = this.addProject(originalCwd);
+      if (result.mergedIntoParent || result.project.normalizedRootPath === normalizedCwd) {
+        addedCount += 1;
+      }
+    }
+
+    return addedCount;
+  }
+
+  previewRelocatedProjects(oldRoot: string, newRoot: string): RelocationProjectChange[] {
+    return this.listProjects()
+      .map((project) => {
+        const newRootPath = rebaseProjectPath(project.rootPath, oldRoot, newRoot);
+        if (!newRootPath) return null;
+        return { projectId: project.id, oldRootPath: project.rootPath, newRootPath };
+      })
+      .filter((change): change is RelocationProjectChange => Boolean(change));
+  }
+
+  relocateProjectRoots(changes: RelocationProjectChange[]): AppliedProjectRelocation[] {
+    const timestamp = nowIso();
+    const applied: AppliedProjectRelocation[] = [];
+    for (const change of changes) {
+      const sourceProject = this.getProject(change.projectId);
+      if (!sourceProject) continue;
+      const targetNormalized = normalizeFsPath(change.newRootPath);
+      const targetProject = this.getProjectByNormalizedPath(targetNormalized);
+      const containingTargetProject = targetProject
+        ? null
+        : this.listProjects()
+            .filter((project) => project.id !== sourceProject.id)
+            .filter((project) => isStrictChildPath(project.normalizedRootPath, targetNormalized))
+            .sort((a, b) => candidateSortKey(b.normalizedRootPath) - candidateSortKey(a.normalizedRootPath))[0];
+
+      if (targetProject && targetProject.id !== sourceProject.id) {
+        this.db
+          .prepare("UPDATE projects SET include_subdirectories = ?, updated_at = ? WHERE id = ?")
+          .run(sourceProject.includeSubdirectories || targetProject.includeSubdirectories ? 1 : 0, timestamp, targetProject.id);
+        this.db.prepare("DELETE FROM projects WHERE id = ?").run(sourceProject.id);
+        applied.push({
+          projectId: sourceProject.id,
+          oldRootPath: change.oldRootPath,
+          newRootPath: change.newRootPath,
+          mode: "merged",
+          targetProjectId: targetProject.id,
+          sourceProject,
+          targetProjectBefore: targetProject
+        });
+        continue;
+      }
+
+      if (containingTargetProject) {
+        this.db.prepare("UPDATE projects SET include_subdirectories = ?, updated_at = ? WHERE id = ?").run(1, timestamp, containingTargetProject.id);
+        this.db.prepare("DELETE FROM projects WHERE id = ?").run(sourceProject.id);
+        applied.push({
+          projectId: sourceProject.id,
+          oldRootPath: change.oldRootPath,
+          newRootPath: change.newRootPath,
+          mode: "merged",
+          targetProjectId: containingTargetProject.id,
+          sourceProject,
+          targetProjectBefore: containingTargetProject
+        });
+        continue;
+      }
+
+      this.db
+        .prepare("UPDATE projects SET root_path = ?, normalized_root_path = ?, updated_at = ? WHERE id = ?")
+        .run(change.newRootPath, targetNormalized, timestamp, change.projectId);
+      applied.push({
+        projectId: sourceProject.id,
+        oldRootPath: change.oldRootPath,
+        newRootPath: change.newRootPath,
+        mode: "updated",
+        targetProjectId: null,
+        sourceProject,
+        targetProjectBefore: null
+      });
+    }
+    return applied;
+  }
+
+  rollbackProjectRelocations(applied: AppliedProjectRelocation[]): void {
+    for (const relocation of [...applied].reverse()) {
+      if (relocation.mode === "updated") {
+        this.restoreProject(relocation.sourceProject);
+        continue;
+      }
+
+      if (relocation.targetProjectBefore) {
+        this.restoreProject(relocation.targetProjectBefore);
+      }
+      this.restoreProject(relocation.sourceProject);
+    }
+  }
+
+  projectMergesFromRelocations(applied: AppliedProjectRelocation[]): RelocationProjectMerge[] {
+    return applied
+      .filter((relocation): relocation is AppliedProjectRelocation & { targetProjectId: string } => {
+        return relocation.mode === "merged" && Boolean(relocation.targetProjectId);
+      })
+      .map((relocation) => ({
+        sourceProjectId: relocation.projectId,
+        targetProjectId: relocation.targetProjectId,
+        targetRootPath: relocation.newRootPath
+      }));
+  }
+
+  upsertSession(entry: SessionEntry): void {
+    const existing = this.db.prepare("SELECT created_at FROM sessions WHERE id = ?").get(entry.id);
+    const createdAt = String(existing?.created_at ?? nowIso());
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO sessions (
+          id, tool_id, native_session_id, title, summary, original_cwd, normalized_cwd, updated_at,
+          source_file, source_format, parser_version, resume_status, created_at, indexed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        entry.id,
+        entry.toolId,
+        entry.nativeSessionId,
+        entry.title,
+        entry.summary,
+        entry.originalCwd,
+        entry.normalizedCwd,
+        entry.updatedAt,
+        entry.sourceFile,
+        entry.sourceFormat,
+        entry.parserVersion,
+        entry.resumeStatus,
+        createdAt,
+        entry.indexedAt
+      );
+  }
+
+  deleteSessionsBySourceFile(toolId: ToolId, sourceFile: string, keepSessionId: string | null = null): number {
+    const result = keepSessionId
+      ? this.db
+          .prepare("DELETE FROM sessions WHERE tool_id = ? AND source_file = ? AND id != ?")
+          .run(toolId, sourceFile, keepSessionId)
+      : this.db.prepare("DELETE FROM sessions WHERE tool_id = ? AND source_file = ?").run(toolId, sourceFile);
+    return Number(result.changes);
+  }
+
+  listSessions(): SessionEntry[] {
+    return this.db
+      .prepare("SELECT * FROM sessions ORDER BY updated_at DESC")
+      .all()
+      .map((row) => this.sessionFromRow(row));
+  }
+
+  getSession(id: string): SessionEntry | null {
+    const row = this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id);
+    return row ? this.sessionFromRow(row) : null;
+  }
+
+  listSessionsForProject(project: Project, query = ""): SessionEntry[] {
+    const normalizedQuery = query.trim().toLowerCase();
+    return this.listSessions().filter((session) => {
+      if (!session.normalizedCwd) return false;
+      const inRoot = session.normalizedCwd === project.normalizedRootPath;
+      const inChild = project.includeSubdirectories && isStrictChildPath(project.normalizedRootPath, session.normalizedCwd);
+      if (!inRoot && !inChild) return false;
+      if (!normalizedQuery) return true;
+      return `${session.title}\n${session.summary ?? ""}`.toLowerCase().includes(normalizedQuery);
+    });
+  }
+
+  createProjectDetail(projectId: string, query = "") {
+    const project = this.getProject(projectId);
+    if (!project) return null;
+    const sessions = this.listSessionsForProject(project, query);
+    const groups = new Map<string, SessionEntry[]>();
+
+    for (const session of sessions) {
+      if (!session.normalizedCwd) continue;
+      const key = session.normalizedCwd === project.normalizedRootPath ? project.normalizedRootPath : session.normalizedCwd;
+      groups.set(key, [...(groups.get(key) ?? []), session]);
+    }
+
+    const rootSessions = groups.get(project.normalizedRootPath) ?? [];
+    groups.delete(project.normalizedRootPath);
+
+    const childGroups = [...groups.entries()]
+      .map(([key, groupSessions]) => this.detailGroup(project.rootPath, key, groupSessions, false))
+      .sort((a, b) => compareNullableIsoDesc(a.latestActivity, b.latestActivity));
+
+    return {
+      project,
+      groups: [
+        this.detailGroup(project.rootPath, project.normalizedRootPath, rootSessions, true),
+        ...childGroups
+      ]
+    };
+  }
+
+  createScanRun(scope: string, roots: string[]): ScanRun {
+    const timestamp = nowIso();
+    const run: ScanRun = {
+      id: crypto.randomUUID(),
+      scope,
+      roots,
+      status: "running",
+      indexedCount: 0,
+      skippedCount: 0,
+      warningCount: 0,
+      startedAt: timestamp,
+      finishedAt: null
+    };
+    this.db
+      .prepare(
+        `INSERT INTO scan_runs (id, scope, roots_json, status, indexed_count, skipped_count, warning_count, started_at, finished_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(run.id, run.scope, json(run.roots), run.status, 0, 0, 0, run.startedAt, null);
+    return run;
+  }
+
+  completeScanRun(id: string, counts: { indexedCount: number; skippedCount: number; warningCount: number; status?: ScanRun["status"] }): ScanRun {
+    this.db
+      .prepare(
+        `UPDATE scan_runs
+         SET status = ?, indexed_count = ?, skipped_count = ?, warning_count = ?, finished_at = ?
+         WHERE id = ?`
+      )
+      .run(counts.status ?? "completed", counts.indexedCount, counts.skippedCount, counts.warningCount, nowIso(), id);
+    const run = this.getScanRun(id);
+    if (!run) throw new Error("Scan run disappeared during update");
+    return run;
+  }
+
+  getScanRun(id: string): ScanRun | null {
+    const row = this.db.prepare("SELECT * FROM scan_runs WHERE id = ?").get(id);
+    return row ? this.scanRunFromRow(row) : null;
+  }
+
+  listScanCandidates(scanRunId: string): ScanCandidate[] {
+    return this.db
+      .prepare("SELECT * FROM scan_candidates WHERE scan_run_id = ? ORDER BY path ASC")
+      .all(scanRunId)
+      .map((row) => this.candidateFromRow(row));
+  }
+
+  insertScanCandidate(candidate: Omit<ScanCandidate, "id" | "createdAt">): ScanCandidate {
+    const createdAt = nowIso();
+    const id = crypto.randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO scan_candidates (
+          id, scan_run_id, path, normalized_path, detected_tools_json, session_counts_json, child_candidates_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        candidate.scanRunId,
+        candidate.path,
+        candidate.normalizedPath,
+        json(candidate.detectedTools),
+        json(candidate.sessionCounts),
+        json(candidate.childCandidates),
+        createdAt
+      );
+    return { ...candidate, id, createdAt };
+  }
+
+  addParserWarning(warning: Omit<ParserWarning, "id" | "createdAt">): ParserWarning {
+    const createdAt = nowIso();
+    const id = crypto.randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO parser_warnings (id, scan_run_id, tool_id, source_file, error_type, message, line, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(id, warning.scanRunId, warning.toolId, warning.sourceFile, warning.errorType, warning.message, warning.line, createdAt);
+    return { ...warning, id, createdAt };
+  }
+
+  deleteParserWarningsBySourceFile(toolId: ToolId, sourceFile: string): number {
+    const result = this.db
+      .prepare("DELETE FROM parser_warnings WHERE tool_id = ? AND source_file = ?")
+      .run(toolId, sourceFile);
+    return Number(result.changes);
+  }
+
+  listParserWarnings(): ParserWarning[] {
+    return this.db
+      .prepare("SELECT * FROM parser_warnings ORDER BY created_at DESC")
+      .all()
+      .map((row) => this.warningFromRow(row));
+  }
+
+  listParserWarningsForProject(project: Project): ParserWarning[] {
+    const projectSessionSources = new Set(
+      this.listSessionsForProject(project).map((session) => normalizeFsPath(session.sourceFile))
+    );
+    const encodedClaudeProjectPath = encodeClaudeProjectPath(project.rootPath);
+    return this.listParserWarnings().filter((warning) => {
+      if (warning.sourceFile && projectSessionSources.has(normalizeFsPath(warning.sourceFile))) return true;
+      if (warning.toolId !== "claude" || !warning.sourceFile) return false;
+      return claudeProjectPathSegment(warning.sourceFile) === encodedClaudeProjectPath;
+    });
+  }
+
+  countParserWarningsForRun(scanRunId: string): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS count FROM parser_warnings WHERE scan_run_id = ?").get(scanRunId);
+    return Number(row?.count ?? 0);
+  }
+
+  private projectFromRow(row: Row): Project {
+    const rootPath = String(row.root_path);
+    const normalizedRootPath = String(row.normalized_root_path);
+    const sessions = this.listSessions();
+    const sessionCount = sessions.filter((session) => session.normalizedCwd && isPathInsideOrEqual(normalizedRootPath, session.normalizedCwd)).length;
+    const childGroupCount = new Set(
+      sessions
+        .filter((session) => session.normalizedCwd && isStrictChildPath(normalizedRootPath, session.normalizedCwd))
+        .map((session) => session.normalizedCwd)
+    ).size;
+
+    return {
+      id: String(row.id),
+      rootPath,
+      normalizedRootPath,
+      includeSubdirectories: Boolean(row.include_subdirectories),
+      sessionOnly: !fs.existsSync(rootPath),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+      childGroupCount,
+      sessionCount
+    };
+  }
+
+  private sessionFromRow(row: Row): SessionEntry {
+    return {
+      id: String(row.id),
+      toolId: String(row.tool_id) as ToolId,
+      nativeSessionId: row.native_session_id === null ? null : String(row.native_session_id),
+      title: String(row.title),
+      summary: row.summary === null ? null : String(row.summary),
+      originalCwd: row.original_cwd === null ? null : String(row.original_cwd),
+      normalizedCwd: row.normalized_cwd === null ? null : String(row.normalized_cwd),
+      updatedAt: String(row.updated_at),
+      sourceFile: String(row.source_file),
+      sourceFormat: String(row.source_format),
+      parserVersion: String(row.parser_version),
+      resumeStatus: String(row.resume_status) as SessionEntry["resumeStatus"],
+      indexedAt: String(row.indexed_at)
+    };
+  }
+
+  private scanRunFromRow(row: Row): ScanRun {
+    return {
+      id: String(row.id),
+      scope: String(row.scope),
+      roots: parseJson<string[]>(String(row.roots_json), []),
+      status: String(row.status) as ScanRun["status"],
+      indexedCount: Number(row.indexed_count),
+      skippedCount: Number(row.skipped_count),
+      warningCount: Number(row.warning_count),
+      startedAt: String(row.started_at),
+      finishedAt: row.finished_at === null ? null : String(row.finished_at)
+    };
+  }
+
+  private candidateFromRow(row: Row): ScanCandidate {
+    return {
+      id: String(row.id),
+      scanRunId: String(row.scan_run_id),
+      path: String(row.path),
+      normalizedPath: String(row.normalized_path),
+      detectedTools: parseJson<ToolId[]>(String(row.detected_tools_json), []),
+      sessionCounts: parseJson<Partial<Record<ToolId, number>>>(String(row.session_counts_json), {}),
+      childCandidates: parseJson<string[]>(String(row.child_candidates_json), []),
+      createdAt: String(row.created_at)
+    };
+  }
+
+  private warningFromRow(row: Row): ParserWarning {
+    return {
+      id: String(row.id),
+      scanRunId: row.scan_run_id === null ? null : String(row.scan_run_id),
+      toolId: row.tool_id === null ? null : (String(row.tool_id) as ToolId),
+      sourceFile: row.source_file === null ? null : String(row.source_file),
+      errorType: String(row.error_type),
+      message: String(row.message),
+      line: row.line === null ? null : Number(row.line),
+      createdAt: String(row.created_at)
+    };
+  }
+
+  private normalizeProjectHierarchy(): void {
+    const projects = this.db
+      .prepare("SELECT id, normalized_root_path FROM projects ORDER BY normalized_root_path")
+      .all()
+      .map((row) => ({
+        id: String(row.id),
+        normalizedRootPath: String(row.normalized_root_path)
+      }));
+
+    const projectIdsToRemove = new Set<string>();
+    const parentIdsToInclude = new Set<string>();
+
+    for (const project of projects) {
+      const parent = projects
+        .filter((candidate) => candidate.id !== project.id && isStrictChildPath(candidate.normalizedRootPath, project.normalizedRootPath))
+        .sort((a, b) => candidateSortKey(a.normalizedRootPath) - candidateSortKey(b.normalizedRootPath))[0];
+      if (!parent) continue;
+
+      projectIdsToRemove.add(project.id);
+      parentIdsToInclude.add(parent.id);
+    }
+
+    if (projectIdsToRemove.size === 0) return;
+
+    this.db.exec("BEGIN;");
+    try {
+      const timestamp = nowIso();
+      const updateParent = this.db.prepare("UPDATE projects SET include_subdirectories = 1, updated_at = ? WHERE id = ?");
+      for (const parentId of parentIdsToInclude) {
+        if (!projectIdsToRemove.has(parentId)) updateParent.run(timestamp, parentId);
+      }
+
+      const removeProject = this.db.prepare("DELETE FROM projects WHERE id = ?");
+      for (const projectId of projectIdsToRemove) {
+        removeProject.run(projectId);
+      }
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  private restoreProject(project: Project): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO projects (
+          id, root_path, normalized_root_path, include_subdirectories, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        project.id,
+        project.rootPath,
+        project.normalizedRootPath,
+        project.includeSubdirectories ? 1 : 0,
+        project.createdAt,
+        project.updatedAt
+      );
+  }
+
+  private detailGroup(rootPath: string, normalizedPath: string, sessions: SessionEntry[], isRoot: boolean) {
+    const display = sessions.find((session) => session.normalizedCwd === normalizedPath)?.originalCwd ?? normalizedPath;
+    const byTool = new Map<ToolId, SessionEntry[]>();
+    for (const session of sessions) {
+      byTool.set(session.toolId, [...(byTool.get(session.toolId) ?? []), session]);
+    }
+
+    const tools = [...byTool.entries()]
+      .map(([toolId, toolSessions]) => {
+        const sortedSessions = toolSessions.sort((a, b) => compareIsoDesc(a.updatedAt, b.updatedAt));
+        return {
+          toolId,
+          sessionCount: sortedSessions.length,
+          latestActivity: sortedSessions[0]?.updatedAt ?? null,
+          sessions: sortedSessions
+        };
+      })
+      .sort((a, b) => b.sessionCount - a.sessionCount || compareNullableIsoDesc(a.latestActivity, b.latestActivity));
+
+    const rootLabel = `${path.basename(rootPath) || rootPath}（根目录）`;
+    return {
+      key: normalizedPath,
+      label: isRoot ? rootLabel : relativeLabel(rootPath, display),
+      fullPath: display,
+      isRoot,
+      latestActivity: tools[0]?.latestActivity ?? null,
+      sessionCount: sessions.length,
+      tools
+    };
+  }
+}
+
+function compareIsoDesc(a: string, b: string): number {
+  return Date.parse(b) - Date.parse(a);
+}
+
+function compareNullableIsoDesc(a: string | null, b: string | null): number {
+  return (b ? Date.parse(b) : 0) - (a ? Date.parse(a) : 0);
+}
+
+function encodeClaudeProjectPath(input: string): string {
+  return path.resolve(input).replace(/[:\\/]/g, "-");
+}
+
+function claudeProjectPathSegment(sourceFile: string): string | null {
+  const parts = path.normalize(sourceFile).split(/[\\/]+/);
+  const projectsIndex = parts.findIndex((part, index) => part === "projects" && parts[index - 1] === ".claude");
+  return projectsIndex >= 0 ? parts[projectsIndex + 1] ?? null : null;
+}
+
+function rebaseProjectPath(projectPath: string, oldRoot: string, newRoot: string): string | null {
+  return rebasePath(projectPath, oldRoot, newRoot);
+}
+
+function isSqliteLockedError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const sqliteError = error as Error & { errcode?: unknown; code?: unknown; errstr?: unknown };
+  return sqliteError.errcode === 5 || (sqliteError.code === "ERR_SQLITE_ERROR" && sqliteError.errstr === "database is locked");
+}

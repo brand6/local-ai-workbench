@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "tools": {
+    "codex": {
+      "command": "codex"
+    },
+    "claude": {
+      "command": "claude"
+    },
+    "opencode": {
+      "command": "opencode"
+    },
+    "qwen": {
+      "command": "qwen"
+    },
+    "qoder": {
+      "command": "qodercli"
+    },
+    "copilot": {
+      "command": "copilot"
+    }
+  },
+  "terminal": {
+    "mode": "new-window"
+  }
+}
