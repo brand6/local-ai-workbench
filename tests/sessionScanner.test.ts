@@ -338,7 +338,7 @@ function configWithClaudeSource(claudeProjects: string, directory: string): AppC
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] }
     },
     terminal: { mode: "new-window" },
-    agents: { cliPath: "" }
+    skillhub: { rootDir: path.join(directory, "skillhub") }
   };
 }
 
@@ -354,7 +354,7 @@ function configWithCodexSource(codexSessions: string, directory: string): AppCon
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] }
     },
     terminal: { mode: "new-window" },
-    agents: { cliPath: "" }
+    skillhub: { rootDir: path.join(directory, "skillhub") }
   };
 }
 
@@ -370,7 +370,7 @@ function configWithCopilotSource(copilotState: string, directory: string): AppCo
       copilot: { command: "copilot", sessionSources: [copilotState] }
     },
     terminal: { mode: "new-window" },
-    agents: { cliPath: "" }
+    skillhub: { rootDir: path.join(directory, "skillhub") }
   };
 }
 
@@ -386,7 +386,7 @@ function configWithOpencodeSource(opencodeDb: string, directory: string): AppCon
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] }
     },
     terminal: { mode: "new-window" },
-    agents: { cliPath: "" }
+    skillhub: { rootDir: path.join(directory, "skillhub") }
   };
 }
 

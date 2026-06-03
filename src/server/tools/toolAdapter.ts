@@ -7,6 +7,7 @@ export interface ToolAdapter {
   capabilities: ToolStatus["capabilities"];
   visibleInProjectUi: boolean;
   defaultSessionSources(env?: NodeJS.ProcessEnv): string[];
+  skillTarget(projectRoot: string): { supported: boolean; directory: string | null; reason: string | null };
   detect(config: AppConfig): ToolStatus;
   buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand;
   buildResumeCommand(config: AppConfig, session: SessionEntry): LaunchCommand;

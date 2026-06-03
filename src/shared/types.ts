@@ -2,20 +2,6 @@ export type ToolId = "codex" | "claude" | "opencode" | "qwen" | "qoder" | "copil
 export type RefreshMode = "incremental" | "full";
 export const terminalModes = ["new-window", "per-tool", "per-project"] as const;
 export type TerminalMode = (typeof terminalModes)[number];
-export const agentsIntegrationNames = [
-  "codex",
-  "claude",
-  "claude_desktop",
-  "gemini",
-  "copilot_vscode",
-  "copilot_cli",
-  "cursor",
-  "antigravity",
-  "windsurf",
-  "opencode",
-  "junie"
-] as const;
-export type AgentsIntegrationName = (typeof agentsIntegrationNames)[number];
 
 export function isTerminalMode(value: unknown): value is TerminalMode {
   return terminalModes.includes(value as TerminalMode);
@@ -41,7 +27,7 @@ export interface AppConfig {
   version: 1;
   tools: Record<ToolId, { command: string; sessionSources?: string[] }>;
   terminal: { mode: TerminalMode };
-  agents: { cliPath: string };
+  skillhub: { rootDir: string };
 }
 
 export interface Project {
@@ -85,6 +71,213 @@ export interface ToolStatus {
   };
   reason: string | null;
   sessionSources: string[];
+}
+
+export type SkillHubSourceType = "local" | "github";
+
+export interface SkillHubConfig {
+  rootDir: string;
+  libraryDir: string;
+}
+
+export interface SkillHubSource {
+  id: string;
+  type: SkillHubSourceType;
+  label: string;
+  repoKey: string | null;
+  owner: string | null;
+  repo: string | null;
+  branch: string | null;
+  input: string;
+  inputPath: string | null;
+  resolvedPath: string | null;
+  currentRevision: string | null;
+  checkoutPath: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SkillHubSkill {
+  id: string;
+  sourceId: string;
+  sourceType: SkillHubSourceType;
+  folderName: string;
+  skillName: string | null;
+  description: string | null;
+  libraryRelativePath: string;
+  libraryPath: string;
+  sourceRelativePath: string | null;
+  contentHash: string;
+  createdAt: string;
+  updatedAt: string;
+  source: SkillHubSource | null;
+}
+
+export interface SkillHubList {
+  config: SkillHubConfig;
+  skills: SkillHubSkill[];
+  sources: SkillHubSource[];
+}
+
+export interface SkillHubImportSkipped {
+  path: string;
+  reason: string;
+}
+
+export interface SkillHubImportConflict {
+  existingSkill: SkillHubSkill;
+  incoming: {
+    folderName: string;
+    libraryRelativePath: string;
+    sourceRelativePath: string | null;
+    path: string;
+  };
+}
+
+export interface SkillHubImportResult {
+  source: SkillHubSource;
+  imported: SkillHubSkill[];
+  updated: SkillHubSkill[];
+  skipped: SkillHubImportSkipped[];
+  conflicts: SkillHubImportConflict[];
+  requiresConfirmation: boolean;
+}
+
+export interface ProjectToolTarget {
+  projectId: string;
+  toolId: ToolId;
+  enabled: boolean;
+  inferred: boolean;
+  supported: boolean;
+  skillDirectory: string | null;
+  reason: string | null;
+  updatedAt: string;
+}
+
+export interface ProjectSkillTarget {
+  projectId: string;
+  toolId: ToolId;
+  skillId: string;
+  linkPath: string;
+  targetPath: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectSkillConflict {
+  toolId: ToolId;
+  linkPath: string;
+  existingSkill: SkillHubSkill | null;
+  requestedSkill: SkillHubSkill;
+}
+
+export interface ProjectSkillLinkFailure {
+  projectId: string;
+  toolId: ToolId;
+  skillId: string;
+  linkPath: string;
+  targetPath: string;
+  reason: string;
+}
+
+export interface ProjectSkillTargetsState {
+  projectId: string;
+  toolTargets: ProjectToolTarget[];
+  skillTargets: ProjectSkillTarget[];
+  skills: SkillHubSkill[];
+}
+
+export interface ProjectSkillUpdateResult {
+  projectId: string;
+  skillId: string;
+  targets: ProjectSkillTarget[];
+  removed: ProjectSkillTarget[];
+  conflicts: ProjectSkillConflict[];
+  failures: ProjectSkillLinkFailure[];
+  requiresConfirmation: boolean;
+}
+
+export type SkillHubUpdateKind = "added" | "changed" | "deleted" | "moved";
+
+export interface SkillHubUpdateItem {
+  kind: SkillHubUpdateKind;
+  skillId: string | null;
+  folderName: string;
+  skillName: string | null;
+  libraryRelativePath: string;
+  previousSourceRelativePath: string | null;
+  nextSourceRelativePath: string | null;
+  destructive: boolean;
+  affectedTargets: ProjectSkillTarget[];
+}
+
+export interface SkillHubSourceUpdatePreview {
+  source: SkillHubSource;
+  items: SkillHubUpdateItem[];
+  hasUpdates: boolean;
+  destructive: boolean;
+  checkedAt: string;
+}
+
+export interface SkillHubUpdateCheckResult {
+  previews: SkillHubSourceUpdatePreview[];
+}
+
+export interface SkillHubDeletePreview {
+  skill: SkillHubSkill;
+  affectedTargets: ProjectSkillTarget[];
+  brokenTargets: ProjectSkillTarget[];
+}
+
+export type SkillHubOpenTarget = "document" | "folder";
+
+export interface LocalOpenResponse {
+  opened: boolean;
+  path: string;
+}
+
+export type RuleFileName = "AGENTS.md" | "CLAUDE.md";
+export type RuleSyncDirection = "agents-to-claude" | "claude-to-agents";
+
+export interface RuleFileStatus {
+  file: RuleFileName;
+  path: string;
+  exists: boolean;
+  mtime: string | null;
+  gitManaged: boolean | null;
+  dirty: boolean | null;
+}
+
+export interface RuleSyncStatus {
+  projectId: string;
+  projectRoot: string;
+  gitAvailable: boolean;
+  gitRoot: string | null;
+  files: Record<RuleFileName, RuleFileStatus>;
+  directions: Record<RuleSyncDirection, { enabled: boolean; reason: string | null }>;
+}
+
+export interface RuleSyncResult {
+  projectId: string;
+  projectRoot: string;
+  direction: RuleSyncDirection;
+  sourceFile: RuleFileName;
+  targetFile: RuleFileName;
+  action: "written" | "overwritten" | "noop" | "needs-confirmation";
+  backupCommit: string | null;
+  message: string;
+  status: RuleSyncStatus;
+}
+
+export interface RuleSyncCommitResult {
+  projectId: string;
+  projectRoot: string;
+  direction: RuleSyncDirection;
+  targetFile: RuleFileName;
+  action: "committed" | "noop";
+  backupCommit: string | null;
+  message: string;
+  status: RuleSyncStatus;
 }
 
 export interface ParserWarning {
@@ -259,42 +452,4 @@ export interface ProjectRepairResult {
   targetProjectId: string;
   targetRootPath: string;
   relocation: RelocationResult;
-}
-
-export interface AgentsStatusPayload {
-  projectRoot: string;
-  enabledIntegrations: AgentsIntegrationName[];
-  syncMode: string;
-  selectedMcpServers: string[];
-  mcp: {
-    configured: number;
-    localOverrides: number;
-  };
-  files: Record<string, boolean>;
-  probes: Record<string, string>;
-  probesSkipped: boolean;
-}
-
-export interface AgentsConfigSyncStatus {
-  projectId: string;
-  projectRoot: string;
-  available: boolean;
-  initialized: boolean;
-  command: string;
-  configPath: string;
-  status: AgentsStatusPayload | null;
-  error: string | null;
-}
-
-export interface AgentsCommandResult {
-  projectId: string;
-  projectRoot: string;
-  action: "init" | "sync-check" | "sync" | "integrations";
-  command: string;
-  exitCode: number;
-  ok: boolean;
-  changed: string[];
-  stdout: string;
-  stderr: string;
-  status: AgentsConfigSyncStatus;
 }

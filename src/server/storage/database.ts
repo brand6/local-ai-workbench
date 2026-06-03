@@ -4,11 +4,16 @@ import { DatabaseSync } from "node:sqlite";
 import type {
   ParserWarning,
   Project,
+  ProjectSkillTarget,
+  ProjectToolTarget,
   RelocationProjectMerge,
   RelocationProjectChange,
   ScanCandidate,
   ScanRun,
   SessionEntry,
+  SkillHubSkill,
+  SkillHubSource,
+  SkillHubSourceType,
   ToolId
 } from "../../shared/types.js";
 import { json, parseJson } from "../core/json.js";
@@ -148,6 +153,71 @@ export class AppDatabase {
         line INTEGER,
         created_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS skillhub_sources (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        label TEXT NOT NULL,
+        repo_key TEXT,
+        owner TEXT,
+        repo TEXT,
+        branch TEXT,
+        input TEXT NOT NULL,
+        input_path TEXT,
+        resolved_path TEXT,
+        current_revision TEXT,
+        checkout_path TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_skillhub_sources_repo_key
+        ON skillhub_sources(repo_key)
+        WHERE repo_key IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS skillhub_skills (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES skillhub_sources(id) ON DELETE CASCADE,
+        source_type TEXT NOT NULL,
+        folder_name TEXT NOT NULL,
+        skill_name TEXT,
+        description TEXT,
+        library_relative_path TEXT NOT NULL UNIQUE,
+        library_path TEXT NOT NULL,
+        source_relative_path TEXT,
+        content_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_skillhub_skills_source ON skillhub_skills(source_id);
+      CREATE INDEX IF NOT EXISTS idx_skillhub_skills_folder ON skillhub_skills(folder_name);
+
+      CREATE TABLE IF NOT EXISTS project_tool_targets (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        tool_id TEXT NOT NULL,
+        enabled INTEGER NOT NULL,
+        inferred INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, tool_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS project_skill_targets (
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        tool_id TEXT NOT NULL,
+        skill_id TEXT NOT NULL REFERENCES skillhub_skills(id) ON DELETE CASCADE,
+        link_path TEXT NOT NULL,
+        target_path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, tool_id, skill_id)
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_project_skill_targets_link
+        ON project_skill_targets(project_id, tool_id, link_path);
+
+      CREATE INDEX IF NOT EXISTS idx_project_skill_targets_skill
+        ON project_skill_targets(skill_id);
     `);
 
     this.db.prepare("INSERT OR REPLACE INTO schema_metadata (key, value) VALUES (?, ?)").run("schema_version", "1");
@@ -183,6 +253,264 @@ export class AppDatabase {
         );
       })
       .map((entry) => entry.project);
+  }
+
+  listSkillHubSources(): SkillHubSource[] {
+    return this.db
+      .prepare("SELECT * FROM skillhub_sources ORDER BY type ASC, label ASC, updated_at DESC")
+      .all()
+      .map((row) => this.skillHubSourceFromRow(row));
+  }
+
+  getSkillHubSource(id: string): SkillHubSource | null {
+    const row = this.db.prepare("SELECT * FROM skillhub_sources WHERE id = ?").get(id);
+    return row ? this.skillHubSourceFromRow(row) : null;
+  }
+
+  getSkillHubSourceByRepoKey(repoKey: string): SkillHubSource | null {
+    const row = this.db.prepare("SELECT * FROM skillhub_sources WHERE repo_key = ?").get(repoKey);
+    return row ? this.skillHubSourceFromRow(row) : null;
+  }
+
+  upsertSkillHubSource(input: Omit<SkillHubSource, "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string }): SkillHubSource {
+    const existing = this.getSkillHubSource(input.id);
+    const timestamp = nowIso();
+    const createdAt = input.createdAt ?? existing?.createdAt ?? timestamp;
+    const updatedAt = input.updatedAt ?? timestamp;
+    this.db
+      .prepare(
+        `INSERT INTO skillhub_sources (
+          id, type, label, repo_key, owner, repo, branch, input, input_path, resolved_path,
+          current_revision, checkout_path, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          type = excluded.type,
+          label = excluded.label,
+          repo_key = excluded.repo_key,
+          owner = excluded.owner,
+          repo = excluded.repo,
+          branch = excluded.branch,
+          input = excluded.input,
+          input_path = excluded.input_path,
+          resolved_path = excluded.resolved_path,
+          current_revision = excluded.current_revision,
+          checkout_path = excluded.checkout_path,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        input.id,
+        input.type,
+        input.label,
+        input.repoKey,
+        input.owner,
+        input.repo,
+        input.branch,
+        input.input,
+        input.inputPath,
+        input.resolvedPath,
+        input.currentRevision,
+        input.checkoutPath,
+        createdAt,
+        updatedAt
+      );
+    const source = this.getSkillHubSource(input.id);
+    if (!source) throw new Error("Failed to upsert SkillHub source");
+    return source;
+  }
+
+  listSkillHubSkills(query = ""): SkillHubSkill[] {
+    const sources = new Map(this.listSkillHubSources().map((source) => [source.id, source]));
+    const normalizedQuery = query.trim().toLowerCase();
+    return this.db
+      .prepare("SELECT * FROM skillhub_skills ORDER BY library_relative_path ASC")
+      .all()
+      .map((row) => this.skillHubSkillFromRow(row, sources))
+      .filter((skill) => {
+        if (!normalizedQuery) return true;
+        return [
+          skill.folderName,
+          skill.skillName ?? "",
+          skill.description ?? "",
+          skill.libraryRelativePath,
+          skill.source?.label ?? "",
+          skill.source?.repoKey ?? ""
+        ]
+          .join("\n")
+          .toLowerCase()
+          .includes(normalizedQuery);
+      });
+  }
+
+  listSkillHubSkillsForSource(sourceId: string): SkillHubSkill[] {
+    const sources = new Map(this.listSkillHubSources().map((source) => [source.id, source]));
+    return this.db
+      .prepare("SELECT * FROM skillhub_skills WHERE source_id = ? ORDER BY library_relative_path ASC")
+      .all(sourceId)
+      .map((row) => this.skillHubSkillFromRow(row, sources));
+  }
+
+  getSkillHubSkill(id: string): SkillHubSkill | null {
+    const sources = new Map(this.listSkillHubSources().map((source) => [source.id, source]));
+    const row = this.db.prepare("SELECT * FROM skillhub_skills WHERE id = ?").get(id);
+    return row ? this.skillHubSkillFromRow(row, sources) : null;
+  }
+
+  getSkillHubSkillByLibraryRelativePath(libraryRelativePath: string): SkillHubSkill | null {
+    const sources = new Map(this.listSkillHubSources().map((source) => [source.id, source]));
+    const row = this.db.prepare("SELECT * FROM skillhub_skills WHERE library_relative_path = ?").get(libraryRelativePath);
+    return row ? this.skillHubSkillFromRow(row, sources) : null;
+  }
+
+  upsertSkillHubSkill(input: Omit<SkillHubSkill, "source" | "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string }): SkillHubSkill {
+    const existing = this.getSkillHubSkill(input.id);
+    const timestamp = nowIso();
+    const createdAt = input.createdAt ?? existing?.createdAt ?? timestamp;
+    const updatedAt = input.updatedAt ?? timestamp;
+    this.db
+      .prepare(
+        `INSERT INTO skillhub_skills (
+          id, source_id, source_type, folder_name, skill_name, description, library_relative_path,
+          library_path, source_relative_path, content_hash, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          source_id = excluded.source_id,
+          source_type = excluded.source_type,
+          folder_name = excluded.folder_name,
+          skill_name = excluded.skill_name,
+          description = excluded.description,
+          library_relative_path = excluded.library_relative_path,
+          library_path = excluded.library_path,
+          source_relative_path = excluded.source_relative_path,
+          content_hash = excluded.content_hash,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        input.id,
+        input.sourceId,
+        input.sourceType,
+        input.folderName,
+        input.skillName,
+        input.description,
+        input.libraryRelativePath,
+        input.libraryPath,
+        input.sourceRelativePath,
+        input.contentHash,
+        createdAt,
+        updatedAt
+      );
+    const skill = this.getSkillHubSkill(input.id);
+    if (!skill) throw new Error("Failed to upsert SkillHub skill");
+    return skill;
+  }
+
+  deleteSkillHubSkill(skillId: string): boolean {
+    const result = this.db.prepare("DELETE FROM skillhub_skills WHERE id = ?").run(skillId);
+    return Number(result.changes) > 0;
+  }
+
+  listStoredProjectToolTargets(projectId: string): Array<Pick<ProjectToolTarget, "projectId" | "toolId" | "enabled" | "inferred" | "updatedAt">> {
+    return this.db
+      .prepare("SELECT * FROM project_tool_targets WHERE project_id = ? ORDER BY tool_id ASC")
+      .all(projectId)
+      .map((row) => ({
+        projectId: String(row.project_id),
+        toolId: String(row.tool_id) as ToolId,
+        enabled: Boolean(row.enabled),
+        inferred: Boolean(row.inferred),
+        updatedAt: String(row.updated_at)
+      }));
+  }
+
+  upsertProjectToolTarget(projectId: string, toolId: ToolId, enabled: boolean, inferred: boolean): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO project_tool_targets (project_id, tool_id, enabled, inferred, updated_at)
+         VALUES (?, ?, ?, ?, ?)`
+      )
+      .run(projectId, toolId, enabled ? 1 : 0, inferred ? 1 : 0, nowIso());
+  }
+
+  replaceProjectToolTargets(projectId: string, toolIds: ToolId[]): void {
+    const selected = new Set(toolIds);
+    this.db.exec("BEGIN;");
+    try {
+      for (const toolId of ["codex", "claude", "opencode", "qwen", "qoder", "copilot"] satisfies ToolId[]) {
+        this.upsertProjectToolTarget(projectId, toolId, selected.has(toolId), false);
+      }
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+  }
+
+  listProjectSkillTargets(projectId?: string): ProjectSkillTarget[] {
+    const rows = projectId
+      ? this.db.prepare("SELECT * FROM project_skill_targets WHERE project_id = ? ORDER BY tool_id ASC, link_path ASC").all(projectId)
+      : this.db.prepare("SELECT * FROM project_skill_targets ORDER BY project_id ASC, tool_id ASC, link_path ASC").all();
+    return rows.map((row) => this.projectSkillTargetFromRow(row));
+  }
+
+  listProjectSkillTargetsForSkill(skillId: string): ProjectSkillTarget[] {
+    return this.db
+      .prepare("SELECT * FROM project_skill_targets WHERE skill_id = ? ORDER BY project_id ASC, tool_id ASC")
+      .all(skillId)
+      .map((row) => this.projectSkillTargetFromRow(row));
+  }
+
+  getProjectSkillTargetByLinkPath(projectId: string, toolId: ToolId, linkPath: string): ProjectSkillTarget | null {
+    const row = this.db
+      .prepare("SELECT * FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND link_path = ?")
+      .get(projectId, toolId, linkPath);
+    return row ? this.projectSkillTargetFromRow(row) : null;
+  }
+
+  upsertProjectSkillTarget(input: Omit<ProjectSkillTarget, "createdAt" | "updatedAt">): ProjectSkillTarget {
+    const existing = this.db
+      .prepare("SELECT created_at FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ?")
+      .get(input.projectId, input.toolId, input.skillId);
+    const timestamp = nowIso();
+    const createdAt = String(existing?.created_at ?? timestamp);
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO project_skill_targets (
+          project_id, tool_id, skill_id, link_path, target_path, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(input.projectId, input.toolId, input.skillId, input.linkPath, input.targetPath, createdAt, timestamp);
+    const stored = this.db
+      .prepare("SELECT * FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ?")
+      .get(input.projectId, input.toolId, input.skillId);
+    if (!stored) throw new Error("Failed to upsert project skill target");
+    return this.projectSkillTargetFromRow(stored);
+  }
+
+  deleteProjectSkillTarget(projectId: string, toolId: ToolId, skillId: string): ProjectSkillTarget | null {
+    const row = this.db
+      .prepare("SELECT * FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ?")
+      .get(projectId, toolId, skillId);
+    if (!row) return null;
+    this.db
+      .prepare("DELETE FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ?")
+      .run(projectId, toolId, skillId);
+    return this.projectSkillTargetFromRow(row);
+  }
+
+  deleteProjectSkillTargetByLinkPath(projectId: string, toolId: ToolId, linkPath: string): ProjectSkillTarget | null {
+    const row = this.db
+      .prepare("SELECT * FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND link_path = ?")
+      .get(projectId, toolId, linkPath);
+    if (!row) return null;
+    this.db
+      .prepare("DELETE FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND link_path = ?")
+      .run(projectId, toolId, linkPath);
+    return this.projectSkillTargetFromRow(row);
+  }
+
+  deleteProjectSkillTargetsForSkill(skillId: string): ProjectSkillTarget[] {
+    const targets = this.listProjectSkillTargetsForSkill(skillId);
+    this.db.prepare("DELETE FROM project_skill_targets WHERE skill_id = ?").run(skillId);
+    return targets;
   }
 
   getProject(id: string): Project | null {
@@ -659,6 +987,56 @@ export class AppDatabase {
       message: String(row.message),
       line: row.line === null ? null : Number(row.line),
       createdAt: String(row.created_at)
+    };
+  }
+
+  private skillHubSourceFromRow(row: Row): SkillHubSource {
+    return {
+      id: String(row.id),
+      type: String(row.type) as SkillHubSourceType,
+      label: String(row.label),
+      repoKey: row.repo_key === null ? null : String(row.repo_key),
+      owner: row.owner === null ? null : String(row.owner),
+      repo: row.repo === null ? null : String(row.repo),
+      branch: row.branch === null ? null : String(row.branch),
+      input: String(row.input),
+      inputPath: row.input_path === null ? null : String(row.input_path),
+      resolvedPath: row.resolved_path === null ? null : String(row.resolved_path),
+      currentRevision: row.current_revision === null ? null : String(row.current_revision),
+      checkoutPath: row.checkout_path === null ? null : String(row.checkout_path),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    };
+  }
+
+  private skillHubSkillFromRow(row: Row, sources: Map<string, SkillHubSource>): SkillHubSkill {
+    const sourceId = String(row.source_id);
+    return {
+      id: String(row.id),
+      sourceId,
+      sourceType: String(row.source_type) as SkillHubSourceType,
+      folderName: String(row.folder_name),
+      skillName: row.skill_name === null ? null : String(row.skill_name),
+      description: row.description === null ? null : String(row.description),
+      libraryRelativePath: String(row.library_relative_path),
+      libraryPath: String(row.library_path),
+      sourceRelativePath: row.source_relative_path === null ? null : String(row.source_relative_path),
+      contentHash: String(row.content_hash),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+      source: sources.get(sourceId) ?? null
+    };
+  }
+
+  private projectSkillTargetFromRow(row: Row): ProjectSkillTarget {
+    return {
+      projectId: String(row.project_id),
+      toolId: String(row.tool_id) as ToolId,
+      skillId: String(row.skill_id),
+      linkPath: String(row.link_path),
+      targetPath: String(row.target_path),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
     };
   }
 

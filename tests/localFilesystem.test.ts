@@ -1,8 +1,25 @@
 import { spawnSync } from "node:child_process";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildWindowsDirectoryPickerScript } from "../src/server/core/localFilesystem.js";
+import { buildOpenLocalPathCommand, buildWindowsDirectoryPickerScript } from "../src/server/core/localFilesystem.js";
 
 describe("local filesystem helpers", () => {
+  it("builds local path open commands without shell interpolation from callers", () => {
+    expect(buildOpenLocalPathCommand("C:\\tmp\\SkillHub\\review\\SKILL.md", "win32")).toEqual({
+      executable: "cmd.exe",
+      args: ["/c", "start", "", "C:\\tmp\\SkillHub\\review\\SKILL.md"]
+    });
+    const nativePath = path.resolve("tmp", "skillhub", "review");
+    expect(buildOpenLocalPathCommand(nativePath, "darwin")).toEqual({
+      executable: "open",
+      args: [nativePath]
+    });
+    expect(buildOpenLocalPathCommand(nativePath, "linux")).toEqual({
+      executable: "xdg-open",
+      args: [nativePath]
+    });
+  });
+
   it("opens the Windows folder picker owned by the foreground window", () => {
     const script = buildWindowsDirectoryPickerScript();
 

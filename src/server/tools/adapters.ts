@@ -31,6 +31,14 @@ function existing(...parts: string[]): string {
   return path.join(...parts);
 }
 
+function projectSkillDirectory(projectRoot: string, ...parts: string[]) {
+  return { supported: true, directory: path.join(projectRoot, ...parts), reason: null };
+}
+
+function unsupportedSkillDirectory(reason: string) {
+  return { supported: false, directory: null, reason };
+}
+
 export const codexAdapter: ToolAdapter = {
   id: "codex",
   parserVersion: "codex-jsonl-v1",
@@ -41,6 +49,9 @@ export const codexAdapter: ToolAdapter = {
     const home = os.homedir();
     const codexHome = env.CODEX_HOME ?? path.join(home, ".codex");
     return [existing(codexHome, "sessions"), existing(codexHome, "history.jsonl")];
+  },
+  skillTarget(projectRoot: string) {
+    return projectSkillDirectory(projectRoot, ".codex", "skills");
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -66,6 +77,9 @@ export const claudeAdapter: ToolAdapter = {
     const claudeHome = env.CLAUDE_HOME ?? path.join(home, ".claude");
     return [existing(claudeHome, "projects")];
   },
+  skillTarget(projectRoot: string) {
+    return projectSkillDirectory(projectRoot, ".claude", "skills");
+  },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
   },
@@ -89,6 +103,9 @@ export const opencodeAdapter: ToolAdapter = {
     const home = os.homedir();
     const opencodeHome = env.OPENCODE_HOME ?? path.join(home, ".local", "share", "opencode");
     return [existing(opencodeHome, "opencode.db"), existing(opencodeHome, "project")];
+  },
+  skillTarget(projectRoot: string) {
+    return projectSkillDirectory(projectRoot, ".opencode", "skills");
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
@@ -114,6 +131,9 @@ export const qwenAdapter: ToolAdapter = {
     const qwenHome = env.QWEN_HOME ?? path.join(home, ".qwen");
     return [existing(qwenHome, "projects"), existing(qwenHome, "sessions")];
   },
+  skillTarget(projectRoot: string) {
+    return projectSkillDirectory(projectRoot, ".qwen", "skills");
+  },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
   },
@@ -138,6 +158,9 @@ export const qoderAdapter: ToolAdapter = {
     const qoderHome = env.QODER_HOME ?? path.join(home, ".qoder");
     return [existing(qoderHome, "sessions"), existing(qoderHome, "projects")];
   },
+  skillTarget(projectRoot: string) {
+    return projectSkillDirectory(projectRoot, ".qoder", "skills");
+  },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);
   },
@@ -161,6 +184,9 @@ export const copilotAdapter: ToolAdapter = {
     const home = os.homedir();
     const copilotHome = env.COPILOT_HOME ?? path.join(home, ".copilot");
     return [existing(copilotHome, "session-state")];
+  },
+  skillTarget() {
+    return unsupportedSkillDirectory("Copilot 暂无项目级 skill link 目录映射");
   },
   detect(config: AppConfig): ToolStatus {
     return status(this, config);

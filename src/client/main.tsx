@@ -1,10 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { agentsIntegrationNames, terminalModes } from "../shared/types.js";
+import { terminalModes } from "../shared/types.js";
 import type {
-  AgentsCommandResult,
-  AgentsConfigSyncStatus,
-  AgentsIntegrationName,
   AppConfig,
   BootstrapState,
   ParserWarning,
@@ -12,17 +9,25 @@ import type {
   ProjectDetail,
   ProjectDetailGroup,
   ProjectRepairCandidate,
+  ProjectSkillTargetsState,
+  ProjectSkillUpdateResult,
+  ProjectToolTarget,
   RefreshMode,
+  RuleSyncDirection,
+  RuleSyncStatus,
   ScanCandidate,
   ScanDrive,
+  SkillHubList,
+  SkillHubOpenTarget,
+  SkillHubSourceUpdatePreview,
+  SkillHubUpdateCheckResult,
   TerminalMode,
   ToolId,
   ToolStatus
 } from "../shared/types.js";
 import { client } from "./api.js";
+import { ProjectSkillPanel, SkillHubPage } from "./skillhubViews.js";
 import "./styles.css";
-
-const AGENTS_DOWNLOAD_URL = "https://github.com/amtiYo/agents";
 
 interface ScanResultState {
   scanRunId: string;
@@ -48,8 +53,7 @@ function App() {
   const [tools, setTools] = useState<ToolStatus[]>([]);
   const [warnings, setWarnings] = useState<ParserWarning[]>([]);
   const [repairCandidates, setRepairCandidates] = useState<ProjectRepairCandidate[]>([]);
-  const [agentsStatuses, setAgentsStatuses] = useState<Record<string, AgentsConfigSyncStatus>>({});
-  const [lastAgentsResults, setLastAgentsResults] = useState<Record<string, AgentsCommandResult | null>>({});
+  const [projectToolTargets, setProjectToolTargets] = useState<ProjectToolTarget[]>([]);
   const [drives, setDrives] = useState<ScanDrive[]>([]);
   const [scanResult, setScanResult] = useState<ScanResultState | null>(null);
   const [query, setQuery] = useState("");
@@ -60,8 +64,18 @@ function App() {
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshDialogOpen, setRefreshDialogOpen] = useState(false);
+  const [view, setView] = useState<"home" | "skillhub">("home");
+  const [skillHub, setSkillHub] = useState<SkillHubList | null>(null);
+  const [skillHubQuery, setSkillHubQuery] = useState("");
+  const [skillHubUpdates, setSkillHubUpdates] = useState<SkillHubUpdateCheckResult | null>(null);
+  const [projectSkillPanelOpen, setProjectSkillPanelOpen] = useState(false);
+  const [projectSkillState, setProjectSkillState] = useState<ProjectSkillTargetsState | null>(null);
+  const [lastProjectSkillResult, setLastProjectSkillResult] = useState<ProjectSkillUpdateResult | null>(null);
+  const [ruleSyncStatus, setRuleSyncStatus] = useState<RuleSyncStatus | null>(null);
+  const [pendingRuleSyncDirection, setPendingRuleSyncDirection] = useState<RuleSyncDirection | null>(null);
   const selectedProjectIdRef = useRef<string | null>(null);
   const queryRef = useRef("");
+  const selectedDriveRootRef = useRef("");
   const autoReloadInFlightRef = useRef(false);
   const autoReloadQueuedRef = useRef(false);
   const busy = busyAction !== null;
@@ -107,15 +121,27 @@ function App() {
     setDetail(null);
     setWarnings([]);
     setRepairCandidates([]);
-    setAgentsStatuses({});
-    setLastAgentsResults({});
+    setProjectToolTargets([]);
     void loadDetail(selectedProjectId, query);
   }, [selectedProjectId, query]);
 
   useEffect(() => {
+    if (!selectedProjectId) return;
+    setRuleSyncStatus(null);
+    void loadRuleSyncStatus(selectedProjectId);
+  }, [selectedProjectId]);
+
+  useEffect(() => {
     if (selectedDriveRoot && drives.some((drive) => drive.root === selectedDriveRoot)) return;
-    setSelectedDriveRoot(drives[0]?.root ?? "");
+    const next = drives[0]?.root ?? "";
+    selectedDriveRootRef.current = next;
+    setSelectedDriveRoot(next);
   }, [drives, selectedDriveRoot]);
+
+  useEffect(() => {
+    if (view !== "skillhub" || !bootstrap?.initialized) return;
+    void loadSkillHub(skillHubQuery);
+  }, [view, skillHubQuery, bootstrap?.initialized]);
 
   async function initialize() {
     const state = await client.bootstrap();
@@ -138,26 +164,26 @@ function App() {
     setConfig(appConfig);
   }
 
+  async function loadSkillHub(search = skillHubQuery) {
+    setSkillHub(await client.skillhub(search));
+  }
+
   async function loadDetail(projectId: string, search: string) {
-    const [projectDetail, warningList] = await Promise.all([
+    const [projectDetail, warningList, toolTargets] = await Promise.all([
       client.detail(projectId, search),
-      client.warnings(projectId)
+      client.warnings(projectId),
+      client.projectToolTargets(projectId)
     ]);
     const repairList = await client.repairCandidates(projectId).catch(() => []);
     setDetail(projectDetail);
     setWarnings(warningList);
+    setProjectToolTargets(toolTargets);
     setRepairCandidates(repairList);
-    await loadAgentsStatuses(projectId, projectDetail.groups);
   }
 
-  async function loadAgentsStatuses(projectId: string, groups: ProjectDetailGroup[]) {
-    const entries = await Promise.all(
-      groups.map(async (group) => {
-        const status = await client.agentsStatus(projectId, group.fullPath).catch((error) => agentsStatusError(projectId, group.fullPath, error));
-        return [group.fullPath, status] as const;
-      })
-    );
-    setAgentsStatuses(Object.fromEntries(entries));
+  async function loadRuleSyncStatus(projectId: string) {
+    const status = await client.ruleSyncStatus(projectId).catch(() => null);
+    if (selectedProjectIdRef.current === projectId) setRuleSyncStatus(status);
   }
 
   async function reloadFromSessionEvent() {
@@ -221,40 +247,47 @@ function App() {
     setDetail(null);
     setWarnings([]);
     setRepairCandidates([]);
-    setAgentsStatuses({});
-    setLastAgentsResults({});
+    setProjectToolTargets([]);
+    setProjectSkillPanelOpen(false);
+    setProjectSkillState(null);
+    setLastProjectSkillResult(null);
+    setRuleSyncStatus(null);
+    setPendingRuleSyncDirection(null);
   }
 
   function returnHome() {
+    setView("home");
     setSelectedProjectId(null);
     setMessage("");
     clearProjectViewState();
   }
 
   function openProject(projectId: string) {
+    setView("home");
     setMessage("");
     setQuery("");
     clearProjectViewState();
     setSelectedProjectId(projectId);
   }
 
+  function openSkillHub() {
+    setSelectedProjectId(null);
+    setMessage("");
+    clearProjectViewState();
+    setView("skillhub");
+    void loadSkillHub();
+  }
+
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const totalSessions = projects.reduce((sum, project) => sum + project.sessionCount, 0);
+  const showingSkillHub = view === "skillhub" && !selectedProject;
   const projectActions = selectedProject ? (
     <div className="topbar-project-actions">
-      <label className="toggle">
-        <input
-          type="checkbox"
-          checked={selectedProject.includeSubdirectories}
-          onChange={(event) => void runAction(() => toggleInclude(selectedProject.id, event.target.checked))}
-        />
-        子目录
-      </label>
-      <button className="primary" type="button" disabled={busy} onClick={() => void runAction(() => refreshProject(selectedProject.id))}>
-        刷新项目
+      <button className="secondary" type="button" disabled={busy} onClick={() => void runAction(() => openProjectSkillPanel(selectedProject.id))}>
+        技能
       </button>
     </div>
-  ) : (
+  ) : showingSkillHub ? null : (
     <div className="home-actions topbar-home-actions" aria-label="项目操作">
       <button className="primary" type="button" disabled={busy} onClick={() => setNewProjectDialogOpen(true)}>
         新建项目
@@ -271,7 +304,10 @@ function App() {
           className="drive-select"
           aria-label="扫描磁盘"
           value={selectedDriveRoot}
-          onChange={(event) => setSelectedDriveRoot(event.target.value)}
+          onChange={(event) => {
+            selectedDriveRootRef.current = event.target.value;
+            setSelectedDriveRoot(event.target.value);
+          }}
         >
           {drives.map((drive) => (
             <option key={drive.root} value={drive.root}>
@@ -283,7 +319,7 @@ function App() {
           className="secondary"
           type="button"
           disabled={busy || !selectedDriveRoot}
-          onClick={() => void runAction(() => scanRoot(selectedDriveRoot))}
+          onClick={() => void runAction(() => scanRoot(selectedDriveRootRef.current || selectedDriveRoot))}
         >
           {scanStatus ? "扫描中..." : "扫描"}
         </button>
@@ -304,6 +340,9 @@ function App() {
           </span>
           <span>本地 AI 项目</span>
         </button>
+        <button className={`topbar-link${view === "skillhub" ? " active" : ""}`} type="button" onClick={openSkillHub}>
+          SkillHub
+        </button>
         {selectedProject ? (
           <div className="topbar-project-context">
             <button className="secondary" type="button" onClick={returnHome}>
@@ -311,6 +350,23 @@ function App() {
             </button>
             <div className="topbar-project-title">
               <h1>{lastSegment(selectedProject.rootPath)}</h1>
+              <label className="toggle project-subdirectory-toggle">
+                <input
+                  type="checkbox"
+                  checked={selectedProject.includeSubdirectories}
+                  onChange={(event) => void runAction(() => toggleInclude(selectedProject.id, event.target.checked))}
+                />
+                子目录
+              </label>
+            </div>
+          </div>
+        ) : showingSkillHub ? (
+          <div className="topbar-project-context">
+            <button className="secondary" type="button" onClick={returnHome}>
+              返回
+            </button>
+            <div className="topbar-project-title">
+              <h1>SkillHub</h1>
             </div>
           </div>
         ) : (
@@ -323,21 +379,33 @@ function App() {
         )}
         <div className="topbar-actions">
           {projectActions}
+          {showingSkillHub ? (
+            <button className="secondary" type="button" onClick={() => void runAction(checkSkillHubUpdates)} disabled={busy}>
+              检查更新
+            </button>
+          ) : !selectedProject ? (
+            <button className="secondary" type="button" onClick={() => setRefreshDialogOpen(true)} disabled={busy}>
+              刷新索引
+            </button>
+          ) : null}
+          {selectedProject ? (
+            <button className="primary" type="button" disabled={busy} onClick={() => void runAction(() => refreshProject(selectedProject.id))}>
+              刷新项目
+            </button>
+          ) : null}
           <button className="secondary" type="button" onClick={() => setSettingsOpen(true)} disabled={busy}>
             设置
-          </button>
-          <button className="secondary" type="button" onClick={() => setRefreshDialogOpen(true)} disabled={busy}>
-            刷新索引
           </button>
         </div>
       </header>
 
       {newProjectDialogOpen ? (
         <NewProjectDialog
+          tools={tools}
           busy={busy}
           onClose={() => setNewProjectDialogOpen(false)}
           onPickDirectory={pickDirectory}
-          onCreate={(projectName, parentPath) => void runAction(() => createNewProject(projectName, parentPath))}
+          onCreate={(projectName, parentPath, toolIds) => void runAction(() => createNewProject(projectName, parentPath, toolIds))}
         />
       ) : null}
 
@@ -349,7 +417,7 @@ function App() {
           onClose={() => setSettingsOpen(false)}
           onSaveDataDir={(dataDir) => void runAction(() => updateWorkingDirectory(dataDir))}
           onSaveTerminalMode={(mode) => void runAction(() => updateTerminalMode(mode))}
-          onSaveAgentsCliPath={(cliPath) => void runAction(() => updateAgentsCliPath(cliPath))}
+          onSaveSkillHubRoot={(rootDir) => void runAction(() => updateSkillHubRoot(rootDir))}
           onPickDirectory={pickDirectory}
         />
       ) : null}
@@ -363,22 +431,65 @@ function App() {
         />
       ) : null}
 
+      {pendingRuleSyncDirection && ruleSyncStatus ? (
+        <RuleSyncConfirmDialog
+          status={ruleSyncStatus}
+          direction={pendingRuleSyncDirection}
+          busy={busy}
+          onCancel={() => setPendingRuleSyncDirection(null)}
+          onCommit={() => {
+            const direction = pendingRuleSyncDirection;
+            void runAction(() => commitRuleSyncDirection(direction));
+          }}
+          onConfirm={() => {
+            const direction = pendingRuleSyncDirection;
+            const confirmedStatus = ruleSyncStatus;
+            setPendingRuleSyncDirection(null);
+            void runAction(() => applyRuleSyncDirection(direction, confirmedStatus));
+          }}
+        />
+      ) : null}
+
+      {projectSkillPanelOpen ? (
+        <ProjectSkillPanel
+          state={projectSkillState}
+          busy={busy}
+          lastResult={lastProjectSkillResult}
+          onClose={() => setProjectSkillPanelOpen(false)}
+          onUpdateSkill={(skillId, toolIds) => void runAction(() => saveProjectSkillTargets(skillId, toolIds))}
+        />
+      ) : null}
+
       {message ? (
         <div className="notice" role="status" aria-live="polite">
           {message}
         </div>
       ) : null}
 
-      {selectedProject ? (
+      {showingSkillHub ? (
+        <SkillHubPage
+          skillHub={skillHub}
+          query={skillHubQuery}
+          updatePreviews={skillHubUpdates?.previews ?? []}
+          busy={busy}
+          onQueryChange={setSkillHubQuery}
+          onPickLocalPath={pickDirectory}
+          onImportLocal={(inputPath) => void runAction(() => importLocalSkill(inputPath))}
+          onImportGitHub={(input) => void runAction(() => importGitHubSkill(input))}
+          onOpenSkill={(skillId, target) => void runAction(() => openSkillHubSkill(skillId, target))}
+          onDeleteSkill={(skillId) => void runAction(() => deleteSkill(skillId))}
+          onApplyUpdate={(preview) => void runAction(() => applySkillHubUpdate(preview))}
+        />
+      ) : selectedProject ? (
         <ProjectDetailView
           project={selectedProject}
           detail={detail}
           tools={tools}
+          projectToolTargets={projectToolTargets}
           query={query}
           warnings={warnings}
           repairCandidates={repairCandidates}
-          agentsStatuses={agentsStatuses}
-          lastAgentsResults={lastAgentsResults}
+          ruleSyncStatus={ruleSyncStatus}
           busy={busy}
           setQuery={setQuery}
           onLaunch={(toolId, cwd) => void runAction(() => launchNew(toolId, cwd, selectedProject.rootPath))}
@@ -386,12 +497,10 @@ function App() {
           onDeleteSession={(sessionId) => void runAction(() => deleteSession(sessionId))}
           onRepairProject={(targetProjectId, targetRootPath) => void runAction(() => repairProject(selectedProject.id, targetProjectId, targetRootPath))}
           onRelocateProject={() => void runAction(() => relocateProject(selectedProject.id), "relocate")}
-          onRefreshAgents={(rootPath) => void runAction(() => refreshAgents(selectedProject.id, rootPath))}
-          onInitializeAgents={(rootPath) => void runAction(() => initializeAgents(selectedProject.id, rootPath))}
-          onCheckAgentsSync={(rootPath) => void runAction(() => checkAgentsSync(selectedProject.id, rootPath))}
-          onApplyAgentsSync={(rootPath) => void runAction(() => applyAgentsSync(selectedProject.id, rootPath))}
-          onUpdateAgentsIntegrations={(rootPath, enabledIntegrations) => void runAction(() => updateAgentsIntegrations(selectedProject.id, rootPath, enabledIntegrations))}
           relocating={busyAction === "relocate"}
+          onUpdateProjectTools={(toolIds) => void runAction(() => saveProjectToolTargets(toolIds))}
+          onRefreshRuleSync={() => void runAction(() => refreshRuleSyncStatus())}
+          onApplyRuleSync={(direction) => setPendingRuleSyncDirection(direction)}
         />
       ) : (
         <HomePage
@@ -443,10 +552,12 @@ function App() {
     setMessage("窗口打开方式已更新");
   }
 
-  async function updateAgentsCliPath(cliPath: string) {
-    const nextConfig = await client.updateConfig({ agents: { cliPath } });
+  async function updateSkillHubRoot(rootDir: string) {
+    const nextConfig = await client.updateConfig({ skillhub: { rootDir } });
     setConfig(nextConfig);
-    setMessage(cliPath ? "agents CLI 路径已更新" : "多 agents 同步已关闭");
+    setSkillHubUpdates(null);
+    if (view === "skillhub") await loadSkillHub();
+    setMessage("SkillHub 目录已更新");
   }
 
   async function refreshProject(projectId: string) {
@@ -456,69 +567,21 @@ function App() {
     await loadDetail(projectId, query);
   }
 
-  async function refreshAgents(projectId: string, rootPath: string) {
-    const status = await client.agentsStatus(projectId, rootPath);
-    setAgentsStatusForRoot(rootPath, status);
-    setLastAgentsResultForRoot(rootPath, null);
-    setMessage(`agents 状态已刷新：${lastSegment(rootPath)}`);
-  }
-
-  async function initializeAgents(projectId: string, rootPath: string) {
-    const result = await client.initAgents(projectId, rootPath);
-    setAgentsStatusForRoot(rootPath, result.status);
-    setLastAgentsResultForRoot(rootPath, result);
-    setMessage(result.changed.length > 0 ? `agents 配置已初始化：${result.changed.length} 个变更项` : "agents 配置已初始化");
-  }
-
-  async function checkAgentsSync(projectId: string, rootPath: string) {
-    const result = await client.syncAgents(projectId, true, rootPath);
-    setAgentsStatusForRoot(rootPath, result.status);
-    setLastAgentsResultForRoot(rootPath, result);
-    setMessage(result.changed.length > 0 ? `agents 检查完成：${result.changed.length} 个待同步项` : "agents 检查完成：无需同步");
-  }
-
-  async function applyAgentsSync(projectId: string, rootPath: string) {
-    const confirmed = window.confirm("执行 agents sync 会写入项目内工具配置，并可能按启用集成更新全局工具配置。确定继续？");
-    if (!confirmed) {
-      setMessage("已取消 agents 同步");
-      return;
-    }
-    const result = await client.syncAgents(projectId, false, rootPath);
-    setAgentsStatusForRoot(rootPath, result.status);
-    setLastAgentsResultForRoot(rootPath, result);
-    setMessage(result.changed.length > 0 ? `agents 同步完成：更新 ${result.changed.length} 个项目` : "agents 同步完成：没有变更");
-  }
-
-  async function updateAgentsIntegrations(projectId: string, rootPath: string, enabledIntegrations: AgentsIntegrationName[]) {
-    const confirmed = window.confirm("保存 agents 工具选择会立即同步配置。确定继续？");
-    if (!confirmed) {
-      setMessage("已取消 agents 工具选择更新");
-      return;
-    }
-    const result = await client.updateAgentsIntegrations(projectId, enabledIntegrations, rootPath);
-    setAgentsStatusForRoot(rootPath, result.status);
-    setLastAgentsResultForRoot(rootPath, result);
-    setMessage("agents 工具选择已保存并同步");
-  }
-
-  function setAgentsStatusForRoot(rootPath: string, status: AgentsConfigSyncStatus) {
-    setAgentsStatuses((current) => ({ ...current, [rootPath]: status }));
-  }
-
-  function setLastAgentsResultForRoot(rootPath: string, result: AgentsCommandResult | null) {
-    setLastAgentsResults((current) => ({ ...current, [rootPath]: result }));
-  }
-
   async function addProject(rootPath: string) {
     await client.addProject(rootPath);
     await loadHome();
     setMessage("项目已添加");
   }
 
-  async function createNewProject(projectName: string, parentPath: string) {
+  async function createNewProject(projectName: string, parentPath: string, toolIds: ToolId[]) {
     setMessage("正在创建项目...");
     const created = await client.createDirectory(parentPath, projectName);
-    await addProject(created.path);
+    if (toolIds.length > 0) {
+      await client.addProject(created.path, false, toolIds);
+    } else {
+      await client.addProject(created.path);
+    }
+    await loadHome();
     setNewProjectDialogOpen(false);
     setMessage("项目已创建并添加");
   }
@@ -634,6 +697,163 @@ function App() {
     setSelectedProjectId(result.targetProjectId);
     await loadDetail(result.targetProjectId, query);
   }
+
+  async function importLocalSkill(inputPath: string) {
+    const result = await client.importLocalSkill(inputPath);
+    if (result.requiresConfirmation) {
+      const confirmed = window.confirm(`检测到 ${result.conflicts.length} 个同路径技能变更，是否覆盖 SkillHub library 中的已有内容？`);
+      if (!confirmed) {
+        setMessage("已取消本地技能覆盖");
+        return;
+      }
+      await client.importLocalSkill(inputPath, true);
+    }
+    setSkillHubUpdates(null);
+    await loadSkillHub();
+    setMessage(`本地导入完成：新增 ${result.imported.length} 个，跳过 ${result.skipped.length} 个`);
+  }
+
+  async function importGitHubSkill(input: string) {
+    const result = await client.importGitHubSkill(input);
+    if (result.requiresConfirmation) {
+      const confirmed = window.confirm(`检测到 ${result.conflicts.length} 个 GitHub 技能变更，是否覆盖同一 source namespace 下的已有内容？`);
+      if (!confirmed) {
+        setMessage("已取消 GitHub 技能覆盖");
+        return;
+      }
+      await client.importGitHubSkill(input, true);
+    }
+    setSkillHubUpdates(null);
+    await loadSkillHub();
+    setMessage(`GitHub 导入完成：新增 ${result.imported.length} 个，更新 ${result.updated.length} 个`);
+  }
+
+  async function deleteSkill(skillId: string) {
+    const preview = await client.previewDeleteSkillHubSkill(skillId);
+    const confirmed = window.confirm(
+      `确定删除 ${preview.skill.folderName}？将先移除 ${preview.affectedTargets.length} 个项目 link，再删除 SkillHub library 内容。`
+    );
+    if (!confirmed) {
+      setMessage("已取消删除技能");
+      return;
+    }
+    await client.deleteSkillHubSkill(skillId);
+    setSkillHubUpdates(null);
+    await loadSkillHub();
+    if (projectSkillPanelOpen && selectedProjectId) {
+      setProjectSkillState(await client.projectSkillTargets(selectedProjectId));
+    }
+    setMessage("SkillHub 技能已删除");
+  }
+
+  async function openSkillHubSkill(skillId: string, target: SkillHubOpenTarget) {
+    await client.openSkillHubSkill(skillId, target);
+    setMessage(target === "document" ? "已打开 SKILL.md" : "已打开技能文件夹");
+  }
+
+  async function checkSkillHubUpdates() {
+    const result = await client.checkSkillHubUpdates();
+    setSkillHubUpdates(result);
+    const count = result.previews.filter((preview) => preview.hasUpdates).length;
+    if (result.previews.length === 0) {
+      setMessage("检查完成：没有 GitHub source 可检查");
+    } else {
+      setMessage(count > 0 ? `检查完成：${count} 个 GitHub source 有更新` : "检查完成：没有更新");
+    }
+  }
+
+  async function applySkillHubUpdate(preview: SkillHubSourceUpdatePreview) {
+    const confirmed = !preview.destructive || window.confirm("此更新会删除已分发技能的项目 link。确定继续？");
+    if (!confirmed) {
+      setMessage("已取消 SkillHub 更新");
+      return;
+    }
+    await client.applySkillHubUpdate(preview.source.id, preview.destructive);
+    await loadSkillHub();
+    await checkSkillHubUpdates();
+    setMessage("GitHub source 更新已应用");
+  }
+
+  async function openProjectSkillPanel(projectId: string) {
+    setProjectSkillPanelOpen(true);
+    setLastProjectSkillResult(null);
+    setProjectSkillState(await client.projectSkillTargets(projectId));
+  }
+
+  async function saveProjectToolTargets(toolIds: ToolId[]) {
+    if (!selectedProjectId) return;
+    await client.updateProjectToolTargets(selectedProjectId, toolIds);
+    setProjectToolTargets(await client.projectToolTargets(selectedProjectId));
+    if (projectSkillPanelOpen) {
+      setProjectSkillState(await client.projectSkillTargets(selectedProjectId));
+    }
+    setMessage("项目使用工具已更新");
+  }
+
+  async function saveProjectSkillTargets(skillId: string, toolIds: ToolId[]) {
+    if (!selectedProjectId) return;
+    let result = await client.updateProjectSkillTargets(selectedProjectId, skillId, toolIds);
+    if (result.requiresConfirmation) {
+      const confirmed = window.confirm("项目使用工具中已有同名技能 link，是否替换为当前 SkillHub 技能？");
+      if (confirmed) {
+        result = await client.updateProjectSkillTargets(selectedProjectId, skillId, toolIds, true);
+      }
+    }
+    setLastProjectSkillResult(result);
+    setProjectSkillState(await client.projectSkillTargets(selectedProjectId));
+    if (result.failures.length > 0) {
+      setMessage(`技能 link 更新完成，但有 ${result.failures.length} 个失败项`);
+    } else if (result.requiresConfirmation) {
+      setMessage("已取消替换同名技能 link");
+    } else {
+      setMessage("项目技能已更新");
+    }
+  }
+
+  async function refreshRuleSyncStatus() {
+    if (!selectedProjectId) return;
+    const status = await client.ruleSyncStatus(selectedProjectId);
+    setRuleSyncStatus(status);
+    setMessage("规则文件状态已刷新");
+  }
+
+  async function applyRuleSyncDirection(direction: RuleSyncDirection, confirmedStatus: RuleSyncStatus | null = ruleSyncStatus) {
+    if (!selectedProjectId) return;
+    const options = confirmedStatus ? confirmedRuleSyncOptions(confirmedStatus) : {};
+    let result = hasRuleSyncConfirmationOptions(options)
+      ? await client.applyRuleSync(selectedProjectId, direction, options)
+      : await client.applyRuleSync(selectedProjectId, direction);
+    if (result.action === "needs-confirmation") {
+      const confirmed = window.confirm(result.message);
+      if (!confirmed) {
+        setMessage("已取消规则同步");
+        return;
+      }
+      result = await client.applyRuleSync(selectedProjectId, direction, {
+        confirmGitInit: result.status.gitAvailable && !result.status.gitRoot,
+        confirmDirectOverwrite: !result.status.gitAvailable
+      });
+    }
+    setRuleSyncStatus(result.status);
+    setMessage(result.message);
+  }
+
+  async function commitRuleSyncDirection(direction: RuleSyncDirection) {
+    if (!selectedProjectId) return;
+    const result = await client.commitRuleSync(selectedProjectId, direction);
+    setRuleSyncStatus(result.status);
+    setMessage(result.message);
+  }
+}
+
+function confirmedRuleSyncOptions(status: RuleSyncStatus): { confirmDirectOverwrite?: boolean } {
+  const options: { confirmDirectOverwrite?: boolean } = {};
+  if (!status.gitAvailable) options.confirmDirectOverwrite = true;
+  return options;
+}
+
+function hasRuleSyncConfirmationOptions(options: { confirmDirectOverwrite?: boolean }): boolean {
+  return Boolean(options.confirmDirectOverwrite);
 }
 
 function Shell({ message }: { message: string }) {
@@ -645,23 +865,31 @@ function Shell({ message }: { message: string }) {
 }
 
 function NewProjectDialog({
+  tools = [],
   busy,
   onClose,
   onPickDirectory,
   onCreate
 }: {
+  tools?: ToolStatus[];
   busy: boolean;
   onClose: () => void;
   onPickDirectory: () => Promise<string | null>;
-  onCreate: (projectName: string, parentPath: string) => void;
+  onCreate: (projectName: string, parentPath: string, toolIds: ToolId[]) => void;
 }) {
   const [projectName, setProjectName] = useState("");
   const [parentPath, setParentPath] = useState("");
+  const selectableTools = useMemo(() => tools.filter((tool) => tool.visibleInProjectUi && tool.supported), [tools]);
+  const [selectedToolIds, setSelectedToolIds] = useState<ToolId[]>([]);
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState("");
   const trimmedName = projectName.trim();
   const trimmedParentPath = parentPath.trim();
   const projectPathPreview = trimmedParentPath && trimmedName ? joinDisplayPath(trimmedParentPath, trimmedName) : "";
+
+  useEffect(() => {
+    setSelectedToolIds(selectableTools.map((tool) => tool.toolId));
+  }, [selectableTools]);
 
   async function chooseProjectDirectory() {
     setPicking(true);
@@ -679,7 +907,14 @@ function NewProjectDialog({
   function submitProject(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy || picking || !trimmedName || !trimmedParentPath) return;
-    onCreate(trimmedName, trimmedParentPath);
+    onCreate(trimmedName, trimmedParentPath, selectedToolIds);
+  }
+
+  function toggleTool(toolId: ToolId, checked: boolean) {
+    setSelectedToolIds((current) => {
+      if (checked) return current.includes(toolId) ? current : [...current, toolId];
+      return current.filter((id) => id !== toolId);
+    });
   }
 
   return (
@@ -713,6 +948,20 @@ function NewProjectDialog({
             <div className="field current-root new-project-preview">
               <span>创建位置</span>
               <code aria-live="polite">{projectPathPreview || "待生成"}</code>
+            </div>
+            <div className="tool-refresh-list compact" aria-label="新项目 agent tools">
+              {selectableTools.map((tool) => (
+                <label className="tool-refresh-row" key={tool.toolId}>
+                  <input
+                    type="checkbox"
+                    checked={selectedToolIds.includes(tool.toolId)}
+                    disabled={busy}
+                    onChange={(event) => toggleTool(tool.toolId, event.target.checked)}
+                  />
+                  <span>{tool.toolId}</span>
+                  <small>{tool.command}</small>
+                </label>
+              ))}
             </div>
           </div>
           {pickError ? (
@@ -837,7 +1086,7 @@ function SettingsDialog({
   onClose,
   onSaveDataDir,
   onSaveTerminalMode,
-  onSaveAgentsCliPath,
+  onSaveSkillHubRoot,
   onPickDirectory
 }: {
   bootstrap: BootstrapState;
@@ -846,18 +1095,18 @@ function SettingsDialog({
   onClose: () => void;
   onSaveDataDir: (dataDir: string) => void;
   onSaveTerminalMode: (mode: TerminalMode) => void;
-  onSaveAgentsCliPath: (cliPath: string) => void;
+  onSaveSkillHubRoot: (rootDir: string) => void;
   onPickDirectory: () => Promise<string | null>;
 }) {
   const [terminalMode, setTerminalMode] = useState<TerminalMode>(config?.terminal.mode ?? "new-window");
-  const [pickingTarget, setPickingTarget] = useState<"data-dir" | "agents" | null>(null);
+  const [pickingTarget, setPickingTarget] = useState<"data-dir" | "skillhub" | null>(null);
   const [pickError, setPickError] = useState("");
 
   useEffect(() => {
     setTerminalMode(config?.terminal.mode ?? "new-window");
   }, [config?.terminal.mode]);
 
-  async function chooseDirectory(target: "data-dir" | "agents") {
+  async function chooseDirectory(target: "data-dir" | "skillhub") {
     setPickingTarget(target);
     setPickError("");
     try {
@@ -867,7 +1116,7 @@ function SettingsDialog({
       if (target === "data-dir") {
         onSaveDataDir(trimmed);
       } else {
-        onSaveAgentsCliPath(trimmed);
+        onSaveSkillHubRoot(trimmed);
       }
     } catch (error) {
       setPickError(error instanceof Error ? error.message : "目录选择失败");
@@ -928,26 +1177,19 @@ function SettingsDialog({
           </div>
         </div>
         <div className="setting-section">
-          <h3>多 agents 同步</h3>
+          <h3>SkillHub</h3>
           <div className="field current-root">
-            <span>当前 agents CLI 目录</span>
-            <code>{config?.agents.cliPath || "未启用"}</code>
+            <span>当前 SkillHub 目录</span>
+            <code>{config?.skillhub?.rootDir || "未设置"}</code>
           </div>
           <div className="settings-actions">
             <button
               className="primary"
               type="button"
               disabled={busy || !config || pickingTarget !== null}
-              onClick={() => void chooseDirectory("agents")}
+              onClick={() => void chooseDirectory("skillhub")}
             >
-              {pickingTarget === "agents" ? "选择中..." : "选择项目目录"}
-            </button>
-            <button
-              className="secondary"
-              type="button"
-              onClick={() => window.open(AGENTS_DOWNLOAD_URL, "_blank", "noopener,noreferrer")}
-            >
-              前往下载
+              {pickingTarget === "skillhub" ? "选择中..." : "选择 SkillHub 目录"}
             </button>
           </div>
         </div>
@@ -1194,15 +1436,73 @@ function StatTile({ label, value }: { label: string; value: number }) {
   );
 }
 
+function RuleSyncConfirmDialog({
+  status,
+  direction,
+  busy,
+  onCancel,
+  onCommit,
+  onConfirm
+}: {
+  status: RuleSyncStatus;
+  direction: RuleSyncDirection;
+  busy: boolean;
+  onCancel: () => void;
+  onCommit: () => void;
+  onConfirm: () => void;
+}) {
+  const { sourceFile, targetFile } = ruleSyncFileNames(direction);
+  const target = status.files[targetFile];
+  const protectionNote = ruleSyncProtectionNote(status, target);
+  const canCommit = canCommitRuleSyncTarget(status, target);
+
+  return (
+    <div className="settings-backdrop" role="presentation">
+      <section className="settings-dialog rule-sync-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="rule-sync-confirm-title">
+        <header>
+          <div>
+            <span className="eyebrow">确认规则同步</span>
+            <h2 id="rule-sync-confirm-title">同步到{targetFile}</h2>
+          </div>
+          <button className="secondary" type="button" onClick={onCancel} disabled={busy}>
+            取消
+          </button>
+        </header>
+
+        <div className="rule-sync-confirm-summary">
+          <strong>将{sourceFile}的内容同步到{targetFile}</strong>
+          <p>{protectionNote}</p>
+        </div>
+
+        <article className="rule-sync-confirm-target">
+          <span className="field-label">目标文件状态</span>
+          <RuleFileStatus file={target} />
+        </article>
+
+        <div className="settings-actions">
+          {canCommit ? (
+            <button className="secondary" type="button" onClick={onCommit} disabled={busy}>
+              commit
+            </button>
+          ) : null}
+          <button className="primary" type="button" onClick={onConfirm} disabled={busy}>
+            同步
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function ProjectDetailView({
   project,
   detail,
   tools,
+  projectToolTargets = [],
   query,
   warnings,
   repairCandidates,
-  agentsStatuses,
-  lastAgentsResults,
+  ruleSyncStatus,
   busy,
   relocating = false,
   setQuery,
@@ -1211,20 +1511,18 @@ function ProjectDetailView({
   onDeleteSession,
   onRepairProject,
   onRelocateProject,
-  onRefreshAgents,
-  onInitializeAgents,
-  onCheckAgentsSync,
-  onApplyAgentsSync,
-  onUpdateAgentsIntegrations
+  onUpdateProjectTools = () => {},
+  onRefreshRuleSync = () => {},
+  onApplyRuleSync = () => {}
 }: {
   project: Project;
   detail: ProjectDetail | null;
   tools: ToolStatus[];
+  projectToolTargets?: ProjectToolTarget[];
   query: string;
   warnings: ParserWarning[];
   repairCandidates: ProjectRepairCandidate[];
-  agentsStatuses: Record<string, AgentsConfigSyncStatus>;
-  lastAgentsResults: Record<string, AgentsCommandResult | null>;
+  ruleSyncStatus?: RuleSyncStatus | null;
   busy: boolean;
   relocating?: boolean;
   setQuery: (query: string) => void;
@@ -1233,11 +1531,9 @@ function ProjectDetailView({
   onDeleteSession: (sessionId: string) => void;
   onRepairProject: (targetProjectId: string, targetRootPath?: string) => void;
   onRelocateProject: () => void;
-  onRefreshAgents: (rootPath: string) => void;
-  onInitializeAgents: (rootPath: string) => void;
-  onCheckAgentsSync: (rootPath: string) => void;
-  onApplyAgentsSync: (rootPath: string) => void;
-  onUpdateAgentsIntegrations: (rootPath: string, enabledIntegrations: AgentsIntegrationName[]) => void;
+  onUpdateProjectTools?: (toolIds: ToolId[]) => void;
+  onRefreshRuleSync?: () => void;
+  onApplyRuleSync?: (direction: RuleSyncDirection) => void;
 }) {
   const toolMap = useMemo(() => new Map(tools.map((tool) => [tool.toolId, tool])), [tools]);
   const projectTools = useMemo(
@@ -1251,6 +1547,17 @@ function ProjectDetailView({
   return (
     <section className="content">
       <div className="toolbar-panel compact detail-controls">
+        <ProjectToolTargetSelector
+          targets={projectToolTargets}
+          busy={busy}
+          onUpdate={onUpdateProjectTools}
+        />
+        <ProjectRuleSyncPanel
+          status={ruleSyncStatus ?? null}
+          busy={busy}
+          onRefresh={onRefreshRuleSync}
+          onApply={onApplyRuleSync}
+        />
         <div className="toolbar detail-controls-toolbar">
           <label className="field wide detail-filter">
             筛选标题和摘要
@@ -1285,17 +1592,10 @@ function ProjectDetailView({
           group={group}
           tools={projectTools}
           toolMap={toolMap}
-          agentsStatus={agentsStatuses[group.fullPath] ?? null}
-          lastAgentsResult={lastAgentsResults[group.fullPath] ?? null}
           busy={busy}
           onLaunch={onLaunch}
           onResume={onResume}
           onDeleteSession={onDeleteSession}
-          onRefreshAgents={onRefreshAgents}
-          onInitializeAgents={onInitializeAgents}
-          onCheckAgentsSync={onCheckAgentsSync}
-          onApplyAgentsSync={onApplyAgentsSync}
-          onUpdateAgentsIntegrations={onUpdateAgentsIntegrations}
         />
       ))}
 
@@ -1404,176 +1704,6 @@ function RepairPanel({
   );
 }
 
-function AgentsSyncPanel({
-  rootLabel,
-  status,
-  lastResult,
-  busy,
-  onRefresh,
-  onInitialize,
-  onCheckSync,
-  onApplySync,
-  onUpdateIntegrations
-}: {
-  rootLabel: string;
-  status: AgentsConfigSyncStatus | null;
-  lastResult: AgentsCommandResult | null;
-  busy: boolean;
-  onRefresh: () => void;
-  onInitialize: () => void;
-  onCheckSync: () => void;
-  onApplySync: () => void;
-  onUpdateIntegrations: (enabledIntegrations: AgentsIntegrationName[]) => void;
-}) {
-  const enabled = status?.status?.enabledIntegrations ?? [];
-  const [draft, setDraft] = useState<AgentsIntegrationName[]>(enabled);
-
-  useEffect(() => {
-    setDraft(enabled);
-  }, [enabled.join("|")]);
-
-  const changed = !sameStringSet(draft, enabled);
-  const files = Object.entries(status?.status?.files ?? {});
-  const visibleFiles = files.slice(0, 8);
-  const commandOutput = lastResult ? [lastResult.stdout, lastResult.stderr].filter(Boolean).join("\n").trim() : "";
-
-  function toggleIntegration(name: AgentsIntegrationName, checked: boolean) {
-    setDraft((current) => {
-      if (checked) return current.includes(name) ? current : [...current, name];
-      return current.filter((item) => item !== name);
-    });
-  }
-
-  return (
-    <section className="agents-panel" aria-label={`多 agents 配置同步：${rootLabel}`}>
-      <div className="section-title">
-        <div>
-          <span className="eyebrow">agents</span>
-          <h2>多 agents 配置同步</h2>
-          <p className="section-subtitle">{rootLabel}</p>
-        </div>
-        <div className="agents-actions">
-          <button className="secondary" type="button" disabled={busy} onClick={onRefresh}>
-            刷新状态
-          </button>
-          {status?.initialized ? (
-            <>
-              <button className="secondary" type="button" disabled={busy} onClick={onCheckSync}>
-                检查同步
-              </button>
-              <button className="primary" type="button" disabled={busy} onClick={onApplySync}>
-                执行同步
-              </button>
-            </>
-          ) : null}
-        </div>
-      </div>
-
-      {!status ? (
-        <div className="muted">正在读取 agents 状态...</div>
-      ) : (
-        <>
-          <div className="agents-summary">
-            <StatTile label="启用工具" value={enabled.length} />
-            <StatTile label="MCP" value={status.status?.mcp.configured ?? 0} />
-            <StatTile label="本地覆盖" value={status.status?.mcp.localOverrides ?? 0} />
-          </div>
-
-          <div className="agents-meta">
-            <div className="field current-root">
-              <span>配置文件</span>
-              <code>{status.configPath}</code>
-            </div>
-            <div className="field current-root">
-              <span>CLI</span>
-              <code>{status.command}</code>
-            </div>
-          </div>
-
-          {!status.available ? (
-            <div className="agents-warning" role="alert">
-              {status.error ?? "未找到 agents CLI"}
-            </div>
-          ) : !status.initialized ? (
-            <div className="agents-empty">
-              <p>此项目还没有 `.agents/agents.json`。初始化后可以选择要同步的工具，并由 `agents sync` 生成各工具配置。</p>
-              <button className="primary" type="button" disabled={busy} onClick={onInitialize}>
-                初始化 agents 配置
-              </button>
-            </div>
-          ) : (
-            <>
-              {status.error ? (
-                <div className="agents-warning" role="alert">
-                  {status.error}
-                </div>
-              ) : null}
-
-              <div className="agents-integration-grid" aria-label="agents 集成工具">
-                {agentsIntegrationNames.map((name) => (
-                  <label className="agents-integration-option" key={name}>
-                    <input
-                      type="checkbox"
-                      checked={draft.includes(name)}
-                      onChange={(event) => toggleIntegration(name, event.target.checked)}
-                      disabled={busy}
-                    />
-                    <span>{agentsIntegrationLabel(name)}</span>
-                  </label>
-                ))}
-              </div>
-
-              <div className="agents-actions inline">
-                <button
-                  className="secondary"
-                  type="button"
-                  disabled={busy || !changed}
-                  onClick={() => setDraft(enabled)}
-                >
-                  还原选择
-                </button>
-                <button
-                  className="primary"
-                  type="button"
-                  disabled={busy || !changed}
-                  onClick={() => onUpdateIntegrations(draft)}
-                >
-                  保存工具选择并同步
-                </button>
-              </div>
-
-              {status.status?.selectedMcpServers.length ? (
-                <div className="agents-mcp-list">
-                  {status.status.selectedMcpServers.map((server) => (
-                    <span key={server}>{server}</span>
-                  ))}
-                </div>
-              ) : null}
-
-              {visibleFiles.length > 0 ? (
-                <div className="agents-file-list" aria-label="agents 文件状态">
-                  {visibleFiles.map(([file, exists]) => (
-                    <span className={exists ? "ok" : "missing"} key={file}>
-                      {exists ? "已生成" : "缺失"} {file}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-            </>
-          )}
-
-          {commandOutput ? (
-            <details className="agents-output">
-              <summary>最近一次命令输出</summary>
-              <pre>{commandOutput}</pre>
-            </details>
-          ) : null}
-        </>
-      )}
-    </section>
-  );
-}
-
 function RepairSignalPanel({ signals }: { signals: RepairSignal[] }) {
   if (signals.length === 0) return null;
   return (
@@ -1594,59 +1724,185 @@ function RepairSignalPanel({ signals }: { signals: RepairSignal[] }) {
   );
 }
 
-function sameStringSet(left: string[], right: string[]): boolean {
-  if (left.length !== right.length) return false;
-  const rightSet = new Set(right);
-  return left.every((item) => rightSet.has(item));
+function ProjectToolTargetSelector({
+  targets,
+  busy,
+  onUpdate
+}: {
+  targets: ProjectToolTarget[];
+  busy: boolean;
+  onUpdate: (toolIds: ToolId[]) => void;
+}) {
+  const enabledToolIds = targets.filter((target) => target.enabled).map((target) => target.toolId);
+
+  if (targets.length === 0) return null;
+
+  function toggleTool(toolId: ToolId, enabled: boolean) {
+    const next = enabled ? [...enabledToolIds, toolId] : enabledToolIds.filter((id) => id !== toolId);
+    onUpdate(uniqueToolIds(next));
+  }
+
+  return (
+    <section className="project-tool-targets" aria-label="项目使用工具">
+      <span className="field-label">项目使用工具</span>
+      <div className="tool-chip-list">
+        {targets.map((target) => (
+          <label className="tool-target-chip" key={target.toolId} title={target.reason ?? target.skillDirectory ?? target.toolId}>
+            <input
+              type="checkbox"
+              checked={target.enabled}
+              disabled={busy || (!target.supported && !target.enabled)}
+              onChange={(event) => toggleTool(target.toolId, event.target.checked)}
+            />
+            <span>{target.toolId}</span>
+          </label>
+        ))}
+      </div>
+    </section>
+  );
 }
 
-function agentsIntegrationLabel(name: AgentsIntegrationName): string {
-  const labels: Record<AgentsIntegrationName, string> = {
-    codex: "Codex",
-    claude: "Claude Code",
-    claude_desktop: "Claude Desktop",
-    gemini: "Gemini CLI",
-    copilot_vscode: "Copilot VS Code",
-    copilot_cli: "Copilot CLI",
-    cursor: "Cursor",
-    antigravity: "Antigravity",
-    windsurf: "Windsurf",
-    opencode: "OpenCode",
-    junie: "Junie"
-  };
-  return labels[name];
+function ProjectRuleSyncPanel({
+  status,
+  busy,
+  onRefresh,
+  onApply
+}: {
+  status: RuleSyncStatus | null;
+  busy: boolean;
+  onRefresh: () => void;
+  onApply: (direction: RuleSyncDirection) => void;
+}) {
+  const agentsFile = status?.files["AGENTS.md"] ?? null;
+  const claudeFile = status?.files["CLAUDE.md"] ?? null;
+  const agentsToClaude = status?.directions["agents-to-claude"];
+  const claudeToAgents = status?.directions["claude-to-agents"];
+
+  return (
+    <section className="project-rule-sync" aria-label="规则同步">
+      <div className="rule-sync-header">
+        <span className="field-label">规则同步</span>
+        <button className="secondary" type="button" disabled={busy} onClick={onRefresh}>
+          刷新规则
+        </button>
+      </div>
+      {status ? (
+        <div className="rule-sync-file-list">
+          {agentsFile ? (
+            <RuleFileRow
+              file={agentsFile}
+              busy={busy}
+              direction="claude-to-agents"
+              directionStatus={claudeToAgents}
+              onApply={onApply}
+            />
+          ) : null}
+          {claudeFile ? (
+            <RuleFileRow
+              file={claudeFile}
+              busy={busy}
+              direction="agents-to-claude"
+              directionStatus={agentsToClaude}
+              onApply={onApply}
+            />
+          ) : null}
+        </div>
+      ) : (
+        <span className="muted compact">正在读取规则文件状态...</span>
+      )}
+    </section>
+  );
+}
+
+function RuleFileRow({
+  file,
+  busy,
+  direction,
+  directionStatus,
+  onApply
+}: {
+  file: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]];
+  busy: boolean;
+  direction: RuleSyncDirection;
+  directionStatus: RuleSyncStatus["directions"][RuleSyncDirection] | undefined;
+  onApply: (direction: RuleSyncDirection) => void;
+}) {
+  return (
+    <article className="rule-file-row" aria-label={`${file.file} 规则文件`}>
+      <RuleFileStatus file={file} />
+      <div className="rule-file-row-actions">
+        {file.exists && file.mtime ? <time dateTime={file.mtime}>{formatTime(file.mtime)}</time> : null}
+        <button
+          className="secondary"
+          type="button"
+          disabled={busy || !directionStatus?.enabled}
+          title={directionStatus?.reason ?? undefined}
+          onClick={() => onApply(direction)}
+        >
+          同步
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function RuleFileStatus({ file }: { file: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]] }) {
+  return (
+    <div className="rule-file-status">
+      <strong>{file.file}</strong>
+      <span>{file.exists ? "文件存在" : "文件缺失"}</span>
+      <span>{ruleFileDirtyLabel(file)}</span>
+    </div>
+  );
+}
+
+function ruleFileDirtyLabel(file: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]]): string {
+  if (file.gitManaged !== true || file.dirty === null) return "无版本管理";
+  return file.dirty ? "有未提交内容" : "无未提交内容";
+}
+
+function ruleSyncFileNames(direction: RuleSyncDirection): { sourceFile: "AGENTS.md" | "CLAUDE.md"; targetFile: "AGENTS.md" | "CLAUDE.md" } {
+  return direction === "agents-to-claude"
+    ? { sourceFile: "AGENTS.md", targetFile: "CLAUDE.md" }
+    : { sourceFile: "CLAUDE.md", targetFile: "AGENTS.md" };
+}
+
+function ruleSyncProtectionNote(status: RuleSyncStatus, target: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]]): string {
+  if (!target.exists) return "目标文件当前缺失，确认后会创建目标文件。";
+  if (status.gitRoot && target.gitManaged && target.dirty) return "目标文件有未提交内容；可以先 commit 备份，也可以直接同步覆盖。";
+  if (status.gitRoot && target.gitManaged) return "目标文件由 Git 管理且当前无未提交内容；同步会直接覆盖目标文件。";
+  if (status.gitRoot && target.gitManaged === false) return "目标文件存在但未被 Git 跟踪；可以先 commit 纳入 Git 备份，也可以直接同步覆盖。";
+  if (status.gitAvailable && !status.gitRoot) return "本机有 Git，但项目还没有 Git 仓库；commit 会自动初始化 Git 并备份目标文件。";
+  return "Git 不可用或状态不可检测，确认后会直接覆盖目标文件，无法自动备份。";
+}
+
+function canCommitRuleSyncTarget(status: RuleSyncStatus, target: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]]): boolean {
+  if (!target.exists || !status.gitAvailable) return false;
+  if (!status.gitRoot) return true;
+  if (target.gitManaged !== true) return true;
+  return target.dirty === true;
+}
+
+function uniqueToolIds(toolIds: ToolId[]): ToolId[] {
+  return Array.from(new Set(toolIds));
 }
 
 function SessionGroup({
   group,
   tools,
   toolMap,
-  agentsStatus,
-  lastAgentsResult,
   busy,
   onLaunch,
   onResume,
-  onDeleteSession,
-  onRefreshAgents,
-  onInitializeAgents,
-  onCheckAgentsSync,
-  onApplyAgentsSync,
-  onUpdateAgentsIntegrations
+  onDeleteSession
 }: {
   group: ProjectDetailGroup;
   tools: ToolStatus[];
   toolMap: Map<string, ToolStatus>;
-  agentsStatus: AgentsConfigSyncStatus | null;
-  lastAgentsResult: AgentsCommandResult | null;
   busy: boolean;
   onLaunch: (toolId: ToolId, cwd: string) => void;
   onResume: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
-  onRefreshAgents: (rootPath: string) => void;
-  onInitializeAgents: (rootPath: string) => void;
-  onCheckAgentsSync: (rootPath: string) => void;
-  onApplyAgentsSync: (rootPath: string) => void;
-  onUpdateAgentsIntegrations: (rootPath: string, enabledIntegrations: AgentsIntegrationName[]) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -1685,18 +1941,6 @@ function SessionGroup({
           })}
         </div>
       ) : null}
-
-      <AgentsSyncPanel
-        rootLabel={group.label}
-        status={agentsStatus}
-        lastResult={lastAgentsResult}
-        busy={busy}
-        onRefresh={() => onRefreshAgents(group.fullPath)}
-        onInitialize={() => onInitializeAgents(group.fullPath)}
-        onCheckSync={() => onCheckAgentsSync(group.fullPath)}
-        onApplySync={() => onApplyAgentsSync(group.fullPath)}
-        onUpdateIntegrations={(enabledIntegrations) => onUpdateAgentsIntegrations(group.fullPath, enabledIntegrations)}
-      />
 
       {group.tools.length === 0 ? (
         <div className="muted">这个目录还没有索引到会话。</div>
@@ -1781,20 +2025,6 @@ function joinDisplayPath(parentPath: string, childName: string): string {
   const trimmedParent = parentPath.replace(/[\\/]+$/, "");
   const separator = parentPath.includes("/") && !parentPath.includes("\\") ? "/" : "\\";
   return `${trimmedParent}${separator}${childName}`;
-}
-
-function agentsStatusError(projectId: string, rootPath: string, error: unknown): AgentsConfigSyncStatus {
-  const normalized = rootPath.replace(/[\\/]+$/, "");
-  return {
-    projectId,
-    projectRoot: rootPath,
-    available: false,
-    initialized: false,
-    command: "agents",
-    configPath: `${normalized}\\.agents\\agents.json`,
-    status: null,
-    error: error instanceof Error ? error.message : "agents 状态读取失败"
-  };
 }
 
 function totalCandidateSessions(candidate: ScanCandidate): number {

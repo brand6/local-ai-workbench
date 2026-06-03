@@ -1,9 +1,14 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { DirectoryPickResponse, ScanDrive } from "../../shared/types.js";
+import type { DirectoryPickResponse, LocalOpenResponse, ScanDrive } from "../../shared/types.js";
 import { displayPath, isStrictChildPath } from "./pathUtils.js";
+
+export interface OpenLocalPathCommand {
+  executable: string;
+  args: string[];
+}
 
 export function listScanDrives(): ScanDrive[] {
   if (process.platform === "win32") {
@@ -46,6 +51,34 @@ export function createDirectory(parentPath: string, directoryName: string): stri
 
   fs.mkdirSync(target);
   return target;
+}
+
+export function openLocalPath(targetPath: string): LocalOpenResponse {
+  const target = displayPath(targetPath);
+  if (!fs.existsSync(target)) {
+    throw new Error("路径不存在");
+  }
+
+  const command = buildOpenLocalPathCommand(target);
+  const child = spawn(command.executable, command.args, {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true
+  });
+  child.once("error", () => undefined);
+  child.unref();
+  return { opened: true, path: target };
+}
+
+export function buildOpenLocalPathCommand(targetPath: string, platform: NodeJS.Platform = process.platform): OpenLocalPathCommand {
+  const target = displayPath(targetPath);
+  if (platform === "win32") {
+    return { executable: "cmd.exe", args: ["/c", "start", "", target] };
+  }
+  if (platform === "darwin") {
+    return { executable: "open", args: [target] };
+  }
+  return { executable: "xdg-open", args: [target] };
 }
 
 export function buildWindowsDirectoryPickerScript(): string {

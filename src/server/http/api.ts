@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import express, { type Express, type Request, type Response } from "express";
-import { agentsIntegrationNames, isTerminalMode, type AgentsIntegrationName, type AppConfig, type RefreshMode, type RefreshResult, type ToolId } from "../../shared/types.js";
+import { isTerminalMode, type AppConfig, type RefreshMode, type RefreshResult, type RuleSyncDirection, type SkillHubOpenTarget, type ToolId } from "../../shared/types.js";
 import { adapterFor, listToolStatuses, sessionSourcesForAdapter, toolAdapters } from "../tools/adapters.js";
 import { refreshAllSessions, refreshProjectSessions, refreshSessionFiles } from "../scanning/sessionScanner.js";
 import { deleteSession as deleteIndexedSession } from "../scanning/sessionDeletion.js";
@@ -9,9 +9,20 @@ import { launchInTerminal, terminalWindowTarget } from "../launch/terminal.js";
 import { confirmRelocation, previewRelocation, relocateManagedProject } from "../relocation/relocation.js";
 import { confirmProjectRepair, listProjectRepairCandidates } from "../repair/projectRepair.js";
 import { repairQwenSourcePathForSession } from "../repair/qwenSourceRepair.js";
-import { getAgentsStatus, initializeAgentsProject, syncAgentsProject, updateAgentsIntegrations } from "../agents/agentsCli.js";
 import { createDirectory, listScanDrives, pickDirectory } from "../core/localFilesystem.js";
-import { displayPath, isPathInsideOrEqual, isStrictChildPath } from "../core/pathUtils.js";
+import { isStrictChildPath } from "../core/pathUtils.js";
+import {
+  applyGitHubSourceUpdate,
+  checkGitHubUpdates,
+  deleteSkillHubSkill,
+  importGitHubSource,
+  importLocalSkills,
+  listSkillHub,
+  openSkillHubSkill,
+  previewDeleteSkillHubSkill
+} from "../skillhub/skillhub.js";
+import { applyRuleSync, commitRuleSyncTarget, getRuleSyncStatus } from "../skillhub/ruleSync.js";
+import { listProjectSkillTargetsState, listProjectToolTargets, setProjectSkillTargets, updateProjectToolTargets } from "../skillhub/projectSkills.js";
 import type { AppContext } from "../appContext.js";
 import type { SessionIndexRunResult } from "../scanning/sessionIndexService.js";
 
@@ -81,21 +92,111 @@ export function installApi(app: Express, context: AppContext): void {
 
   app.patch("/api/config", (request, response) => {
     const mode = request.body?.terminal?.mode;
-    const cliPath = typeof request.body?.agents?.cliPath === "string" ? request.body.agents.cliPath.trim() : null;
+    const skillHubRootDir = typeof request.body?.skillhub?.rootDir === "string" ? request.body.skillhub.rootDir.trim() : null;
     if (mode !== undefined && !isTerminalMode(mode)) {
       response.status(400).json({ error: "terminal.mode must be new-window, per-tool, or per-project" });
       return;
     }
-    if (request.body?.agents !== undefined && cliPath === null) {
-      response.status(400).json({ error: "agents.cliPath must be a string" });
+    if (request.body?.skillhub !== undefined && skillHubRootDir === null) {
+      response.status(400).json({ error: "skillhub.rootDir must be a string" });
       return;
     }
     const nextConfig: AppConfig = {
       ...context.config(),
       terminal: { mode: isTerminalMode(mode) ? mode : context.config().terminal.mode },
-      agents: { cliPath: cliPath ?? context.config().agents.cliPath }
+      skillhub: { rootDir: skillHubRootDir ?? context.config().skillhub.rootDir }
     };
     response.json(context.setConfig(nextConfig));
+  });
+
+  app.get("/api/skillhub", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    response.json(listSkillHub(context.database(), context.config(), dataDir, String(request.query.query ?? "")));
+  });
+
+  app.post("/api/skillhub/import/local", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const inputPath = stringBody(request, "path");
+    if (!dataDir) return;
+    if (!inputPath) {
+      response.status(400).json({ error: "path is required" });
+      return;
+    }
+    try {
+      response.json(importLocalSkills(context.database(), context.config(), dataDir, inputPath, { overwrite: Boolean(request.body?.overwrite) }));
+    } catch (error) {
+      response.status(400).json({ error: "skillhub-local-import-failed", reason: error instanceof Error ? error.message : "skillhub-local-import-failed" });
+    }
+  });
+
+  app.post("/api/skillhub/import/github", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const input = stringBody(request, "input");
+    if (!dataDir) return;
+    if (!input) {
+      response.status(400).json({ error: "input is required" });
+      return;
+    }
+    try {
+      response.json(
+        importGitHubSource(context.database(), context.config(), dataDir, input, {
+          overwrite: Boolean(request.body?.overwrite),
+          fixturePath: typeof request.body?.fixturePath === "string" ? request.body.fixturePath : undefined
+        })
+      );
+    } catch (error) {
+      response.status(400).json({ error: "skillhub-github-import-failed", reason: error instanceof Error ? error.message : "skillhub-github-import-failed" });
+    }
+  });
+
+  app.get("/api/skillhub/updates", (_request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    try {
+      response.json(checkGitHubUpdates(context.database(), context.config(), dataDir));
+    } catch (error) {
+      response.status(400).json({ error: "skillhub-update-check-failed", reason: error instanceof Error ? error.message : "skillhub-update-check-failed" });
+    }
+  });
+
+  app.post("/api/skillhub/sources/:id/update", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    try {
+      response.json(applyGitHubSourceUpdate(context.database(), context.config(), dataDir, request.params.id, { confirmDestructive: Boolean(request.body?.confirmDestructive) }));
+    } catch (error) {
+      response.status(400).json({ error: "skillhub-update-apply-failed", reason: error instanceof Error ? error.message : "skillhub-update-apply-failed" });
+    }
+  });
+
+  app.get("/api/skillhub/skills/:id/delete-preview", (request, response) => {
+    try {
+      response.json(previewDeleteSkillHubSkill(context.database(), request.params.id));
+    } catch (error) {
+      response.status(404).json({ error: "skillhub-skill-not-found", reason: error instanceof Error ? error.message : "skillhub-skill-not-found" });
+    }
+  });
+
+  app.post("/api/skillhub/skills/:id/open", (request, response) => {
+    const target = skillHubOpenTargetBody(request);
+    if (!target) {
+      response.status(400).json({ error: "target must be document or folder" });
+      return;
+    }
+    try {
+      response.json(openSkillHubSkill(context.database(), request.params.id, target));
+    } catch (error) {
+      response.status(404).json({ error: "skillhub-skill-open-failed", reason: error instanceof Error ? error.message : "skillhub-skill-open-failed" });
+    }
+  });
+
+  app.delete("/api/skillhub/skills/:id", (request, response) => {
+    try {
+      response.json(deleteSkillHubSkill(context.database(), request.params.id));
+    } catch (error) {
+      response.status(404).json({ error: "skillhub-skill-delete-failed", reason: error instanceof Error ? error.message : "skillhub-skill-delete-failed" });
+    }
   });
 
   app.get("/api/projects", (_request, response) => {
@@ -109,7 +210,16 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     const includeSubdirectories = Boolean(request.body?.includeSubdirectories);
-    response.status(201).json(context.database().addProject(rootPath, includeSubdirectories));
+    const toolIds = toolIdsBody(request);
+    if (toolIds === null) {
+      response.status(400).json({ error: "toolIds must be an array of supported tool ids" });
+      return;
+    }
+    const result = context.database().addProject(rootPath, includeSubdirectories);
+    if (toolIds) {
+      updateProjectToolTargets(context.database(), result.project, toolIds);
+    }
+    response.status(201).json(result);
   });
 
   app.patch("/api/projects/:id", (request, response) => {
@@ -137,6 +247,110 @@ export function installApi(app: Express, context: AppContext): void {
     response.json(detail);
   });
 
+  app.get("/api/projects/:id/tool-targets", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    response.json(listProjectToolTargets(context.database(), project));
+  });
+
+  app.patch("/api/projects/:id/tool-targets", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    const toolIds = toolIdsBody(request);
+    if (!toolIds) {
+      response.status(400).json({ error: "toolIds must be an array of supported tool ids" });
+      return;
+    }
+    response.json(updateProjectToolTargets(context.database(), project, toolIds));
+  });
+
+  app.get("/api/projects/:id/skill-targets", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    response.json(listProjectSkillTargetsState(context.database(), project));
+  });
+
+  app.put("/api/projects/:id/skill-targets/:skillId", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    const toolIds = toolIdsBody(request);
+    if (toolIds === null || toolIds === undefined) {
+      response.status(400).json({ error: "toolIds must be an array of supported tool ids" });
+      return;
+    }
+    try {
+      response.json(
+        setProjectSkillTargets(context.database(), project, request.params.skillId, toolIds, {
+          replaceConflicts: Boolean(request.body?.replaceConflicts)
+        })
+      );
+    } catch (error) {
+      response.status(400).json({ error: "project-skill-target-update-failed", reason: error instanceof Error ? error.message : "project-skill-target-update-failed" });
+    }
+  });
+
+  app.get("/api/projects/:id/rule-sync/status", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    response.json(getRuleSyncStatus(project));
+  });
+
+  app.post("/api/projects/:id/rule-sync/apply", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    const direction = ruleSyncDirectionBody(request);
+    if (!direction) {
+      response.status(400).json({ error: "direction must be agents-to-claude or claude-to-agents" });
+      return;
+    }
+    try {
+      response.json(
+        applyRuleSync(project, direction, {
+          confirmGitInit: Boolean(request.body?.confirmGitInit),
+          confirmDirectOverwrite: Boolean(request.body?.confirmDirectOverwrite)
+        })
+      );
+    } catch (error) {
+      response.status(400).json({ error: "rule-sync-failed", reason: error instanceof Error ? error.message : "rule-sync-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/rule-sync/commit", (request, response) => {
+    const project = context.database().getProject(request.params.id);
+    if (!project) {
+      response.status(404).json({ error: "project-not-found" });
+      return;
+    }
+    const direction = ruleSyncDirectionBody(request);
+    if (!direction) {
+      response.status(400).json({ error: "direction must be agents-to-claude or claude-to-agents" });
+      return;
+    }
+    try {
+      response.json(commitRuleSyncTarget(project, direction));
+    } catch (error) {
+      response.status(400).json({ error: "rule-sync-commit-failed", reason: error instanceof Error ? error.message : "rule-sync-commit-failed" });
+    }
+  });
+
   app.post("/api/projects/:id/refresh", (request, response) => {
     const project = context.database().getProject(request.params.id);
     if (!project) {
@@ -153,79 +367,6 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     response.json(listProjectRepairCandidates(context.database(), request.params.id));
-  });
-
-  app.get("/api/projects/:id/agents/status", (request, response) => {
-    const project = context.database().getProject(request.params.id);
-    if (!project) {
-      response.status(404).json({ error: "project-not-found" });
-      return;
-    }
-    const target = agentsTarget(request, project, "query");
-    if (!target) {
-      response.status(400).json({ error: "invalid-agents-root-path" });
-      return;
-    }
-    response.json(getAgentsStatus(context.config(), target));
-  });
-
-  app.post("/api/projects/:id/agents/init", (request, response) => {
-    const project = context.database().getProject(request.params.id);
-    if (!project) {
-      response.status(404).json({ error: "project-not-found" });
-      return;
-    }
-    const target = agentsTarget(request, project, "body");
-    if (!target) {
-      response.status(400).json({ error: "invalid-agents-root-path" });
-      return;
-    }
-    try {
-      response.json(initializeAgentsProject(context.config(), target));
-    } catch (error) {
-      response.status(400).json({ error: "agents-init-failed", reason: error instanceof Error ? error.message : "agents-init-failed" });
-    }
-  });
-
-  app.post("/api/projects/:id/agents/sync", (request, response) => {
-    const project = context.database().getProject(request.params.id);
-    if (!project) {
-      response.status(404).json({ error: "project-not-found" });
-      return;
-    }
-    const target = agentsTarget(request, project, "body");
-    if (!target) {
-      response.status(400).json({ error: "invalid-agents-root-path" });
-      return;
-    }
-    try {
-      response.json(syncAgentsProject(context.config(), target, Boolean(request.body?.check)));
-    } catch (error) {
-      response.status(400).json({ error: "agents-sync-failed", reason: error instanceof Error ? error.message : "agents-sync-failed" });
-    }
-  });
-
-  app.patch("/api/projects/:id/agents/integrations", (request, response) => {
-    const project = context.database().getProject(request.params.id);
-    if (!project) {
-      response.status(404).json({ error: "project-not-found" });
-      return;
-    }
-    const target = agentsTarget(request, project, "body");
-    if (!target) {
-      response.status(400).json({ error: "invalid-agents-root-path" });
-      return;
-    }
-    const enabledIntegrations = agentsIntegrationsBody(request);
-    if (enabledIntegrations === null) {
-      response.status(400).json({ error: "enabledIntegrations must be an array of supported agents integration ids" });
-      return;
-    }
-    try {
-      response.json(updateAgentsIntegrations(context.config(), target, enabledIntegrations));
-    } catch (error) {
-      response.status(400).json({ error: "agents-integrations-failed", reason: error instanceof Error ? error.message : "agents-integrations-failed" });
-    }
   });
 
   app.post("/api/projects/:id/repair", (request, response) => {
@@ -487,6 +628,23 @@ function refreshModeBody(request: Request): RefreshMode | null {
   return request.body.mode === "incremental" || request.body.mode === "full" ? request.body.mode : null;
 }
 
+function ruleSyncDirectionBody(request: Request): RuleSyncDirection | null {
+  return request.body?.direction === "agents-to-claude" || request.body?.direction === "claude-to-agents" ? request.body.direction : null;
+}
+
+function skillHubOpenTargetBody(request: Request): SkillHubOpenTarget | null {
+  return request.body?.target === "document" || request.body?.target === "folder" ? request.body.target : null;
+}
+
+function requireDataDir(context: AppContext, response: Response): string | null {
+  const dataDir = context.bootstrapState().dataDir;
+  if (!dataDir) {
+    response.status(409).json({ error: "data-dir-not-initialized" });
+    return null;
+  }
+  return dataDir;
+}
+
 function refreshResultFromIndexRun(
   context: AppContext,
   result: SessionIndexRunResult | null,
@@ -511,30 +669,6 @@ function sessionRefreshRoots(config: AppConfig, toolIds: ToolId[] | undefined): 
   return Object.values(toolAdapters)
     .filter((adapter) => adapter.capabilities.scanHistory && (!selectedTools || selectedTools.has(adapter.id)))
     .flatMap((adapter) => sessionSourcesForAdapter(adapter, config));
-}
-
-function agentsIntegrationsBody(request: Request): AgentsIntegrationName[] | null {
-  if (!Array.isArray(request.body?.enabledIntegrations)) return null;
-  const allowed = new Set<string>(agentsIntegrationNames);
-  const integrations: AgentsIntegrationName[] = [];
-  for (const item of request.body.enabledIntegrations) {
-    if (typeof item !== "string" || !allowed.has(item)) return null;
-    const integration = item as AgentsIntegrationName;
-    if (!integrations.includes(integration)) integrations.push(integration);
-  }
-  return integrations;
-}
-
-function agentsTarget(request: Request, project: { id: string; rootPath: string }, source: "query" | "body"): { id: string; rootPath: string } | null {
-  const raw = source === "query" ? request.query.rootPath : request.body?.rootPath;
-  const rootPath = typeof raw === "string" && raw.trim().length > 0 ? displayPath(raw) : project.rootPath;
-  if (!isPathInsideOrEqual(project.rootPath, rootPath)) {
-    return null;
-  }
-  if (!fs.existsSync(rootPath) || !fs.statSync(rootPath).isDirectory()) {
-    return null;
-  }
-  return { id: project.id, rootPath };
 }
 
 function projectRootPathForSession(context: AppContext, normalizedCwd: string | null): string | null {

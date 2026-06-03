@@ -54,7 +54,7 @@ export class AppContext {
     if (!dataDir) {
       throw new Error("Data directory is not initialized");
     }
-    const normalized = normalizeConfig(config);
+    const normalized = normalizeConfig(config, dataDir);
     writeAppConfig(dataDir, normalized);
     this.configInstance = normalized;
     return normalized;

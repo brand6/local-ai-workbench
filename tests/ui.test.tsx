@@ -1,15 +1,17 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  AgentsCommandResult,
-  AgentsConfigSyncStatus,
   AppConfig,
   Project,
   ProjectDetail,
   ProjectRepairCandidate,
+  ProjectToolTarget,
   RefreshResult,
   RelocationResult,
   ScanCandidate,
+  SkillHubSkill,
+  SkillHubSource,
+  SkillHubSourceUpdatePreview,
   ToolId,
   ToolStatus
 } from "../src/shared/types.js";
@@ -25,6 +27,21 @@ const clientMock = vi.hoisted(() => ({
   setDataDir: vi.fn(),
   config: vi.fn(),
   updateConfig: vi.fn(),
+  skillhub: vi.fn(),
+  importLocalSkill: vi.fn(),
+  importGitHubSkill: vi.fn(),
+  checkSkillHubUpdates: vi.fn(),
+  applySkillHubUpdate: vi.fn(),
+  previewDeleteSkillHubSkill: vi.fn(),
+  deleteSkillHubSkill: vi.fn(),
+  openSkillHubSkill: vi.fn(),
+  projectToolTargets: vi.fn(),
+  updateProjectToolTargets: vi.fn(),
+  projectSkillTargets: vi.fn(),
+  updateProjectSkillTargets: vi.fn(),
+  ruleSyncStatus: vi.fn(),
+  applyRuleSync: vi.fn(),
+  commitRuleSync: vi.fn(),
   drives: vi.fn(),
   pickDirectory: vi.fn(),
   createDirectory: vi.fn(),
@@ -38,11 +55,7 @@ const clientMock = vi.hoisted(() => ({
   confirmCandidates: vi.fn(),
   relocateProject: vi.fn(),
   repairCandidates: vi.fn(),
-  repairProject: vi.fn(),
-  agentsStatus: vi.fn(),
-  initAgents: vi.fn(),
-  syncAgents: vi.fn(),
-  updateAgentsIntegrations: vi.fn()
+  repairProject: vi.fn()
 }));
 
 vi.mock("../src/client/api.js", () => ({ client: clientMock }));
@@ -62,16 +75,51 @@ describe("HomePage", () => {
     clientMock.tools.mockResolvedValue([]);
     clientMock.warnings.mockResolvedValue([]);
     clientMock.config.mockResolvedValue(appConfigFixture());
-    clientMock.updateConfig.mockImplementation((config: Partial<Pick<AppConfig, "terminal" | "agents">>) =>
-      Promise.resolve(appConfigFixture(config.terminal?.mode ?? "new-window", config.agents?.cliPath ?? ""))
+    clientMock.updateConfig.mockImplementation((config: Partial<Pick<AppConfig, "terminal" | "skillhub">>) =>
+      Promise.resolve(appConfigFixture(config.terminal?.mode ?? "new-window", config.skillhub?.rootDir))
     );
+    clientMock.skillhub.mockResolvedValue({
+      config: { rootDir: "C:\\tmp\\github-repo-manager\\skillhub", libraryDir: "C:\\tmp\\github-repo-manager\\skillhub\\library" },
+      sources: [],
+      skills: []
+    });
+    clientMock.checkSkillHubUpdates.mockResolvedValue({ previews: [] });
+    clientMock.openSkillHubSkill.mockResolvedValue({ opened: true, path: "C:\\tmp\\github-repo-manager\\skillhub\\library\\review\\SKILL.md" });
+    clientMock.projectToolTargets.mockResolvedValue([]);
+    clientMock.projectSkillTargets.mockResolvedValue({ projectId: "project-1", toolTargets: [], skillTargets: [], skills: [] });
+    clientMock.updateProjectToolTargets.mockResolvedValue([]);
+    clientMock.updateProjectSkillTargets.mockResolvedValue({
+      projectId: "project-1",
+      skillId: "skill-1",
+      targets: [],
+      removed: [],
+      conflicts: [],
+      failures: [],
+      requiresConfirmation: false
+    });
+    clientMock.ruleSyncStatus.mockResolvedValue(ruleSyncStatusFixture(projectFixture("E:\\old")));
+    clientMock.applyRuleSync.mockResolvedValue({
+      projectId: "project-1",
+      projectRoot: "E:\\old",
+      direction: "agents-to-claude",
+      sourceFile: "AGENTS.md",
+      targetFile: "CLAUDE.md",
+      action: "noop",
+      backupCommit: null,
+      message: "两个规则文件内容一致",
+      status: ruleSyncStatusFixture(projectFixture("E:\\old"))
+    });
+    clientMock.commitRuleSync.mockResolvedValue({
+      projectId: "project-1",
+      projectRoot: "E:\\old",
+      direction: "claude-to-agents",
+      targetFile: "AGENTS.md",
+      action: "committed",
+      backupCommit: "abc123",
+      message: "目标规则文件已 commit",
+      status: ruleSyncStatusFixture(projectFixture("E:\\old"))
+    });
     clientMock.repairCandidates.mockResolvedValue([]);
-    clientMock.agentsStatus.mockImplementation((projectId: string, rootPath?: string) =>
-      Promise.resolve(agentsStatusFixture(projectId, rootPath ?? "E:\\old"))
-    );
-    clientMock.initAgents.mockResolvedValue(agentsCommandResultFixture());
-    clientMock.syncAgents.mockResolvedValue(agentsCommandResultFixture());
-    clientMock.updateAgentsIntegrations.mockResolvedValue(agentsCommandResultFixture());
     clientMock.drives.mockResolvedValue([{ root: "E:\\", label: "E:\\" }]);
     clientMock.pickDirectory.mockResolvedValue({ path: "E:\\picked", cancelled: false });
     clientMock.createDirectory.mockResolvedValue({ path: "E:\\picked\\demo-project" });
@@ -150,6 +198,108 @@ describe("HomePage", () => {
     expect(within(topbar).getByRole("button", { name: "选择文件夹" })).toBeInTheDocument();
     expect(within(topbar).getByText("扫描项目")).toBeInTheDocument();
     expect(within(topbar).getByRole("button", { name: "扫描" })).toBeInTheDocument();
+  });
+
+  it("opens SkillHub from the topbar", async () => {
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "SkillHub" }));
+
+    expect(await screen.findByRole("heading", { name: "SkillHub" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "技能分发中心" })).not.toBeInTheDocument();
+    expect(clientMock.skillhub).toHaveBeenCalledWith("");
+    expect(screen.getByText("还没有技能")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "返回" }));
+    expect(await screen.findByText("还没有项目")).toBeInTheDocument();
+  });
+
+  it("separates SkillHub import/search and groups skills by source", async () => {
+    const localSource = skillHubSourceFixture("source-local", "local-source", "local");
+    const githubSource = skillHubSourceFixture("source-github", "owner/repo", "github");
+    clientMock.skillhub.mockResolvedValue({
+      config: { rootDir: "C:\\tmp\\github-repo-manager\\skillhub", libraryDir: "C:\\tmp\\github-repo-manager\\skillhub\\library" },
+      sources: [localSource, githubSource],
+      skills: [
+        skillHubSkillFixture(localSource, "skill-1", "review", "Review code"),
+        skillHubSkillFixture(githubSource, "skill-2", "triage", "Triage issues")
+      ]
+    });
+
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "SkillHub" }));
+
+    const importPanel = await screen.findByRole("region", { name: "技能导入" });
+    expect(within(importPanel).getByLabelText("本地技能路径")).toBeInTheDocument();
+    expect(within(importPanel).getByLabelText("GitHub 来源")).toBeInTheDocument();
+    expect(within(importPanel).getByRole("button", { name: "导入本地技能" })).toBeInTheDocument();
+    expect(within(importPanel).getByRole("button", { name: "导入GitHub技能" })).toBeInTheDocument();
+    expect(within(importPanel).queryByLabelText("搜索技能")).not.toBeInTheDocument();
+
+    const searchPanel = screen.getByRole("region", { name: "搜索技能" });
+    expect(within(searchPanel).getByLabelText("搜索技能")).toBeInTheDocument();
+
+    const sourceList = screen.getByRole("region", { name: "技能来源" });
+    expect(within(sourceList).getByText("local-source")).toBeInTheDocument();
+    expect(within(sourceList).getByText("owner/repo")).toBeInTheDocument();
+
+    const sourceDetails = sourceList.querySelector("details.skillhub-source-group") as HTMLDetailsElement;
+    expect(sourceDetails.open).toBe(false);
+    fireEvent.click(within(sourceDetails).getByText("local-source"));
+    expect(sourceDetails.open).toBe(true);
+
+    const skillDetails = sourceDetails.querySelector("details.skillhub-skill-row") as HTMLDetailsElement;
+    expect(skillDetails.open).toBe(false);
+    fireEvent.click(within(skillDetails).getByText("review"));
+    expect(skillDetails.open).toBe(true);
+    expect(within(skillDetails).getByText("Review code")).toBeVisible();
+
+    fireEvent.click(within(skillDetails).getByRole("button", { name: "阅读" }));
+    await waitFor(() => expect(clientMock.openSkillHubSkill).toHaveBeenCalledWith("skill-1", "document"));
+
+    fireEvent.click(within(skillDetails).getByRole("button", { name: "管理" }));
+    await waitFor(() => expect(clientMock.openSkillHubSkill).toHaveBeenCalledWith("skill-1", "folder"));
+    expect(within(skillDetails).getByRole("button", { name: "删除" })).toBeInTheDocument();
+  });
+
+  it("moves SkillHub update checks into the topbar and shows source-level update previews", async () => {
+    const githubSource = skillHubSourceFixture("source-github", "owner/repo", "github");
+    const updatePreview = skillHubUpdatePreviewFixture(githubSource);
+    clientMock.skillhub.mockResolvedValue({
+      config: { rootDir: "C:\\tmp\\github-repo-manager\\skillhub", libraryDir: "C:\\tmp\\github-repo-manager\\skillhub\\library" },
+      sources: [githubSource],
+      skills: [skillHubSkillFixture(githubSource, "skill-2", "triage", "Triage issues")]
+    });
+    clientMock.checkSkillHubUpdates.mockResolvedValue({ previews: [updatePreview] });
+    clientMock.applySkillHubUpdate.mockResolvedValue(updatePreview);
+    const { container } = render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "SkillHub" }));
+
+    await screen.findByRole("heading", { name: "SkillHub" });
+    const topbarActions = container.querySelector(".topbar-actions") as HTMLElement;
+    expect(within(topbarActions).queryByRole("button", { name: "刷新索引" })).not.toBeInTheDocument();
+    const checkButton = within(topbarActions).getByRole("button", { name: "检查更新" });
+    const settingsButton = within(topbarActions).getByRole("button", { name: "设置" });
+    expect(checkButton.compareDocumentPosition(settingsButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(checkButton);
+
+    await waitFor(() => expect(clientMock.checkSkillHubUpdates).toHaveBeenCalled());
+    expect(screen.queryByRole("region", { name: "SkillHub 更新" })).not.toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole("button", { name: "更新" }));
+    const dialog = await screen.findByRole("dialog", { name: "owner/repo 更新预览" });
+    expect(within(dialog).getByText("triage")).toBeInTheDocument();
+    expect(within(dialog).getByText("变更")).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "应用更新" }));
+
+    await waitFor(() => expect(clientMock.applySkillHubUpdate).toHaveBeenCalledWith("source-github", false));
   });
 
   it("shows child-count markers for cached projects", () => {
@@ -265,36 +415,16 @@ describe("HomePage", () => {
     expect(within(dialog).queryByRole("button", { name: "保存窗口方式" })).not.toBeInTheDocument();
   });
 
-  it("saves the agents CLI project directory from settings", async () => {
-    clientMock.pickDirectory.mockResolvedValueOnce({ path: "E:\\github\\agents", cancelled: false });
+  it("does not show the legacy agents CLI settings", async () => {
     render(<App />);
 
     await screen.findByText("还没有项目");
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
 
     const dialog = screen.getByRole("dialog", { name: "应用设置" });
-    expect(within(dialog).getByText("当前 agents CLI 目录")).toBeInTheDocument();
-    expect(within(dialog).queryByText(/默认关闭/)).not.toBeInTheDocument();
-    expect(within(dialog).queryByRole("button", { name: "保存 agents 路径" })).not.toBeInTheDocument();
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "选择项目目录" }));
-
-    await waitFor(() => expect(clientMock.updateConfig).toHaveBeenCalledWith({ agents: { cliPath: "E:\\github\\agents" } }));
-    expect(await screen.findByText("agents CLI 路径已更新")).toBeInTheDocument();
-  });
-
-  it("opens the agents download page from settings", async () => {
-    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
-    render(<App />);
-
-    await screen.findByText("还没有项目");
-    fireEvent.click(screen.getByRole("button", { name: "设置" }));
-
-    const dialog = screen.getByRole("dialog", { name: "应用设置" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "前往下载" }));
-
-    expect(openSpy).toHaveBeenCalledWith("https://github.com/amtiYo/agents", "_blank", "noopener,noreferrer");
-    openSpy.mockRestore();
+    expect(within(dialog).queryByText("多 agents 同步")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("当前 agents CLI 目录")).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "前往下载" })).not.toBeInTheDocument();
   });
 
   it("opens a folder picker before adding a project", async () => {
@@ -409,7 +539,6 @@ describe("HomePage", () => {
         onResume={vi.fn()}
         onDeleteSession={vi.fn()}
         repairCandidates={[]}
-        {...projectAgentsProps(project)}
         onRepairProject={vi.fn()}
         onRelocateProject={onRelocateProject}
       />
@@ -423,6 +552,132 @@ describe("HomePage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "选择新位置并迁移" }));
     expect(onRelocateProject).toHaveBeenCalled();
+  });
+
+  it("renders project tool targets above the detail filters as compact checkboxes", () => {
+    const project = projectFixture("E:\\old");
+    const onUpdateProjectTools = vi.fn();
+    const onRefreshRuleSync = vi.fn();
+    const onApplyRuleSync = vi.fn();
+
+    render(
+      <ProjectDetailView
+        project={project}
+        detail={detailFixture(project)}
+        tools={[]}
+        projectToolTargets={[
+          projectToolTargetFixture(project, "codex", true),
+          projectToolTargetFixture(project, "opencode", false)
+        ]}
+        query=""
+        warnings={[]}
+        busy={false}
+        setQuery={vi.fn()}
+        onLaunch={vi.fn()}
+        onResume={vi.fn()}
+        onDeleteSession={vi.fn()}
+        repairCandidates={[]}
+        onRepairProject={vi.fn()}
+        onRelocateProject={vi.fn()}
+        onUpdateProjectTools={onUpdateProjectTools}
+        ruleSyncStatus={ruleSyncStatusFixture(project)}
+        onRefreshRuleSync={onRefreshRuleSync}
+        onApplyRuleSync={onApplyRuleSync}
+      />
+    );
+
+    const targetSection = screen.getByRole("region", { name: "项目使用工具" });
+    expect(within(targetSection).getByText("项目使用工具")).toBeInTheDocument();
+    expect(screen.queryByText("目标工具")).not.toBeInTheDocument();
+
+    fireEvent.click(within(targetSection).getByRole("checkbox", { name: "opencode" }));
+    expect(onUpdateProjectTools).toHaveBeenCalledWith(["codex", "opencode"]);
+
+    const ruleSyncSection = screen.getByRole("region", { name: "规则同步" });
+    expect(ruleSyncSection.compareDocumentPosition(targetSection) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    const agentsRow = within(ruleSyncSection).getByRole("article", { name: "AGENTS.md 规则文件" });
+    const claudeRow = within(ruleSyncSection).getByRole("article", { name: "CLAUDE.md 规则文件" });
+    expect(within(agentsRow).getByText("AGENTS.md")).toBeInTheDocument();
+    expect(within(claudeRow).getByText("CLAUDE.md")).toBeInTheDocument();
+    expect(within(ruleSyncSection).getAllByText("文件存在")).toHaveLength(2);
+    expect(within(ruleSyncSection).getAllByText("无未提交内容")).toHaveLength(2);
+    expect(within(agentsRow).getByText(/2026/)).toBeInTheDocument();
+    expect(within(ruleSyncSection).queryByText(project.rootPath)).not.toBeInTheDocument();
+
+    fireEvent.click(within(ruleSyncSection).getByRole("button", { name: "刷新规则" }));
+    expect(onRefreshRuleSync).toHaveBeenCalled();
+
+    fireEvent.click(within(claudeRow).getByRole("button", { name: "同步" }));
+    expect(onApplyRuleSync).toHaveBeenCalledWith("agents-to-claude");
+  });
+
+  it("keeps project tool target editing out of the skill panel and only shows enabled tools inside a skill", async () => {
+    const project = projectFixture("E:\\old");
+    const localSource = skillHubSourceFixture("source-1", "local-source", "local");
+    const toolTargets = [
+      projectToolTargetFixture(project, "codex", true),
+      projectToolTargetFixture(project, "opencode", true),
+      projectToolTargetFixture(project, "qwen", false)
+    ];
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.projectToolTargets.mockResolvedValue(toolTargets);
+    clientMock.projectSkillTargets.mockResolvedValue({
+      projectId: project.id,
+      toolTargets,
+      skillTargets: [
+        {
+          projectId: project.id,
+          toolId: "codex",
+          skillId: "skill-1",
+          linkPath: `${project.rootPath}\\.codex\\skills\\review`,
+          targetPath: "C:\\tmp\\github-repo-manager\\skillhub\\library\\review",
+          createdAt: "2026-06-01T00:00:00Z",
+          updatedAt: "2026-06-01T00:00:00Z"
+        }
+      ],
+      skills: [
+        {
+          id: "skill-1",
+          sourceId: "source-1",
+          sourceType: "local",
+          folderName: "review",
+          skillName: "Review",
+          description: "Review code",
+          libraryRelativePath: "local/review",
+          libraryPath: "C:\\tmp\\github-repo-manager\\skillhub\\library\\local\\review",
+          sourceRelativePath: "review",
+          contentHash: "hash",
+          createdAt: "2026-06-01T00:00:00Z",
+          updatedAt: "2026-06-01T00:00:00Z",
+          source: localSource
+        }
+      ]
+    });
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByRole("button", { name: "技能" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目技能管理" });
+    expect(within(panel).queryByText("目标工具")).not.toBeInTheDocument();
+
+    const sourceDetails = panel.querySelector("details.project-skill-source-group") as HTMLDetailsElement;
+    expect(sourceDetails).not.toBeNull();
+    expect(within(sourceDetails).getByText("local-source")).toBeInTheDocument();
+    expect(within(sourceDetails).getByText("1 个技能")).toBeInTheDocument();
+    expect(within(sourceDetails).queryByText("local/review")).not.toBeInTheDocument();
+    fireEvent.click(sourceDetails.querySelector("summary") as HTMLElement);
+
+    const skillSummary = sourceDetails.querySelector("details.skill-target-row summary") as HTMLElement;
+    fireEvent.click(skillSummary);
+
+    expect(within(panel).getByRole("checkbox", { name: "codex" })).toBeInTheDocument();
+    expect(within(panel).getByRole("checkbox", { name: "opencode" })).toBeInTheDocument();
+    expect(within(panel).queryByRole("checkbox", { name: "qwen" })).not.toBeInTheDocument();
   });
 
   it("shows merge repair candidates for missing cwd projects", () => {
@@ -462,7 +717,6 @@ describe("HomePage", () => {
         onDeleteSession={vi.fn()}
         onRepairProject={onRepairProject}
         onRelocateProject={vi.fn()}
-        {...projectAgentsProps(project)}
       />
     );
 
@@ -498,7 +752,6 @@ describe("HomePage", () => {
         onDeleteSession={vi.fn()}
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
-        {...projectAgentsProps(project)}
       />
     );
 
@@ -526,7 +779,6 @@ describe("HomePage", () => {
         onDeleteSession={vi.fn()}
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
-        {...projectAgentsProps(project)}
       />
     );
 
@@ -538,74 +790,6 @@ describe("HomePage", () => {
     expect(repairButton).not.toBeDisabled();
     fireEvent.click(repairButton);
     expect(onResume).toHaveBeenCalledWith("qwen:e83d984f-d610-4eae-bff9-8273372bea97");
-  });
-
-  it("updates agents integrations from the project detail panel", () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-    const project = projectFixture("E:\\old");
-    const onUpdateAgentsIntegrations = vi.fn();
-
-    render(
-      <ProjectDetailView
-        project={project}
-        detail={detailFixture(project)}
-        tools={[]}
-        query=""
-        warnings={[]}
-        repairCandidates={[]}
-        busy={false}
-        setQuery={vi.fn()}
-        onLaunch={vi.fn()}
-        onResume={vi.fn()}
-        onDeleteSession={vi.fn()}
-        onRepairProject={vi.fn()}
-        onRelocateProject={vi.fn()}
-        {...projectAgentsProps(project, { onUpdateAgentsIntegrations })}
-      />
-    );
-
-    const panel = screen.getByRole("region", { name: "多 agents 配置同步：old（根目录）" });
-    fireEvent.click(within(panel).getByRole("checkbox", { name: "Gemini CLI" }));
-    fireEvent.click(within(panel).getByRole("button", { name: "保存工具选择并同步" }));
-
-    expect(onUpdateAgentsIntegrations).toHaveBeenCalledWith(project.rootPath, ["codex", "gemini"]);
-    confirmSpy.mockRestore();
-  });
-
-  it("renders independent agents sync panels for root and child groups", () => {
-    const project = projectFixture("E:\\repo");
-    const childRoot = "E:\\repo\\packages\\app";
-    const onCheckAgentsSync = vi.fn();
-
-    render(
-      <ProjectDetailView
-        project={project}
-        detail={detailWithChildGroup(project, childRoot)}
-        tools={[]}
-        query=""
-        warnings={[]}
-        repairCandidates={[]}
-        busy={false}
-        setQuery={vi.fn()}
-        onLaunch={vi.fn()}
-        onResume={vi.fn()}
-        onDeleteSession={vi.fn()}
-        onRepairProject={vi.fn()}
-        onRelocateProject={vi.fn()}
-        {...projectAgentsProps(project, {
-          agentsStatuses: {
-            [project.rootPath]: agentsStatusFixture(project.id, project.rootPath),
-            [childRoot]: agentsStatusFixture(project.id, childRoot)
-          },
-          onCheckAgentsSync
-        })}
-      />
-    );
-
-    expect(screen.getByRole("region", { name: "多 agents 配置同步：repo（根目录）" })).toBeInTheDocument();
-    const childPanel = screen.getByRole("region", { name: "多 agents 配置同步：packages\\app" });
-    fireEvent.click(within(childPanel).getByRole("button", { name: "检查同步" }));
-    expect(onCheckAgentsSync).toHaveBeenCalledWith(childRoot);
   });
 
   it("refreshes project detail after repairing and resuming a Qwen source mismatch", async () => {
@@ -715,7 +899,103 @@ describe("HomePage", () => {
     expect(within(topbar).queryByText("项目详情")).not.toBeInTheDocument();
     expect(within(topbar).queryByText("E:\\new-ai-game")).not.toBeInTheDocument();
     expect(within(topbar).getByRole("button", { name: "返回" })).toBeInTheDocument();
+    expect(within(topbar).getByRole("checkbox", { name: "子目录" })).toBeInTheDocument();
+    expect(within(topbar).getByRole("button", { name: "刷新项目" })).toBeInTheDocument();
+    expect(within(topbar).getByRole("button", { name: "设置" })).toBeInTheDocument();
+    expect(within(topbar).queryByRole("button", { name: "规则同步" })).not.toBeInTheDocument();
+    expect(within(topbar).queryByRole("button", { name: "刷新索引" })).not.toBeInTheDocument();
     expect(container.querySelector(".detail-head")).toBeNull();
+  });
+
+  it("places project refresh immediately before settings in project detail", async () => {
+    const project = { ...projectFixture("E:\\new-ai-game"), sessionCount: 3 };
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+
+    const { container } = render(<App />);
+
+    await screen.findByText("new-ai-game");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+
+    const topbarActions = container.querySelector(".topbar-actions") as HTMLElement;
+    const buttons = within(topbarActions).getAllByRole("button").map((button) => button.textContent);
+    expect(buttons.slice(-2)).toEqual(["刷新项目", "设置"]);
+  });
+
+  it("confirms rule sync with target status explanations before applying", async () => {
+    const project = { ...projectFixture("E:\\new-ai-game"), sessionCount: 3 };
+    const status = ruleSyncStatusFixture(project);
+    status.files["AGENTS.md"].gitManaged = false;
+    status.files["AGENTS.md"].dirty = null;
+    const committedStatus = ruleSyncStatusFixture(project);
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.ruleSyncStatus.mockResolvedValue(status);
+    clientMock.commitRuleSync.mockResolvedValue({
+      projectId: project.id,
+      projectRoot: project.rootPath,
+      direction: "claude-to-agents",
+      targetFile: "AGENTS.md",
+      action: "committed",
+      backupCommit: "abc123",
+      message: "目标规则文件已 commit",
+      status: committedStatus
+    });
+    clientMock.applyRuleSync.mockResolvedValue({
+      projectId: project.id,
+      projectRoot: project.rootPath,
+      direction: "claude-to-agents",
+      sourceFile: "CLAUDE.md",
+      targetFile: "AGENTS.md",
+      action: "overwritten",
+      backupCommit: "abc123",
+      message: "目标规则文件已覆盖",
+      status
+    });
+
+    render(<App />);
+
+    await screen.findByText("new-ai-game");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+
+    const ruleSyncSection = screen.getByRole("region", { name: "规则同步" });
+    const agentsRow = await within(ruleSyncSection).findByRole("article", { name: "AGENTS.md 规则文件" });
+    const syncToAgents = within(agentsRow).getByRole("button", { name: "同步" });
+
+    fireEvent.click(syncToAgents);
+
+    const dialog = await screen.findByRole("dialog", { name: "同步到AGENTS.md" });
+    expect(within(dialog).getByText("将CLAUDE.md的内容同步到AGENTS.md")).toBeInTheDocument();
+    expect(within(dialog).getByText("目标文件状态")).toBeInTheDocument();
+    expect(within(dialog).getByText("文件存在")).toBeInTheDocument();
+    expect(within(dialog).getByText("无版本管理")).toBeInTheDocument();
+    expect(within(dialog).queryByText("来源")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("存在 / 缺失")).not.toBeInTheDocument();
+    expect(within(dialog).getAllByRole("button", { name: "取消" })).toHaveLength(1);
+    expect(within(dialog).getByRole("button", { name: "commit" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "同步" })).toBeInTheDocument();
+    expect(within(dialog).queryByText(project.rootPath)).not.toBeInTheDocument();
+    expect(clientMock.applyRuleSync).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "commit" }));
+    await waitFor(() => expect(clientMock.commitRuleSync).toHaveBeenCalledWith(project.id, "claude-to-agents"));
+    expect(clientMock.applyRuleSync).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "同步" }));
+    await waitFor(() => expect(clientMock.applyRuleSync).toHaveBeenCalledWith(project.id, "claude-to-agents"));
+  });
+
+  it("places refresh index before settings outside project detail", async () => {
+    const { container } = render(<App />);
+
+    await screen.findByText("还没有项目");
+
+    const topbarActions = container.querySelector(".topbar-actions") as HTMLElement;
+    const refreshButton = within(topbarActions).getByRole("button", { name: "刷新索引" });
+    const settingsButton = within(topbarActions).getByRole("button", { name: "设置" });
+    expect(refreshButton.compareDocumentPosition(settingsButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("clears project detail notices when returning to the overview", async () => {
@@ -856,7 +1136,6 @@ describe("HomePage", () => {
         onDeleteSession={vi.fn()}
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
-        {...projectAgentsProps(project)}
       />
     );
 
@@ -889,25 +1168,6 @@ describe("HomePage", () => {
     expect(screen.getByText("迁移中...")).toBeInTheDocument();
   });
 
-  it("does not show relocation progress while agents initialization is running", async () => {
-    const project = projectFixture("E:\\old");
-    clientMock.projects.mockResolvedValue([project]);
-    clientMock.detail.mockResolvedValue(detailFixture(project));
-    clientMock.agentsStatus.mockResolvedValue(agentsUninitializedStatusFixture(project.id, project.rootPath));
-    clientMock.initAgents.mockReturnValue(new Promise(() => {}));
-
-    render(<App />);
-
-    await screen.findByText("old");
-    fireEvent.click(screen.getByText("打开"));
-    await screen.findByRole("button", { name: "初始化 agents 配置" });
-
-    fireEvent.click(screen.getByRole("button", { name: "初始化 agents 配置" }));
-
-    expect(clientMock.initAgents).toHaveBeenCalledWith(project.id, project.rootPath);
-    expect(screen.queryByText("迁移中...")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "选择新位置并迁移" })).toBeDisabled();
-  });
 });
 
 function projectFixture(rootPath: string): Project {
@@ -1122,7 +1382,79 @@ function toolStatusFixture(toolId: ToolId): ToolStatus {
   };
 }
 
-function appConfigFixture(mode: AppConfig["terminal"]["mode"] = "new-window", agentsCliPath = ""): AppConfig {
+function projectToolTargetFixture(project: Project, toolId: ToolId, enabled: boolean): ProjectToolTarget {
+  return {
+    projectId: project.id,
+    toolId,
+    enabled,
+    inferred: false,
+    supported: true,
+    skillDirectory: `${project.rootPath}\\.${toolId}\\skills`,
+    reason: null,
+    updatedAt: "2026-06-01T00:00:00Z"
+  };
+}
+
+function skillHubSourceFixture(id: string, label: string, type: SkillHubSource["type"]): SkillHubSource {
+  return {
+    id,
+    type,
+    label,
+    repoKey: type === "github" ? label : null,
+    owner: type === "github" ? label.split("/")[0] : null,
+    repo: type === "github" ? label.split("/")[1] ?? null : null,
+    branch: null,
+    input: label,
+    inputPath: null,
+    resolvedPath: type === "local" ? `C:\\tmp\\${label}` : null,
+    currentRevision: null,
+    checkoutPath: type === "github" ? `C:\\tmp\\checkout\\${id}` : null,
+    createdAt: "2026-06-01T00:00:00Z",
+    updatedAt: "2026-06-01T00:00:00Z"
+  };
+}
+
+function skillHubSkillFixture(source: SkillHubSource, id: string, folderName: string, description: string): SkillHubSkill {
+  return {
+    id,
+    sourceId: source.id,
+    sourceType: source.type,
+    folderName,
+    skillName: folderName,
+    description,
+    libraryRelativePath: `${source.id}/${folderName}`,
+    libraryPath: `C:\\tmp\\github-repo-manager\\skillhub\\library\\${source.id}\\${folderName}`,
+    sourceRelativePath: folderName,
+    contentHash: `${id}-hash`,
+    createdAt: "2026-06-01T00:00:00Z",
+    updatedAt: "2026-06-01T00:00:00Z",
+    source
+  };
+}
+
+function skillHubUpdatePreviewFixture(source: SkillHubSource): SkillHubSourceUpdatePreview {
+  return {
+    source,
+    items: [
+      {
+        kind: "changed",
+        skillId: "skill-2",
+        folderName: "triage",
+        skillName: "triage",
+        libraryRelativePath: `${source.id}/triage`,
+        previousSourceRelativePath: "triage",
+        nextSourceRelativePath: "triage",
+        destructive: false,
+        affectedTargets: []
+      }
+    ],
+    hasUpdates: true,
+    destructive: false,
+    checkedAt: "2026-06-01T00:00:00Z"
+  };
+}
+
+function appConfigFixture(mode: AppConfig["terminal"]["mode"] = "new-window", skillHubRoot = "C:\\tmp\\github-repo-manager\\skillhub"): AppConfig {
   return {
     version: 1,
     tools: {
@@ -1134,88 +1466,38 @@ function appConfigFixture(mode: AppConfig["terminal"]["mode"] = "new-window", ag
       copilot: { command: "copilot" }
     },
     terminal: { mode },
-    agents: { cliPath: agentsCliPath }
+    skillhub: { rootDir: skillHubRoot }
   };
 }
 
-function agentsStatusFixture(projectId = "project-1", projectRoot = "E:\\old"): AgentsConfigSyncStatus {
+function ruleSyncStatusFixture(project: Project) {
   return {
-    projectId,
-    projectRoot,
-    available: true,
-    initialized: true,
-    command: "node E:\\github\\agents\\bin\\agents",
-    configPath: `${projectRoot}\\.agents\\agents.json`,
-    error: null,
-    status: {
-      projectRoot,
-      enabledIntegrations: ["codex"],
-      syncMode: "source-only",
-      selectedMcpServers: ["filesystem"],
-      mcp: {
-        configured: 1,
-        localOverrides: 0
+    projectId: project.id,
+    projectRoot: project.rootPath,
+    gitAvailable: true,
+    gitRoot: project.rootPath,
+    files: {
+      "AGENTS.md": {
+        file: "AGENTS.md",
+        path: `${project.rootPath}\\AGENTS.md`,
+        exists: true,
+        mtime: "2026-06-01T00:00:00Z",
+        gitManaged: true,
+        dirty: false
       },
-      files: {
-        ".agents/agents.json": true,
-        ".codex/config.toml": true
-      },
-      probes: {},
-      probesSkipped: true
+      "CLAUDE.md": {
+        file: "CLAUDE.md",
+        path: `${project.rootPath}\\CLAUDE.md`,
+        exists: true,
+        mtime: "2026-06-01T00:00:00Z",
+        gitManaged: true,
+        dirty: false
+      }
+    },
+    directions: {
+      "agents-to-claude": { enabled: true, reason: null },
+      "claude-to-agents": { enabled: true, reason: null }
     }
-  };
-}
-
-function agentsUninitializedStatusFixture(projectId = "project-1", projectRoot = "E:\\old"): AgentsConfigSyncStatus {
-  return {
-    projectId,
-    projectRoot,
-    available: true,
-    initialized: false,
-    command: "node E:\\github\\agents\\bin\\agents",
-    configPath: `${projectRoot}\\.agents\\agents.json`,
-    error: null,
-    status: null
-  };
-}
-
-function agentsCommandResultFixture(): AgentsCommandResult {
-  const status = agentsStatusFixture();
-  return {
-    projectId: status.projectId,
-    projectRoot: status.projectRoot,
-    action: "sync-check",
-    command: "node E:\\github\\agents\\bin\\agents --no-update-check sync --check",
-    exitCode: 0,
-    ok: true,
-    changed: [],
-    stdout: "",
-    stderr: "",
-    status
-  };
-}
-
-function projectAgentsProps(
-  project: Project,
-  overrides: Partial<{
-    agentsStatuses: Record<string, AgentsConfigSyncStatus>;
-    lastAgentsResults: Record<string, AgentsCommandResult | null>;
-    onRefreshAgents: (rootPath: string) => void;
-    onInitializeAgents: (rootPath: string) => void;
-    onCheckAgentsSync: (rootPath: string) => void;
-    onApplyAgentsSync: (rootPath: string) => void;
-    onUpdateAgentsIntegrations: (rootPath: string, enabledIntegrations: NonNullable<AgentsConfigSyncStatus["status"]>["enabledIntegrations"]) => void;
-  }> = {}
-) {
-  return {
-    agentsStatuses: { [project.rootPath]: agentsStatusFixture(project.id, project.rootPath) },
-    lastAgentsResults: {},
-    onRefreshAgents: vi.fn(),
-    onInitializeAgents: vi.fn(),
-    onCheckAgentsSync: vi.fn(),
-    onApplyAgentsSync: vi.fn(),
-    onUpdateAgentsIntegrations: vi.fn(),
-    ...overrides
   };
 }
 

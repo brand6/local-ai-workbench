@@ -42,7 +42,7 @@ export function defaultAppConfig(): AppConfig {
     qoder: { command: "qodercli" },
     copilot: { command: "copilot" }
   };
-  return { version: 1, tools, terminal: { mode: "new-window" }, agents: { cliPath: "" } };
+  return { version: 1, tools, terminal: { mode: "new-window" }, skillhub: { rootDir: "" } };
 }
 
 export function ensureConfigFiles(dataDir: string): AppConfig {
@@ -50,13 +50,13 @@ export function ensureConfigFiles(dataDir: string): AppConfig {
   fs.mkdirSync(path.join(dataDir, "backups"), { recursive: true });
   const configPath = path.join(dataDir, "config.json");
   if (!fs.existsSync(configPath)) {
-    const config = defaultAppConfig();
+    const config = normalizeConfig(defaultAppConfig(), dataDir);
     fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
     return config;
   }
 
   const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as AppConfig;
-  return normalizeConfig(config);
+  return normalizeConfig(config, dataDir);
 }
 
 export function writeAppConfig(dataDir: string, config: AppConfig): void {
@@ -65,11 +65,17 @@ export function writeAppConfig(dataDir: string, config: AppConfig): void {
   if (fs.existsSync(configPath)) {
     fs.copyFileSync(configPath, path.join(dataDir, "config.json.bak"));
   }
-  fs.writeFileSync(configPath, `${JSON.stringify(normalizeConfig(config), null, 2)}\n`, "utf8");
+  fs.writeFileSync(configPath, `${JSON.stringify(normalizeConfig(config, dataDir), null, 2)}\n`, "utf8");
 }
 
-export function normalizeConfig(config: AppConfig): AppConfig {
+export function normalizeConfig(config: AppConfig, dataDir?: string): AppConfig {
   const defaults = defaultAppConfig();
+  const configuredSkillHubRoot =
+    typeof config.skillhub?.rootDir === "string" && config.skillhub.rootDir.trim().length > 0
+      ? config.skillhub.rootDir.trim()
+      : dataDir
+        ? path.join(dataDir, "skillhub")
+        : defaults.skillhub.rootDir;
   return {
     version: 1,
     tools: {
@@ -81,7 +87,7 @@ export function normalizeConfig(config: AppConfig): AppConfig {
       copilot: { ...defaults.tools.copilot, ...(config.tools?.copilot ?? {}) }
     },
     terminal: { mode: isTerminalMode(config.terminal?.mode) ? config.terminal.mode : defaults.terminal.mode },
-    agents: { cliPath: typeof config.agents?.cliPath === "string" ? config.agents.cliPath.trim() : defaults.agents.cliPath }
+    skillhub: { rootDir: configuredSkillHubRoot }
   };
 }
 

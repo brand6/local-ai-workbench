@@ -1,7 +1,4 @@
 import type {
-  AgentsCommandResult,
-  AgentsConfigSyncStatus,
-  AgentsIntegrationName,
   AppConfig,
   BootstrapState,
   DeleteSessionResult,
@@ -12,13 +9,27 @@ import type {
   Project,
   ProjectDetail,
   ProjectRepairCandidate,
+  ProjectSkillTargetsState,
+  ProjectSkillUpdateResult,
+  ProjectToolTarget,
   RefreshMode,
   ProjectRepairResult,
   RefreshResult,
   RelocationPreview,
   RelocationResult,
+  RuleSyncDirection,
+  RuleSyncCommitResult,
+  RuleSyncResult,
+  RuleSyncStatus,
   ScanCandidate,
   ScanDrive,
+  LocalOpenResponse,
+  SkillHubDeletePreview,
+  SkillHubImportResult,
+  SkillHubList,
+  SkillHubOpenTarget,
+  SkillHubSourceUpdatePreview,
+  SkillHubUpdateCheckResult,
   ToolStatus
 } from "../shared/types.js";
 
@@ -53,6 +64,15 @@ export async function apiPatch<T>(url: string, body: unknown): Promise<T> {
   return handle<T>(response);
 }
 
+export async function apiPut<T>(url: string, body: unknown): Promise<T> {
+  const response = await fetch(url, {
+    method: "PUT",
+    headers: apiHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify(body)
+  });
+  return handle<T>(response);
+}
+
 export async function apiDelete<T>(url: string): Promise<T> {
   const response = await fetch(url, { method: "DELETE", headers: apiHeaders() });
   return handle<T>(response);
@@ -71,33 +91,50 @@ export const client = {
   setDataDir: (dataDir: string) => apiPost<BootstrapState>("/api/bootstrap/data-dir", { dataDir }),
   eventsUrl: () => `/api/events?token=${encodeURIComponent(localApiToken())}`,
   config: () => apiGet<AppConfig>("/api/config"),
-  updateConfig: (config: Partial<Pick<AppConfig, "terminal" | "agents">>) => apiPatch<AppConfig>("/api/config", config),
+  updateConfig: (config: Partial<Pick<AppConfig, "terminal" | "skillhub">>) => apiPatch<AppConfig>("/api/config", config),
+  skillhub: (query = "") => apiGet<SkillHubList>(`/api/skillhub${query ? `?query=${encodeURIComponent(query)}` : ""}`),
+  importLocalSkill: (path: string, overwrite = false) =>
+    apiPost<SkillHubImportResult>("/api/skillhub/import/local", { path, overwrite }),
+  importGitHubSkill: (input: string, overwrite = false) =>
+    apiPost<SkillHubImportResult>("/api/skillhub/import/github", { input, overwrite }),
+  checkSkillHubUpdates: () => apiGet<SkillHubUpdateCheckResult>("/api/skillhub/updates"),
+  applySkillHubUpdate: (sourceId: string, confirmDestructive = false) =>
+    apiPost<SkillHubSourceUpdatePreview>(`/api/skillhub/sources/${encodeURIComponent(sourceId)}/update`, { confirmDestructive }),
+  previewDeleteSkillHubSkill: (skillId: string) =>
+    apiGet<SkillHubDeletePreview>(`/api/skillhub/skills/${encodeURIComponent(skillId)}/delete-preview`),
+  deleteSkillHubSkill: (skillId: string) => apiDelete<SkillHubDeletePreview>(`/api/skillhub/skills/${encodeURIComponent(skillId)}`),
+  openSkillHubSkill: (skillId: string, target: SkillHubOpenTarget) =>
+    apiPost<LocalOpenResponse>(`/api/skillhub/skills/${encodeURIComponent(skillId)}/open`, { target }),
   projects: () => apiGet<Project[]>("/api/projects"),
   drives: () => apiGet<ScanDrive[]>("/api/local-filesystem/drives"),
   pickDirectory: () => apiPost<DirectoryPickResponse>("/api/local-filesystem/pick-directory"),
   createDirectory: (parentPath: string, directoryName: string) =>
     apiPost<DirectoryCreateResponse>("/api/local-filesystem/create-directory", { parentPath, directoryName }),
-  addProject: (rootPath: string, includeSubdirectories = false) =>
+  addProject: (rootPath: string, includeSubdirectories = false, toolIds?: string[]) =>
     apiPost<{ project: Project; mergedIntoParent: boolean; removedChildren: Project[] }>("/api/projects", {
       rootPath,
-      includeSubdirectories
+      includeSubdirectories,
+      ...(toolIds ? { toolIds } : {})
     }),
   updateProject: (id: string, includeSubdirectories: boolean) =>
     apiPatch<Project>(`/api/projects/${id}`, { includeSubdirectories }),
   removeProject: (id: string) => apiDelete<{ removed: boolean }>(`/api/projects/${id}`),
   detail: (id: string, query: string) => apiGet<ProjectDetail>(`/api/projects/${id}/detail?query=${encodeURIComponent(query)}`),
   refreshProject: (id: string) => apiPost<RefreshResult>(`/api/projects/${id}/refresh`),
+  projectToolTargets: (id: string) => apiGet<ProjectToolTarget[]>(`/api/projects/${id}/tool-targets`),
+  updateProjectToolTargets: (id: string, toolIds: string[]) => apiPatch<ProjectToolTarget[]>(`/api/projects/${id}/tool-targets`, { toolIds }),
+  projectSkillTargets: (id: string) => apiGet<ProjectSkillTargetsState>(`/api/projects/${id}/skill-targets`),
+  updateProjectSkillTargets: (id: string, skillId: string, toolIds: string[], replaceConflicts = false) =>
+    apiPut<ProjectSkillUpdateResult>(`/api/projects/${id}/skill-targets/${encodeURIComponent(skillId)}`, { toolIds, replaceConflicts }),
+  ruleSyncStatus: (id: string) => apiGet<RuleSyncStatus>(`/api/projects/${id}/rule-sync/status`),
+  applyRuleSync: (id: string, direction: RuleSyncDirection, options: { confirmGitInit?: boolean; confirmDirectOverwrite?: boolean } = {}) =>
+    apiPost<RuleSyncResult>(`/api/projects/${id}/rule-sync/apply`, { direction, ...options }),
+  commitRuleSync: (id: string, direction: RuleSyncDirection) =>
+    apiPost<RuleSyncCommitResult>(`/api/projects/${id}/rule-sync/commit`, { direction }),
   repairCandidates: (id: string) => apiGet<ProjectRepairCandidate[]>(`/api/projects/${id}/repair-candidates`),
   repairProject: (id: string, targetProjectId: string, targetRootPath?: string) =>
     apiPost<ProjectRepairResult>(`/api/projects/${id}/repair`, { targetProjectId, targetRootPath }),
   relocateProject: (id: string, newRoot: string) => apiPost<RelocationResult>(`/api/projects/${id}/relocate`, { newRoot }),
-  agentsStatus: (id: string, rootPath?: string) =>
-    apiGet<AgentsConfigSyncStatus>(`/api/projects/${id}/agents/status${rootPath ? `?rootPath=${encodeURIComponent(rootPath)}` : ""}`),
-  initAgents: (id: string, rootPath?: string) => apiPost<AgentsCommandResult>(`/api/projects/${id}/agents/init`, rootPath ? { rootPath } : {}),
-  syncAgents: (id: string, check: boolean, rootPath?: string) =>
-    apiPost<AgentsCommandResult>(`/api/projects/${id}/agents/sync`, { check, ...(rootPath ? { rootPath } : {}) }),
-  updateAgentsIntegrations: (id: string, enabledIntegrations: AgentsIntegrationName[], rootPath?: string) =>
-    apiPatch<AgentsCommandResult>(`/api/projects/${id}/agents/integrations`, { enabledIntegrations, ...(rootPath ? { rootPath } : {}) }),
   refreshSessions: (toolIds?: string[], mode: RefreshMode = "incremental") =>
     apiPost<RefreshResult>("/api/sessions/refresh", { mode, ...(toolIds?.length ? { toolIds } : {}) }),
   deleteSession: (sessionId: string) => apiDelete<DeleteSessionResult>(`/api/sessions/${encodeURIComponent(sessionId)}`),
