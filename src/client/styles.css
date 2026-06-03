@@ -302,6 +302,42 @@ label,
   line-height: 1.2;
 }
 
+.new-project-dialog {
+  width: min(560px, 100%);
+  gap: 16px;
+  padding: 22px;
+}
+
+.new-project-dialog header {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.new-project-form {
+  display: grid;
+  gap: 16px;
+}
+
+.new-project-fields {
+  gap: 16px;
+}
+
+.new-project-dialog input {
+  width: 100%;
+}
+
+.new-project-directory {
+  align-items: end;
+}
+
+.new-project-directory button {
+  min-width: 108px;
+}
+
+.new-project-preview {
+  min-width: 0;
+}
+
 .scan-dialog {
   width: min(920px, 100%);
   max-height: calc(100vh - 120px);
@@ -662,6 +698,36 @@ label,
   flex-wrap: wrap;
   align-items: end;
   gap: 12px;
+}
+
+.detail-controls-toolbar {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+}
+
+.field.wide.detail-filter {
+  width: 100%;
+}
+
+.detail-filter input {
+  width: 100%;
+}
+
+.detail-relocation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  min-width: 0;
+}
+
+.detail-relocation .current-root {
+  min-width: 0;
+}
+
+.detail-relocation button {
+  white-space: nowrap;
 }
 
 .confirm-code {
@@ -1373,6 +1439,17 @@ dd {
   .repair-candidate button,
   .settings-actions button {
     width: 100%;
+  }
+
+  .detail-filter,
+  .detail-relocation {
+    min-width: 0;
+  }
+
+  .detail-relocation {
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-content: stretch;
   }
 
   .topbar-project-actions .toggle {

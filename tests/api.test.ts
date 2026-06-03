@@ -576,6 +576,130 @@ describe("API", () => {
     });
   });
 
+  it("prepares an unbuilt agents source directory before running init", async () => {
+    directory = testDir("api-agents-source-unbuilt");
+    const projectRoot = path.join(directory, "repo");
+    const fakeCliRoot = writeUnbuiltAgentsSourceCliDirectory(directory);
+    const fakeNpmBin = writeFakeNpm(directory);
+    const pathKey = pathEnvironmentKey();
+    const previousPath = process.env[pathKey];
+    fs.mkdirSync(projectRoot, { recursive: true });
+    process.env[pathKey] = `${fakeNpmBin}${path.delimiter}${previousPath ?? ""}`;
+    try {
+      context = new AppContext(directory);
+      context.config().agents.cliPath = fakeCliRoot;
+      const app = await createHttpApp(context, { dev: false, serveClient: false });
+      const project = context.database().addProject(projectRoot, true).project;
+
+      const status = await request(app)
+        .get(`/api/projects/${project.id}/agents/status`)
+        .set("x-local-api-token", context.token)
+        .expect(200);
+
+      expect(status.body).toMatchObject({
+        available: true,
+        initialized: false,
+        status: null,
+        error: null
+      });
+
+      const result = await request(app)
+        .post(`/api/projects/${project.id}/agents/init`)
+        .set("x-local-api-token", context.token)
+        .expect(200);
+
+      expect(result.body).toMatchObject({
+        action: "init",
+        exitCode: 0,
+        ok: true,
+        status: {
+          initialized: true,
+          status: {
+            enabledIntegrations: ["codex"]
+          }
+        }
+      });
+      expect(result.body.command).toContain("npm install");
+      expect(result.body.command).toContain("npm run build");
+      expect(fs.existsSync(path.join(projectRoot, ".agents", "agents.json"))).toBe(true);
+      expect(fs.existsSync(path.join(fakeCliRoot, "dist", "cli.js"))).toBe(true);
+      expect(fs.readFileSync(path.join(fakeCliRoot, "npm-calls.log"), "utf8").trim().split(/\r?\n/)).toEqual(["install", "run build"]);
+    } finally {
+      if (previousPath === undefined) {
+        delete process.env[pathKey];
+      } else {
+        process.env[pathKey] = previousPath;
+      }
+    }
+  });
+
+  it("keeps useful Node command errors instead of showing only the Node version", async () => {
+    directory = testDir("api-agents-node-footer-error");
+    const projectRoot = path.join(directory, "repo");
+    const fakeCli = writeNodeFooterErrorAgentsCli(directory);
+    fs.mkdirSync(projectRoot, { recursive: true });
+    context = new AppContext(directory);
+    context.config().agents.cliPath = fakeCli;
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+    const project = context.database().addProject(projectRoot, true).project;
+
+    const result = await request(app)
+      .post(`/api/projects/${project.id}/agents/init`)
+      .set("x-local-api-token", context.token)
+      .expect(400);
+
+    expect(result.body.reason).toBe("Error: Cannot find module 'missing-agents-dependency'");
+  });
+
+  (process.platform === "win32" ? it : it.skip)("initializes agents with the Windows command shim when the configured path is an agents project directory", async () => {
+    directory = testDir("api-agents-init-windows-shim");
+    const projectRoot = path.join(directory, "repo");
+    const fakeCliRoot = writeFakeAgentsCliDirectoryWithWindowsShim(directory);
+    fs.mkdirSync(projectRoot, { recursive: true });
+    context = new AppContext(directory);
+    context.config().agents.cliPath = fakeCliRoot;
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+    const project = context.database().addProject(projectRoot, true).project;
+
+    const result = await request(app)
+      .post(`/api/projects/${project.id}/agents/init`)
+      .set("x-local-api-token", context.token)
+      .expect(200);
+
+    expect(result.body).toMatchObject({
+      action: "init",
+      exitCode: 0,
+      ok: true,
+      status: {
+        initialized: true,
+        status: {
+          enabledIntegrations: ["codex", "gemini"]
+        }
+      }
+    });
+    expect(result.body.command).toContain("agents.cmd");
+
+    const directProjectRoot = path.join(directory, "repo-direct");
+    fs.mkdirSync(directProjectRoot, { recursive: true });
+    context.config().agents.cliPath = path.join(fakeCliRoot, "bin", "agents");
+    const directProject = context.database().addProject(directProjectRoot, true).project;
+
+    const directResult = await request(app)
+      .post(`/api/projects/${directProject.id}/agents/init`)
+      .set("x-local-api-token", context.token)
+      .expect(200);
+
+    expect(directResult.body).toMatchObject({
+      action: "init",
+      exitCode: 0,
+      ok: true,
+      status: {
+        initialized: true
+      }
+    });
+    expect(directResult.body.command).toContain("agents.cmd");
+  });
+
   it("treats agents sync check exit code 2 as pending changes", async () => {
     directory = testDir("api-agents-sync-check");
     const projectRoot = path.join(directory, "repo");
@@ -1205,6 +1329,142 @@ function writeFakeAgentsCli(root: string): string {
     ].join("\n")
   );
   return fakeCli;
+}
+
+function writeUnbuiltAgentsSourceCliDirectory(root: string): string {
+  const cliRoot = path.join(root, "unbuilt-agents-source");
+  const bin = path.join(cliRoot, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(cliRoot, "package.json"), JSON.stringify({ name: "@agents-dev/cli" }, null, 2));
+  fs.writeFileSync(
+    path.join(bin, "agents"),
+    [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const args = process.argv.slice(2);",
+      "const projectRoot = args[args.indexOf('--path') + 1];",
+      "if (args.includes('init')) {",
+      "  fs.mkdirSync(path.join(projectRoot, '.agents'), { recursive: true });",
+      "  fs.writeFileSync(path.join(projectRoot, '.agents', 'agents.json'), '{}');",
+      "  process.exit(0);",
+      "}",
+      "if (args.includes('status')) {",
+      "  console.log(JSON.stringify({",
+      "    projectRoot,",
+      "    enabledIntegrations: ['codex'],",
+      "    syncMode: 'source-only',",
+      "    selectedMcpServers: [],",
+      "    mcp: { configured: 0, localOverrides: 0 },",
+      "    files: { '.agents/agents.json': true },",
+      "    probes: {},",
+      "    probesSkipped: true",
+      "  }));",
+      "  process.exit(0);",
+      "}",
+      "process.exit(0);"
+    ].join("\n")
+  );
+  return cliRoot;
+}
+
+function writeFakeNpm(root: string): string {
+  const fakeBin = path.join(root, "fake-npm-bin");
+  fs.mkdirSync(fakeBin, { recursive: true });
+  const runner = path.join(fakeBin, "fake-npm.cjs");
+  fs.writeFileSync(
+    runner,
+    [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const args = process.argv.slice(2);",
+      "const cwd = process.cwd();",
+      "fs.appendFileSync(path.join(cwd, 'npm-calls.log'), `${args.join(' ')}\\n`);",
+      "if (args[0] === 'install') {",
+      "  fs.mkdirSync(path.join(cwd, 'node_modules', 'typescript', 'bin'), { recursive: true });",
+      "  fs.writeFileSync(path.join(cwd, 'node_modules', 'typescript', 'bin', 'tsc'), '');",
+      "  process.exit(0);",
+      "}",
+      "if (args[0] === 'run' && args[1] === 'build') {",
+      "  fs.mkdirSync(path.join(cwd, 'dist'), { recursive: true });",
+      "  fs.writeFileSync(path.join(cwd, 'dist', 'cli.js'), '');",
+      "  process.exit(0);",
+      "}",
+      "process.exit(1);"
+    ].join("\n")
+  );
+
+  if (process.platform === "win32") {
+    fs.writeFileSync(path.join(fakeBin, "npm.cmd"), ["@echo off", "node \"%~dp0fake-npm.cjs\" %*"].join("\r\n"));
+  } else {
+    const npm = path.join(fakeBin, "npm");
+    fs.writeFileSync(npm, ["#!/usr/bin/env node", "require('./fake-npm.cjs');"].join("\n"));
+    fs.chmodSync(npm, 0o755);
+  }
+
+  return fakeBin;
+}
+
+function pathEnvironmentKey(): string {
+  return Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+}
+
+function writeNodeFooterErrorAgentsCli(root: string): string {
+  const fakeCli = path.join(root, "node-footer-error-agents-cli.js");
+  fs.writeFileSync(
+    fakeCli,
+    [
+      "console.error('node:internal/modules/cjs/loader:1408');",
+      "console.error(\"Error: Cannot find module 'missing-agents-dependency'\");",
+      "console.error('  code: \\'MODULE_NOT_FOUND\\'');",
+      "console.error('}');",
+      "console.error('Node.js v24.15.0');",
+      "process.exit(1);"
+    ].join("\n")
+  );
+  return fakeCli;
+}
+
+function writeFakeAgentsCliDirectoryWithWindowsShim(root: string): string {
+  const cliRoot = path.join(root, "fake-agents-project");
+  const bin = path.join(cliRoot, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, "agents"), "#!/bin/sh\nexec node \"$0.js\" \"$@\"\n");
+  fs.writeFileSync(
+    path.join(bin, "agents.cmd"),
+    [
+      "@echo off",
+      "node \"%~dp0agents-real.cjs\" %*"
+    ].join("\r\n")
+  );
+  fs.writeFileSync(
+    path.join(bin, "agents-real.cjs"),
+    [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const args = process.argv.slice(2);",
+      "const projectRoot = args[args.indexOf('--path') + 1];",
+      "if (args.includes('init')) {",
+      "  fs.mkdirSync(path.join(projectRoot, '.agents'), { recursive: true });",
+      "  fs.writeFileSync(path.join(projectRoot, '.agents', 'agents.json'), '{}');",
+      "  process.exit(0);",
+      "}",
+      "if (args.includes('status')) {",
+      "  console.log(JSON.stringify({",
+      "    projectRoot,",
+      "    enabledIntegrations: ['codex', 'gemini'],",
+      "    syncMode: 'source-only',",
+      "    selectedMcpServers: [],",
+      "    mcp: { configured: 0, localOverrides: 0 },",
+      "    files: { '.agents/agents.json': true },",
+      "    probes: {},",
+      "    probesSkipped: true",
+      "  }));",
+      "  process.exit(0);",
+      "}",
+      "process.exit(0);"
+    ].join("\n")
+  );
+  return cliRoot;
 }
 
 function claudeProjectSource(root: string, cwd: string, fileName: string): string {

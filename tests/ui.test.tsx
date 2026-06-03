@@ -314,16 +314,18 @@ describe("HomePage", () => {
 
     const dialog = screen.getByRole("dialog", { name: "新建项目" });
     expect(within(dialog).getByLabelText("项目名称")).toBeInTheDocument();
-    expect(within(dialog).getByText("项目目录")).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: "确认" })).toBeDisabled();
+    expect(within(dialog).getByText("父级目录")).toBeInTheDocument();
+    expect(within(dialog).getByText("创建位置")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "关闭" })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "创建项目" })).toBeDisabled();
 
     fireEvent.change(within(dialog).getByLabelText("项目名称"), { target: { value: "demo-project" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "选择" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "选择目录" }));
 
     await waitFor(() => expect(clientMock.pickDirectory).toHaveBeenCalled());
     expect(within(dialog).getByText("E:\\picked\\demo-project")).toBeInTheDocument();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "确认" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "创建项目" }));
 
     await waitFor(() => expect(clientMock.createDirectory).toHaveBeenCalledWith("E:\\picked", "demo-project"));
     expect(clientMock.addProject).toHaveBeenCalledWith("E:\\picked\\demo-project");

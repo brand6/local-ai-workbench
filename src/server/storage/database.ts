@@ -166,7 +166,23 @@ export class AppDatabase {
 
   listProjects(): Project[] {
     const rows = this.db.prepare("SELECT * FROM projects ORDER BY updated_at DESC").all();
-    return rows.map((row) => this.projectFromRow(row));
+    const sessions = this.listSessions();
+    return rows
+      .map((row) => {
+        const project = this.projectFromRow(row, sessions);
+        return {
+          project,
+          latestSessionAt: latestSessionActivityForProject(project.normalizedRootPath, sessions)
+        };
+      })
+      .sort((a, b) => {
+        return (
+          compareNullableIsoDescNullsLast(a.latestSessionAt, b.latestSessionAt) ||
+          compareIsoDesc(a.project.updatedAt, b.project.updatedAt) ||
+          a.project.rootPath.localeCompare(b.project.rootPath)
+        );
+      })
+      .map((entry) => entry.project);
   }
 
   getProject(id: string): Project | null {
@@ -565,10 +581,9 @@ export class AppDatabase {
     return Number(row?.count ?? 0);
   }
 
-  private projectFromRow(row: Row): Project {
+  private projectFromRow(row: Row, sessions = this.listSessions()): Project {
     const rootPath = String(row.root_path);
     const normalizedRootPath = String(row.normalized_root_path);
-    const sessions = this.listSessions();
     const sessionCount = sessions.filter((session) => session.normalizedCwd && isPathInsideOrEqual(normalizedRootPath, session.normalizedCwd)).length;
     const childGroupCount = new Set(
       sessions
@@ -745,6 +760,17 @@ function compareIsoDesc(a: string, b: string): number {
 
 function compareNullableIsoDesc(a: string | null, b: string | null): number {
   return (b ? Date.parse(b) : 0) - (a ? Date.parse(a) : 0);
+}
+
+function compareNullableIsoDescNullsLast(a: string | null, b: string | null): number {
+  if (a && b) return compareIsoDesc(a, b);
+  if (a) return -1;
+  if (b) return 1;
+  return 0;
+}
+
+function latestSessionActivityForProject(normalizedRootPath: string, sessions: SessionEntry[]): string | null {
+  return sessions.find((session) => session.normalizedCwd && isPathInsideOrEqual(normalizedRootPath, session.normalizedCwd))?.updatedAt ?? null;
 }
 
 function encodeClaudeProjectPath(input: string): string {

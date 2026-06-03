@@ -32,9 +32,9 @@ interface RawCommandResult {
 }
 
 export function getAgentsStatus(config: AppConfig, project: AgentsTarget): AgentsConfigSyncStatus {
-  const cli = resolveAgentsCli(config);
   const configPath = agentsConfigPath(project.rootPath);
   const initialized = fs.existsSync(configPath);
+  const cli = resolveAgentsCli(config, { checkReadiness: initialized });
 
   if (!cli.available) {
     return statusEnvelope(project, cli, initialized, null, cli.reason ?? "未找到 agents CLI");
@@ -140,6 +140,7 @@ function runProjectCommand(
   args: string[],
   allowedExitCodes: number[]
 ): AgentsCommandResult {
+  const setupResults = prepareAgentsCli(config);
   const cli = resolveAgentsCli(config);
   if (!cli.available) {
     throw new Error(cli.reason ?? "未找到 agents CLI");
@@ -147,16 +148,19 @@ function runProjectCommand(
   const result = runAgentsCli(cli, project.rootPath, args);
   assertAllowedExit(result, allowedExitCodes);
   const status = getAgentsStatus(config, project);
+  const command = [...setupResults.map((item) => item.command), result.command].join(" && ");
+  const stdout = [...setupResults.map((item) => item.stdout).filter(Boolean), result.stdout].filter(Boolean).join("\n");
+  const stderr = [...setupResults.map((item) => item.stderr).filter(Boolean), result.stderr].filter(Boolean).join("\n");
   return {
     projectId: project.id,
     projectRoot: project.rootPath,
     action,
-    command: result.command,
+    command,
     exitCode: result.exitCode,
     ok: allowedExitCodes.includes(result.exitCode),
-    changed: parseChangedEntries(`${result.stdout}\n${result.stderr}`),
-    stdout: result.stdout,
-    stderr: result.stderr,
+    changed: parseChangedEntries(`${stdout}\n${stderr}`),
+    stdout,
+    stderr,
     status
   };
 }
@@ -182,7 +186,79 @@ function runAgentsCli(cli: ResolvedAgentsCli, cwd: string, args: string[]): RawC
   };
 }
 
-function resolveAgentsCli(config: AppConfig): ResolvedAgentsCli {
+function runCommand(command: string, cwd: string, args: string[], displayCommand = [command, ...args].join(" ")): RawCommandResult {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
+    shell: false,
+    env: {
+      ...process.env,
+      NO_COLOR: "1"
+    }
+  });
+  return {
+    command: displayCommand,
+    exitCode: result.status ?? 1,
+    stdout: stripAnsi(result.stdout ?? ""),
+    stderr: stripAnsi(result.stderr ?? (result.error ? result.error.message : ""))
+  };
+}
+
+function runNpmCommand(cwd: string, args: string[]): RawCommandResult {
+  const displayCommand = ["npm", ...args].join(" ");
+  if (process.platform !== "win32") {
+    return runCommand("npm", cwd, args, displayCommand);
+  }
+
+  const commandLine = ["npm", ...args].map(quoteWindowsShellArg).join(" ");
+  return runCommand("cmd.exe", cwd, ["/d", "/s", "/c", commandLine], displayCommand);
+}
+
+function prepareAgentsCli(config: AppConfig): RawCommandResult[] {
+  const configuredPath = config.agents.cliPath.trim();
+  if (!configuredPath) return [];
+
+  const resolvedPath = resolveCliPath(configuredPath);
+  if (!resolvedPath) return [];
+
+  const sourceRoot = agentsSourceRootFor(resolvedPath);
+  if (!sourceRoot) return [];
+
+  const distCli = path.join(sourceRoot, "dist", "cli.js");
+  if (fs.existsSync(distCli)) return [];
+
+  const results: RawCommandResult[] = [];
+  const typescriptCli = path.join(sourceRoot, "node_modules", "typescript", "bin", "tsc");
+
+  if (!fs.existsSync(typescriptCli)) {
+    const install = runNpmCommand(sourceRoot, ["install"]);
+    assertSetupCommand(install, sourceRoot);
+    results.push(install);
+  }
+
+  const build = runNpmCommand(sourceRoot, ["run", "build"]);
+  assertSetupCommand(build, sourceRoot);
+  results.push(build);
+
+  if (!fs.existsSync(distCli)) {
+    throw new Error(`agents CLI 构建完成后仍未找到入口文件：${distCli}`);
+  }
+
+  return results;
+}
+
+function assertSetupCommand(result: RawCommandResult, sourceRoot: string): void {
+  if (result.exitCode === 0) return;
+  throw new Error(`agents CLI 自动安装/构建失败（${sourceRoot}）：${compactCommandError(result)}`);
+}
+
+function quoteWindowsShellArg(value: string): string {
+  if (/^[a-zA-Z0-9_./:\\-]+$/.test(value)) return value;
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function resolveAgentsCli(config: AppConfig, options: { checkReadiness?: boolean } = {}): ResolvedAgentsCli {
   const configuredPath = config.agents.cliPath.trim();
   if (!configuredPath) {
     return unavailable("未启用多 agents 同步；请先在设置中填写 agents CLI 路径或 agents 项目目录", "未配置");
@@ -191,6 +267,13 @@ function resolveAgentsCli(config: AppConfig): ResolvedAgentsCli {
   const resolvedPath = resolveCliPath(configuredPath);
   if (!resolvedPath) {
     return unavailable(`未找到 agents CLI：${configuredPath}`, configuredPath);
+  }
+
+  if (options.checkReadiness !== false) {
+    const readinessError = agentsCliReadinessError(resolvedPath);
+    if (readinessError) {
+      return unavailable(readinessError, resolvedPath);
+    }
   }
 
   return commandForPath(resolvedPath);
@@ -209,6 +292,17 @@ function commandForPath(filePath: string): ResolvedAgentsCli {
     };
   }
 
+  if (extension === ".exe") {
+    return {
+      available: true,
+      command: filePath,
+      baseArgs: [],
+      displayCommand: filePath,
+      shell: false,
+      reason: null
+    };
+  }
+
   return {
     available: true,
     command: process.execPath,
@@ -221,22 +315,68 @@ function commandForPath(filePath: string): ResolvedAgentsCli {
 
 function resolveCliPath(inputPath: string): string | null {
   if (fs.existsSync(inputPath) && fs.statSync(inputPath).isFile()) {
-    return inputPath;
+    return windowsCommandShimFor(inputPath) ?? inputPath;
   }
 
   if (fs.existsSync(inputPath) && fs.statSync(inputPath).isDirectory()) {
-    const candidates = [
-      path.join(inputPath, "bin", "agents"),
-      path.join(inputPath, "bin", "agents.cmd"),
-      path.join(inputPath, "bin", "agents.bat"),
-      path.join(inputPath, "agents"),
-      path.join(inputPath, "agents.cmd"),
-      path.join(inputPath, "agents.bat")
-    ];
+    const candidates =
+      process.platform === "win32"
+        ? [
+            path.join(inputPath, "bin", "agents.cmd"),
+            path.join(inputPath, "bin", "agents.bat"),
+            path.join(inputPath, "agents.cmd"),
+            path.join(inputPath, "agents.bat"),
+            path.join(inputPath, "bin", "agents.exe"),
+            path.join(inputPath, "agents.exe"),
+            path.join(inputPath, "bin", "agents"),
+            path.join(inputPath, "agents")
+          ]
+        : [
+            path.join(inputPath, "bin", "agents"),
+            path.join(inputPath, "agents"),
+            path.join(inputPath, "bin", "agents.cmd"),
+            path.join(inputPath, "bin", "agents.bat"),
+            path.join(inputPath, "agents.cmd"),
+            path.join(inputPath, "agents.bat")
+          ];
     return candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile()) ?? null;
   }
 
   return null;
+}
+
+function windowsCommandShimFor(filePath: string): string | null {
+  if (process.platform !== "win32" || path.extname(filePath)) return null;
+  const candidates = [`${filePath}.cmd`, `${filePath}.bat`, `${filePath}.exe`];
+  return candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile()) ?? null;
+}
+
+function agentsCliReadinessError(filePath: string): string | null {
+  const sourceRoot = agentsSourceRootFor(filePath);
+  if (!sourceRoot) return null;
+  const distCli = path.join(sourceRoot, "dist", "cli.js");
+  const typescriptCli = path.join(sourceRoot, "node_modules", "typescript", "bin", "tsc");
+  if (fs.existsSync(distCli) || fs.existsSync(typescriptCli)) return null;
+  return `agents CLI 目录尚未安装或构建：${sourceRoot}。请在该目录执行 npm install && npm run build，或在设置中选择已安装的 agents 命令。`;
+}
+
+function agentsSourceRootFor(filePath: string): string | null {
+  const executableName = path.basename(filePath).toLowerCase();
+  if (!["agents", "agents.cmd", "agents.bat", "agents.exe"].includes(executableName)) {
+    return null;
+  }
+
+  const parent = path.dirname(filePath);
+  const sourceRoot = path.basename(parent).toLowerCase() === "bin" ? path.dirname(parent) : parent;
+  const packageJsonPath = path.join(sourceRoot, "package.json");
+  if (!fs.existsSync(packageJsonPath)) return null;
+
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as { name?: unknown };
+    return packageJson.name === "@agents-dev/cli" ? sourceRoot : null;
+  } catch {
+    return null;
+  }
 }
 
 function unavailable(reason: string, displayCommand: string): ResolvedAgentsCli {
@@ -333,12 +473,17 @@ function assertAllowedExit(result: RawCommandResult, allowedExitCodes: number[])
 }
 
 function compactCommandError(result: RawCommandResult): string {
-  const detail = [result.stderr, result.stdout]
+  const lines = [result.stderr, result.stdout]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .at(-1);
+    .filter((line) => !/^Node\.js v\d+\./.test(line));
+  const moduleError = lines.find((line) => line.startsWith("Error: Cannot find module") || line.includes("MODULE_NOT_FOUND"));
+  if (moduleError) return moduleError;
+  const errorLine = lines.find((line) => /^(Error|TypeError|SyntaxError|ReferenceError|RangeError):/.test(line));
+  if (errorLine) return errorLine;
+  const detail = lines.at(-1);
   return detail ?? `agents command failed with exit code ${result.exitCode}`;
 }
 

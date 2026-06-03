@@ -661,7 +661,7 @@ function NewProjectDialog({
   const [pickError, setPickError] = useState("");
   const trimmedName = projectName.trim();
   const trimmedParentPath = parentPath.trim();
-  const projectPathPreview = trimmedParentPath && trimmedName ? joinDisplayPath(trimmedParentPath, trimmedName) : trimmedParentPath;
+  const projectPathPreview = trimmedParentPath && trimmedName ? joinDisplayPath(trimmedParentPath, trimmedName) : "";
 
   async function chooseProjectDirectory() {
     setPicking(true);
@@ -676,56 +676,59 @@ function NewProjectDialog({
     }
   }
 
+  function submitProject(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy || picking || !trimmedName || !trimmedParentPath) return;
+    onCreate(trimmedName, trimmedParentPath);
+  }
+
   return (
     <div className="settings-backdrop" role="presentation">
       <section className="settings-dialog new-project-dialog" role="dialog" aria-modal="true" aria-labelledby="new-project-title">
         <header>
-          <div>
-            <h2 id="new-project-title">新建项目</h2>
-          </div>
-          <button className="secondary" type="button" onClick={onClose} disabled={busy || picking}>
-            关闭
-          </button>
+          <h2 id="new-project-title">新建项目</h2>
         </header>
-        <div className="setting-section">
-          <label className="field wide">
-            <span>项目名称</span>
-            <input
-              type="text"
-              value={projectName}
-              disabled={busy}
-              onChange={(event) => setProjectName(event.target.value)}
-              placeholder="输入项目名称"
-            />
-          </label>
-          <div className="directory-chooser">
-            <label className="field current-root directory-value">
-              <span>项目目录</span>
-              <code aria-live="polite">{projectPathPreview || "尚未选择"}</code>
+        <form className="new-project-form" onSubmit={submitProject}>
+          <div className="setting-section new-project-fields">
+            <label className="field wide new-project-name">
+              <span>项目名称</span>
+              <input
+                type="text"
+                value={projectName}
+                disabled={busy}
+                onChange={(event) => setProjectName(event.target.value)}
+                placeholder="输入项目名称"
+                autoFocus
+              />
             </label>
-            <button className="secondary" type="button" disabled={busy || picking} onClick={() => void chooseProjectDirectory()}>
-              {picking ? "选择中..." : "选择"}
+            <div className="directory-chooser new-project-directory">
+              <label className="field current-root directory-value">
+                <span>父级目录</span>
+                <code aria-live="polite">{trimmedParentPath || "尚未选择"}</code>
+              </label>
+              <button className="secondary" type="button" disabled={busy || picking} onClick={() => void chooseProjectDirectory()}>
+                {picking ? "选择中..." : "选择目录"}
+              </button>
+            </div>
+            <div className="field current-root new-project-preview">
+              <span>创建位置</span>
+              <code aria-live="polite">{projectPathPreview || "待生成"}</code>
+            </div>
+          </div>
+          {pickError ? (
+            <div className="field-error" role="alert">
+              {pickError}
+            </div>
+          ) : null}
+          <div className="settings-actions new-project-actions">
+            <button className="secondary" type="button" onClick={onClose} disabled={busy || picking}>
+              取消
+            </button>
+            <button className="primary" type="submit" disabled={busy || picking || !trimmedName || !trimmedParentPath}>
+              创建项目
             </button>
           </div>
-        </div>
-        {pickError ? (
-          <div className="field-error" role="alert">
-            {pickError}
-          </div>
-        ) : null}
-        <div className="settings-actions">
-          <button className="secondary" type="button" onClick={onClose} disabled={busy || picking}>
-            取消
-          </button>
-          <button
-            className="primary"
-            type="button"
-            disabled={busy || picking || !trimmedName || !trimmedParentPath}
-            onClick={() => onCreate(trimmedName, trimmedParentPath)}
-          >
-            确认
-          </button>
-        </div>
+        </form>
       </section>
     </div>
   );
@@ -1245,29 +1248,26 @@ function ProjectDetailView({
   );
   return (
     <section className="content">
-      <div className="toolbar-panel compact">
-        <div className="toolbar">
-          <label className="field wide">
+      <div className="toolbar-panel compact detail-controls">
+        <div className="toolbar detail-controls-toolbar">
+          <label className="field wide detail-filter">
             筛选标题和摘要
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词" />
           </label>
-        </div>
-      </div>
-
-      <div className="toolbar-panel">
-        <div className="toolbar">
-          <div className="field current-root">
-            <span>当前项目根目录</span>
-            <code>{project.rootPath}</code>
+          <div className="detail-relocation">
+            <div className="field current-root">
+              <span>当前项目根目录</span>
+              <code>{project.rootPath}</code>
+            </div>
+            <button
+              className="danger"
+              type="button"
+              disabled={busy}
+              onClick={onRelocateProject}
+            >
+              {busy ? "迁移中..." : "选择新位置并迁移"}
+            </button>
           </div>
-          <button
-            className="danger"
-            type="button"
-            disabled={busy}
-            onClick={onRelocateProject}
-          >
-            {busy ? "迁移中..." : "选择新位置并迁移"}
-          </button>
         </div>
       </div>
 

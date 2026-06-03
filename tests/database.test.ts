@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { AppDatabase } from "../src/server/storage/database.js";
 import { normalizeFsPath } from "../src/server/core/pathUtils.js";
+import type { SessionEntry, ToolId } from "../src/shared/types.js";
 import { cleanup, testDir } from "./helpers.js";
 
 let directory: string | null = null;
@@ -93,6 +94,26 @@ describe("AppDatabase", () => {
     db.close();
   });
 
+  it("sorts projects by latest session activity with empty projects last", () => {
+    directory = testDir("db-project-session-sort");
+    const oldRoot = path.join(directory, "old-repo");
+    const recentRoot = path.join(directory, "recent-repo");
+    const emptyRoot = path.join(directory, "empty-repo");
+    fs.mkdirSync(oldRoot, { recursive: true });
+    fs.mkdirSync(recentRoot, { recursive: true });
+    fs.mkdirSync(emptyRoot, { recursive: true });
+
+    const db = new AppDatabase(directory);
+    const recentProject = db.addProject(recentRoot).project;
+    const oldProject = db.addProject(oldRoot).project;
+    const emptyProject = db.addProject(emptyRoot).project;
+    db.upsertSession(session("codex:old", "codex", oldRoot, "2026-06-01T01:00:00Z"));
+    db.upsertSession(session("claude:recent", "claude", recentRoot, "2026-06-02T01:00:00Z"));
+
+    expect(db.listProjects().map((project) => project.id)).toEqual([recentProject.id, oldProject.id, emptyProject.id]);
+    db.close();
+  });
+
   it("reports the data directory when the sqlite database is locked", () => {
     directory = testDir("db-locked");
     const databasePath = path.join(directory, "index.sqlite");
@@ -111,3 +132,21 @@ describe("AppDatabase", () => {
     }
   });
 });
+
+function session(id: string, toolId: ToolId, cwd: string, updatedAt: string): SessionEntry {
+  return {
+    id,
+    toolId,
+    nativeSessionId: id,
+    title: id,
+    summary: null,
+    originalCwd: cwd,
+    normalizedCwd: normalizeFsPath(cwd),
+    updatedAt,
+    sourceFile: `${id}.jsonl`,
+    sourceFormat: `${toolId}-jsonl`,
+    parserVersion: "test",
+    resumeStatus: "ready",
+    indexedAt: updatedAt
+  };
+}
