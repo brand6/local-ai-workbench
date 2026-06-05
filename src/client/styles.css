@@ -2294,6 +2294,117 @@ dd {
   resize: vertical;
 }
 
+.clihub-group-list,
+.clihub-cli-list,
+.clihub-channel-list {
+  display: grid;
+  gap: 10px;
+}
+
+.clihub-group {
+  display: grid;
+  gap: 10px;
+}
+
+.clihub-custom-panel summary {
+  cursor: pointer;
+}
+
+.clihub-custom-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.clihub-custom-grid .field.wide {
+  grid-column: 1 / -1;
+}
+
+.clihub-cli-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--surface), #fbfdfc);
+  box-shadow: var(--shadow-sm);
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.clihub-cli-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  box-shadow: var(--shadow-hover);
+}
+
+.clihub-cli-row > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.clihub-cli-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.clihub-cli-row > summary::before {
+  content: "›";
+  flex: 0 0 auto;
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary-hover);
+  font-size: 18px;
+  line-height: 1;
+  transition: transform 120ms ease;
+}
+
+.clihub-cli-row[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.clihub-cli-body {
+  margin: 0 12px 12px;
+}
+
+.clihub-cli-body small {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.clihub-row-actions,
+.clihub-add-channel,
+.clihub-channel-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.clihub-add-channel .field {
+  flex: 1 1 280px;
+}
+
+.clihub-channel-row {
+  justify-content: space-between;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+}
+
+.clihub-channel-row div {
+  min-width: 0;
+}
+
 .mcphub-server-list,
 .project-local-mcp-list,
 .project-mcphub-list {

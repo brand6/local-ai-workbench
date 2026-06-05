@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
+  CliHubCli,
   HookHubSupportedToolId,
   HookHubSuite,
   McpHubServer,
@@ -158,6 +159,31 @@ export class AppDatabase {
         message TEXT NOT NULL,
         line INTEGER,
         created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS clihub_clis (
+        cli_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        source_state TEXT NOT NULL,
+        command_names_json TEXT NOT NULL,
+        local_path TEXT,
+        channels_json TEXT NOT NULL,
+        availability_state TEXT NOT NULL,
+        resolved_paths_json TEXT NOT NULL,
+        version TEXT,
+        version_state TEXT NOT NULL,
+        version_error TEXT,
+        discovered_at TEXT,
+        current_provider_json TEXT,
+        provider_candidates_json TEXT NOT NULL,
+        update_status TEXT NOT NULL,
+        update_checked_at TEXT,
+        update_error TEXT,
+        recent_operation_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS skillhub_sources (
@@ -343,6 +369,93 @@ export class AppDatabase {
   getSetting<T>(key: string, fallback: T): T {
     const row = this.db.prepare("SELECT value_json FROM settings WHERE key = ?").get(key);
     return parseJson(String(row?.value_json ?? ""), fallback);
+  }
+
+  listCliHubClis(): CliHubCli[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM clihub_clis
+         ORDER BY
+           CASE kind
+             WHEN 'project-tool' THEN 0
+             WHEN 'function' THEN 1
+             WHEN 'dependency' THEN 2
+             ELSE 3
+           END,
+           display_name ASC`
+      )
+      .all()
+      .map((row) => this.cliHubCliFromRow(row));
+  }
+
+  getCliHubCli(cliId: string): CliHubCli | null {
+    const row = this.db.prepare("SELECT * FROM clihub_clis WHERE cli_id = ?").get(cliId);
+    return row ? this.cliHubCliFromRow(row) : null;
+  }
+
+  upsertCliHubCli(input: Omit<CliHubCli, "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string }): CliHubCli {
+    const existing = this.getCliHubCli(input.cliId);
+    const timestamp = nowIso();
+    const createdAt = input.createdAt ?? existing?.createdAt ?? timestamp;
+    const updatedAt = input.updatedAt ?? timestamp;
+    this.db
+      .prepare(
+        `INSERT INTO clihub_clis (
+          cli_id, display_name, kind, source_type, source_state, command_names_json,
+          local_path, channels_json, availability_state, resolved_paths_json, version,
+          version_state, version_error, discovered_at, current_provider_json,
+          provider_candidates_json, update_status, update_checked_at, update_error,
+          recent_operation_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(cli_id) DO UPDATE SET
+          display_name = excluded.display_name,
+          kind = excluded.kind,
+          source_type = excluded.source_type,
+          source_state = excluded.source_state,
+          command_names_json = excluded.command_names_json,
+          local_path = excluded.local_path,
+          channels_json = excluded.channels_json,
+          availability_state = excluded.availability_state,
+          resolved_paths_json = excluded.resolved_paths_json,
+          version = excluded.version,
+          version_state = excluded.version_state,
+          version_error = excluded.version_error,
+          discovered_at = excluded.discovered_at,
+          current_provider_json = excluded.current_provider_json,
+          provider_candidates_json = excluded.provider_candidates_json,
+          update_status = excluded.update_status,
+          update_checked_at = excluded.update_checked_at,
+          update_error = excluded.update_error,
+          recent_operation_json = excluded.recent_operation_json,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        input.cliId,
+        input.displayName,
+        input.kind,
+        input.sourceType,
+        input.sourceState,
+        json(input.commandNames),
+        input.localPath,
+        json(input.channels),
+        input.availabilityState,
+        json(input.resolvedPaths),
+        input.version,
+        input.versionState,
+        input.versionError,
+        input.discoveredAt,
+        input.currentProvider ? json(input.currentProvider) : null,
+        json(input.providerCandidates),
+        input.updateStatus,
+        input.updateCheckedAt,
+        input.updateError,
+        input.recentOperation ? json(input.recentOperation) : null,
+        createdAt,
+        updatedAt
+      );
+    const cli = this.getCliHubCli(input.cliId);
+    if (!cli) throw new Error("Failed to upsert CliHub CLI");
+    return cli;
   }
 
   listProjects(): Project[] {
@@ -1443,6 +1556,35 @@ export class AppDatabase {
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
       source: sources.get(sourceId) ?? null
+    };
+  }
+
+  private cliHubCliFromRow(row: Row): CliHubCli {
+    return {
+      cliId: String(row.cli_id),
+      displayName: String(row.display_name),
+      kind: String(row.kind) as CliHubCli["kind"],
+      sourceType: String(row.source_type) as CliHubCli["sourceType"],
+      sourceState: String(row.source_state) as CliHubCli["sourceState"],
+      commandNames: parseJson<string[]>(String(row.command_names_json), []),
+      localPath: row.local_path === null ? null : String(row.local_path),
+      channels: parseJson<CliHubCli["channels"]>(String(row.channels_json), []),
+      availabilityState: String(row.availability_state) as CliHubCli["availabilityState"],
+      resolvedPaths: parseJson<string[]>(String(row.resolved_paths_json), []),
+      version: row.version === null ? null : String(row.version),
+      versionState: String(row.version_state) as CliHubCli["versionState"],
+      versionError: row.version_error === null ? null : String(row.version_error),
+      discoveredAt: row.discovered_at === null ? null : String(row.discovered_at),
+      currentProvider:
+        row.current_provider_json === null ? null : parseJson<CliHubCli["currentProvider"]>(String(row.current_provider_json), null),
+      providerCandidates: parseJson<CliHubCli["providerCandidates"]>(String(row.provider_candidates_json), []),
+      updateStatus: String(row.update_status) as CliHubCli["updateStatus"],
+      updateCheckedAt: row.update_checked_at === null ? null : String(row.update_checked_at),
+      updateError: row.update_error === null ? null : String(row.update_error),
+      recentOperation:
+        row.recent_operation_json === null ? null : parseJson<CliHubCli["recentOperation"]>(String(row.recent_operation_json), null),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
     };
   }
 

@@ -43,6 +43,16 @@ import {
   seedDefaultSkillHubSources
 } from "../skillhub/skillhub.js";
 import {
+  addCliHubChannel,
+  addCustomInstallCommandCli,
+  addCustomLocalPathCli,
+  checkCliHubUpdates,
+  installCliHubCli,
+  listCliHub,
+  refreshCliHubDiscovery,
+  updateCliHubCli
+} from "../clihub/clihub.js";
+import {
   applyProjectMcpServer,
   deleteMcpHubServer,
   disableProjectMcpServer,
@@ -249,6 +259,150 @@ export function installApi(app: Express, context: AppContext): void {
       response.status(404).json({ error: "skillhub-skill-delete-failed", reason: error instanceof Error ? error.message : "skillhub-skill-delete-failed" });
     }
   });
+
+  app.get("/api/clihub", (_request, response) => {
+    response.json(listCliHub(context.database(), context.cliHubRuntimeOptions()));
+  });
+
+  app.post(
+    "/api/clihub/discovery/refresh",
+    asyncHandler(async (request, response) => {
+      response.json(await refreshCliHubDiscovery(context.database(), stringBody(request, "cliId"), context.cliHubRuntimeOptions()));
+    })
+  );
+
+  app.post(
+    "/api/clihub/custom/local-path",
+    asyncHandler(async (request, response) => {
+      const executablePath = stringBody(request, "executablePath");
+      if (!executablePath) {
+        response.status(400).json({ error: "executablePath is required" });
+        return;
+      }
+      try {
+        response.status(201).json(
+          await addCustomLocalPathCli(
+            context.database(),
+            {
+              executablePath,
+              displayName: stringBody(request, "displayName"),
+              commandName: stringBody(request, "commandName")
+            },
+            context.cliHubRuntimeOptions()
+          )
+        );
+      } catch (error) {
+        response.status(400).json({ error: "clihub-custom-local-path-failed", reason: error instanceof Error ? error.message : "clihub-custom-local-path-failed" });
+      }
+    })
+  );
+
+  app.post(
+    "/api/clihub/custom/install-command",
+    asyncHandler(async (request, response) => {
+      const installCommand = stringBody(request, "installCommand");
+      if (!installCommand) {
+        response.status(400).json({ error: "installCommand is required" });
+        return;
+      }
+      try {
+        response.status(201).json(
+          await addCustomInstallCommandCli(
+            context.database(),
+            {
+              installCommand,
+              displayName: stringBody(request, "displayName"),
+              commandName: stringBody(request, "commandName")
+            },
+            context.cliHubRuntimeOptions()
+          )
+        );
+      } catch (error) {
+        response.status(400).json({ error: "clihub-custom-install-command-failed", reason: error instanceof Error ? error.message : "clihub-custom-install-command-failed" });
+      }
+    })
+  );
+
+  app.post("/api/clihub/clis/:cliId/channels", (request, response) => {
+    const installCommand = stringBody(request, "installCommand");
+    const cliId = stringParam(request, "cliId");
+    if (!installCommand) {
+      response.status(400).json({ error: "installCommand is required" });
+      return;
+    }
+    if (!cliId) {
+      response.status(404).json({ error: "clihub-cli-not-found" });
+      return;
+    }
+    try {
+      response.status(201).json(addCliHubChannel(context.database(), cliId, installCommand));
+    } catch (error) {
+      response.status(400).json({ error: "clihub-channel-add-failed", reason: error instanceof Error ? error.message : "clihub-channel-add-failed" });
+    }
+  });
+
+  app.post(
+    "/api/clihub/clis/:cliId/install",
+    asyncHandler(async (request, response) => {
+      const dataDir = requireDataDir(context, response);
+      const cliId = stringParam(request, "cliId");
+      if (!dataDir) return;
+      if (!cliId) {
+        response.status(404).json({ error: "clihub-cli-not-found" });
+        return;
+      }
+      try {
+        response.json(
+          await installCliHubCli(context.database(), dataDir, cliId, stringBody(request, "channelId"), context.cliHubRuntimeOptions())
+        );
+      } catch (error) {
+        response.status(400).json({ error: "clihub-install-failed", reason: error instanceof Error ? error.message : "clihub-install-failed" });
+      }
+    })
+  );
+
+  app.post(
+    "/api/clihub/clis/:cliId/check-updates",
+    asyncHandler(async (request, response) => {
+      const cliId = stringParam(request, "cliId");
+      if (!cliId) {
+        response.status(404).json({ error: "clihub-cli-not-found" });
+        return;
+      }
+      try {
+        response.json(await checkCliHubUpdates(context.database(), cliId, context.cliHubRuntimeOptions()));
+      } catch (error) {
+        response.status(400).json({ error: "clihub-update-check-failed", reason: error instanceof Error ? error.message : "clihub-update-check-failed" });
+      }
+    })
+  );
+
+  app.post(
+    "/api/clihub/updates/check",
+    asyncHandler(async (_request, response) => {
+      try {
+        response.json(await checkCliHubUpdates(context.database(), null, context.cliHubRuntimeOptions()));
+      } catch (error) {
+        response.status(400).json({ error: "clihub-update-check-failed", reason: error instanceof Error ? error.message : "clihub-update-check-failed" });
+      }
+    })
+  );
+
+  app.post(
+    "/api/clihub/clis/:cliId/update",
+    asyncHandler(async (request, response) => {
+      const cliId = stringParam(request, "cliId");
+      if (!cliId) {
+        response.status(404).json({ error: "clihub-cli-not-found" });
+        return;
+      }
+      try {
+        response.json(await updateCliHubCli(context.database(), cliId, context.cliHubRuntimeOptions()));
+      } catch (error) {
+        response.status(400).json({ error: "clihub-update-failed", reason: error instanceof Error ? error.message : "clihub-update-failed" });
+      }
+    })
+  );
 
   app.get("/api/mcphub", (_request, response) => {
     response.json(listMcpHub(context.database()));
@@ -1017,6 +1171,11 @@ export function asyncHandler(fn: (request: Request, response: Response) => Promi
 
 function stringBody(request: Request, key: string): string | null {
   const value = request.body?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function stringParam(request: Request, key: string): string | null {
+  const value = request.params[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 

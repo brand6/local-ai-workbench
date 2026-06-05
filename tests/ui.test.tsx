@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AppConfig,
+  CliHubList,
   HookHubSuite,
   Project,
   ProjectDetail,
@@ -39,6 +40,15 @@ const clientMock = vi.hoisted(() => ({
   previewDeleteSkillHubSkill: vi.fn(),
   deleteSkillHubSkill: vi.fn(),
   openSkillHubSkill: vi.fn(),
+  clihub: vi.fn(),
+  refreshCliHubDiscovery: vi.fn(),
+  addCliHubLocalPath: vi.fn(),
+  addCliHubInstallCommand: vi.fn(),
+  addCliHubChannel: vi.fn(),
+  installCliHubCli: vi.fn(),
+  checkCliHubUpdates: vi.fn(),
+  checkCliHubUpdate: vi.fn(),
+  updateCliHubCli: vi.fn(),
   mcphub: vi.fn(),
   importMcpHubJson: vi.fn(),
   deleteMcpHubServer: vi.fn(),
@@ -116,6 +126,15 @@ describe("HomePage", () => {
     });
     clientMock.checkSkillHubUpdates.mockResolvedValue({ previews: [] });
     clientMock.openSkillHubSkill.mockResolvedValue({ opened: true, path: "C:\\tmp\\github-repo-manager\\skillhub\\library\\review\\SKILL.md" });
+    clientMock.clihub.mockResolvedValue(cliHubListFixture());
+    clientMock.refreshCliHubDiscovery.mockResolvedValue(cliHubListFixture());
+    clientMock.addCliHubLocalPath.mockResolvedValue(cliHubListFixture().clis[0]);
+    clientMock.addCliHubInstallCommand.mockResolvedValue(cliHubListFixture().clis[1]);
+    clientMock.addCliHubChannel.mockResolvedValue(cliHubListFixture().clis[0]);
+    clientMock.installCliHubCli.mockResolvedValue(cliHubListFixture().clis[0]);
+    clientMock.checkCliHubUpdates.mockResolvedValue(cliHubListFixture("update-available"));
+    clientMock.checkCliHubUpdate.mockResolvedValue(cliHubListFixture("update-available"));
+    clientMock.updateCliHubCli.mockResolvedValue(cliHubListFixture().clis[0]);
     clientMock.mcphub.mockResolvedValue({
       servers: [
         {
@@ -416,6 +435,29 @@ describe("HomePage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "返回" }));
     expect(await screen.findByText("还没有项目")).toBeInTheDocument();
+  });
+
+  it("opens CliHub from the topbar and supports custom CLI actions", async () => {
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "CliHub" }));
+
+    expect(await screen.findByRole("heading", { name: "CliHub" })).toBeInTheDocument();
+    expect(clientMock.refreshCliHubDiscovery).toHaveBeenCalled();
+    expect(screen.getByRole("region", { name: "项目工具 CLI" })).toBeInTheDocument();
+    expect(screen.getByText("Codex")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "卸载" })).not.toBeInTheDocument();
+
+    const customPanel = screen.getByRole("region", { name: "CliHub 自定义 CLI" });
+    fireEvent.click(within(customPanel).getByText("添加自定义 CLI"));
+    fireEvent.change(within(customPanel).getByLabelText("本地可执行文件路径"), { target: { value: "C:\\Tools\\internal.exe" } });
+    fireEvent.click(within(customPanel).getByRole("button", { name: "添加本地 CLI" }));
+    await waitFor(() => expect(clientMock.addCliHubLocalPath).toHaveBeenCalledWith("C:\\Tools\\internal.exe", "", ""));
+
+    const codexRow = screen.getByText("Codex").closest("details") as HTMLElement;
+    fireEvent.click(within(codexRow).getByRole("button", { name: "检查更新" }));
+    await waitFor(() => expect(clientMock.checkCliHubUpdate).toHaveBeenCalledWith("codex"));
   });
 
   it("opens McpHub from the topbar", async () => {
@@ -2254,6 +2296,99 @@ function toolStatusFixture(toolId: ToolId): ToolStatus {
     },
     reason: null,
     sessionSources: [`C:\\sessions\\${toolId}`]
+  };
+}
+
+function cliHubListFixture(updateStatus: CliHubList["clis"][number]["updateStatus"] = "unknown"): CliHubList {
+  return {
+    operation: null,
+    clis: [
+      {
+        cliId: "codex",
+        displayName: "Codex",
+        kind: "project-tool",
+        sourceType: "builtin",
+        sourceState: "builtin",
+        commandNames: ["codex"],
+        localPath: null,
+        channels: [
+          {
+            channelId: "codex:npm",
+            provider: "npm",
+            label: "npm: @openai/codex",
+            packageId: "@openai/codex",
+            installCommand: ["npm", "install", "-g", "@openai/codex"],
+            updateCommand: null,
+            checkCommand: null,
+            appManaged: false,
+            metadata: {},
+            builtin: true
+          }
+        ],
+        availabilityState: "available",
+        resolvedPaths: ["C:\\Users\\brand\\AppData\\Roaming\\npm\\codex.cmd"],
+        version: "codex 1.2.3",
+        versionState: "detected",
+        versionError: null,
+        discoveredAt: "2026-06-01T00:00:00Z",
+        currentProvider: { provider: "npm", packageId: "@openai/codex", confidence: "high", reason: "npm" },
+        providerCandidates: [],
+        updateStatus,
+        updateCheckedAt: updateStatus === "unknown" ? null : "2026-06-01T00:00:00Z",
+        updateError: null,
+        recentOperation: null,
+        createdAt: "2026-06-01T00:00:00Z",
+        updatedAt: "2026-06-01T00:00:00Z"
+      },
+      {
+        cliId: "gh",
+        displayName: "GitHub CLI",
+        kind: "function",
+        sourceType: "builtin",
+        sourceState: "builtin",
+        commandNames: ["gh"],
+        localPath: null,
+        channels: [],
+        availabilityState: "unknown",
+        resolvedPaths: [],
+        version: null,
+        versionState: "unknown",
+        versionError: null,
+        discoveredAt: null,
+        currentProvider: null,
+        providerCandidates: [],
+        updateStatus: "unknown",
+        updateCheckedAt: null,
+        updateError: null,
+        recentOperation: null,
+        createdAt: "2026-06-01T00:00:00Z",
+        updatedAt: "2026-06-01T00:00:00Z"
+      },
+      {
+        cliId: "node",
+        displayName: "Node.js",
+        kind: "dependency",
+        sourceType: "builtin",
+        sourceState: "builtin",
+        commandNames: ["node"],
+        localPath: null,
+        channels: [],
+        availabilityState: "unknown",
+        resolvedPaths: [],
+        version: null,
+        versionState: "unknown",
+        versionError: null,
+        discoveredAt: null,
+        currentProvider: null,
+        providerCandidates: [],
+        updateStatus: "unknown",
+        updateCheckedAt: null,
+        updateError: null,
+        recentOperation: null,
+        createdAt: "2026-06-01T00:00:00Z",
+        updatedAt: "2026-06-01T00:00:00Z"
+      }
+    ]
   };
 }
 

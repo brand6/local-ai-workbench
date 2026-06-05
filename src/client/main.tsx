@@ -4,6 +4,7 @@ import { terminalModes } from "../shared/types.js";
 import type {
   AppConfig,
   BootstrapState,
+  CliHubList,
   HookHubApplyMode,
   HookHubExportDocument,
   HookHubImportConflictMode,
@@ -46,6 +47,7 @@ import type {
   ToolStatus
 } from "../shared/types.js";
 import { client } from "./api.js";
+import { CliHubPage } from "./clihubViews.js";
 import { HookHubPage, ProjectHooksPanel } from "./hookhubViews.js";
 import { McpHubPage, ProjectMcpPanel } from "./mcphubViews.js";
 import { ProjectSkillsPanel, SkillHubPage } from "./skillhubViews.js";
@@ -86,10 +88,12 @@ function App() {
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshDialogOpen, setRefreshDialogOpen] = useState(false);
-  const [view, setView] = useState<"home" | "skillhub" | "mcphub" | "hookhub">("home");
+  const [view, setView] = useState<"home" | "skillhub" | "mcphub" | "hookhub" | "clihub">("home");
   const [skillHub, setSkillHub] = useState<SkillHubList | null>(null);
   const [skillHubQuery, setSkillHubQuery] = useState("");
   const [skillHubUpdates, setSkillHubUpdates] = useState<SkillHubUpdateCheckResult | null>(null);
+  const [cliHub, setCliHub] = useState<CliHubList | null>(null);
+  const [cliHubStatus, setCliHubStatus] = useState("");
   const [mcpHub, setMcpHub] = useState<McpHubList | null>(null);
   const [lastMcpHubImport, setLastMcpHubImport] = useState<McpHubImportResult | null>(null);
   const [hookHub, setHookHub] = useState<HookHubList | null>(null);
@@ -185,6 +189,11 @@ function App() {
   }, [view, skillHubQuery, bootstrap?.initialized]);
 
   useEffect(() => {
+    if (view !== "clihub" || !bootstrap?.initialized) return;
+    void loadCliHub(true);
+  }, [view, bootstrap?.initialized]);
+
+  useEffect(() => {
     if (view !== "mcphub" || !bootstrap?.initialized) return;
     void loadMcpHub();
   }, [view, bootstrap?.initialized]);
@@ -217,6 +226,10 @@ function App() {
 
   async function loadSkillHub(search = skillHubQuery) {
     setSkillHub(await client.skillhub(search));
+  }
+
+  async function loadCliHub(refreshDiscovery = false) {
+    setCliHub(refreshDiscovery ? await client.refreshCliHubDiscovery() : await client.clihub());
   }
 
   async function loadMcpHub() {
@@ -348,6 +361,14 @@ function App() {
     void loadSkillHub();
   }
 
+  function openCliHub() {
+    setSelectedProjectId(null);
+    setMessage("");
+    clearProjectViewState();
+    setView("clihub");
+    void loadCliHub(true);
+  }
+
   function openMcpHub() {
     setSelectedProjectId(null);
     setMessage("");
@@ -367,9 +388,10 @@ function App() {
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const totalSessions = projects.reduce((sum, project) => sum + project.sessionCount, 0);
   const showingSkillHub = view === "skillhub" && !selectedProject;
+  const showingCliHub = view === "clihub" && !selectedProject;
   const showingMcpHub = view === "mcphub" && !selectedProject;
   const showingHookHub = view === "hookhub" && !selectedProject;
-  const showingHub = showingSkillHub || showingMcpHub || showingHookHub;
+  const showingHub = showingSkillHub || showingCliHub || showingMcpHub || showingHookHub;
   const homeCommandBar = selectedProject || showingHub ? null : (
     <section className="toolbar-panel compact home-command-panel" aria-label="项目操作">
       <div className="home-actions">
@@ -431,6 +453,9 @@ function App() {
           <button className={`topbar-link${view === "skillhub" ? " active" : ""}`} type="button" onClick={openSkillHub}>
             SkillHub
           </button>
+          <button className={`topbar-link${view === "clihub" ? " active" : ""}`} type="button" onClick={openCliHub}>
+            CliHub
+          </button>
           <button className={`topbar-link${view === "mcphub" ? " active" : ""}`} type="button" onClick={openMcpHub}>
             McpHub
           </button>
@@ -462,7 +487,7 @@ function App() {
                 返回
               </button>
               <div className="topbar-project-title">
-                <h1>{showingSkillHub ? "SkillHub" : showingMcpHub ? "McpHub" : "HookHub"}</h1>
+                <h1>{showingSkillHub ? "SkillHub" : showingCliHub ? "CliHub" : showingMcpHub ? "McpHub" : "HookHub"}</h1>
               </div>
             </div>
           ) : (
@@ -595,6 +620,12 @@ function App() {
         />
       ) : null}
 
+      {cliHubStatus && busy ? (
+        <div className="notice" role="status" aria-live="polite">
+          {cliHubStatus}
+        </div>
+      ) : null}
+
       {message ? (
         <div className="notice" role="status" aria-live="polite">
           {message}
@@ -614,6 +645,19 @@ function App() {
           onOpenSkill={(skillId, target) => void runAction(() => openSkillHubSkill(skillId, target))}
           onDeleteSkill={(skillId) => void runAction(() => deleteSkill(skillId))}
           onApplyUpdate={(preview) => void runAction(() => applySkillHubUpdate(preview))}
+        />
+      ) : showingCliHub ? (
+        <CliHubPage
+          clihub={cliHub}
+          busy={busy}
+          onRefresh={(cliId) => void runAction(() => refreshCliHubDiscovery(cliId), "clihub-refresh")}
+          onCheckAll={() => void runAction(checkCliHubUpdates, "clihub-update-check")}
+          onCheckOne={(cliId) => void runAction(() => checkCliHubUpdate(cliId), "clihub-update-check")}
+          onInstall={(cliId, channelId) => void runAction(() => installCliHubCli(cliId, channelId), "clihub-install")}
+          onUpdate={(cliId) => void runAction(() => updateCliHubCli(cliId), "clihub-update")}
+          onAddLocal={(input) => void runAction(() => addCliHubLocalPath(input), "clihub-custom")}
+          onAddInstallCommand={(input) => void runAction(() => addCliHubInstallCommand(input), "clihub-custom")}
+          onAddChannel={(cliId, installCommand) => void runAction(() => addCliHubChannel(cliId, installCommand), "clihub-channel")}
         />
       ) : showingMcpHub ? (
         <McpHubPage
@@ -935,6 +979,64 @@ function App() {
     await loadSkillHub();
     await checkSkillHubUpdates();
     setMessage("GitHub source 更新已应用");
+  }
+
+  async function refreshCliHubDiscovery(cliId?: string) {
+    setCliHubStatus(cliId ? "CliHub 正在刷新单个 CLI 发现" : "CliHub 正在刷新发现");
+    setCliHub(await client.refreshCliHubDiscovery(cliId));
+    setCliHubStatus("");
+    setMessage("CliHub 发现已刷新");
+  }
+
+  async function checkCliHubUpdates() {
+    setCliHubStatus("CliHub 正在检查全部更新");
+    const result = await client.checkCliHubUpdates();
+    setCliHub(result);
+    setCliHubStatus("");
+    const available = result.clis.filter((cli) => cli.updateStatus === "update-available").length;
+    setMessage(available ? `CliHub 检查完成：${available} 个 CLI 可更新` : "CliHub 检查完成：没有可更新 CLI");
+  }
+
+  async function checkCliHubUpdate(cliId: string) {
+    setCliHubStatus("CliHub 正在检查更新");
+    const result = await client.checkCliHubUpdate(cliId);
+    setCliHub(result);
+    setCliHubStatus("");
+    setMessage("CliHub 更新检查完成");
+  }
+
+  async function installCliHubCli(cliId: string, channelId: string) {
+    setCliHubStatus("CliHub 正在安装 CLI");
+    await client.installCliHubCli(cliId, channelId);
+    setCliHub(await client.clihub());
+    setCliHubStatus("");
+    setMessage("CliHub CLI 安装完成");
+  }
+
+  async function updateCliHubCli(cliId: string) {
+    setCliHubStatus("CliHub 正在更新 CLI");
+    await client.updateCliHubCli(cliId);
+    setCliHub(await client.clihub());
+    setCliHubStatus("");
+    setMessage("CliHub CLI 更新完成");
+  }
+
+  async function addCliHubLocalPath(input: { executablePath: string; displayName?: string; commandName?: string }) {
+    await client.addCliHubLocalPath(input.executablePath, input.displayName, input.commandName);
+    await loadCliHub();
+    setMessage("自定义本地 CLI 已添加");
+  }
+
+  async function addCliHubInstallCommand(input: { installCommand: string; displayName?: string; commandName?: string }) {
+    await client.addCliHubInstallCommand(input.installCommand, input.displayName, input.commandName);
+    await loadCliHub();
+    setMessage("自定义安装命令 CLI 已添加");
+  }
+
+  async function addCliHubChannel(cliId: string, installCommand: string) {
+    await client.addCliHubChannel(cliId, installCommand);
+    await loadCliHub();
+    setMessage("CliHub 安装渠道已添加");
   }
 
   async function importMcpHubJson(input: string) {

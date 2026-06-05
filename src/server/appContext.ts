@@ -5,15 +5,18 @@ import { pickDirectory } from "./core/localFilesystem.js";
 import { AppEventHub } from "./events/appEvents.js";
 import { SessionIndexService } from "./scanning/sessionIndexService.js";
 import { AppDatabase } from "./storage/database.js";
+import type { CliHubRuntimeOptions } from "./clihub/clihub.js";
 
 export interface AppContextOptions {
   pickDirectory?: () => DirectoryPickResponse | Promise<DirectoryPickResponse>;
+  cliHub?: CliHubRuntimeOptions;
 }
 
 export class AppContext {
   readonly token = crypto.randomBytes(24).toString("base64url");
   private readonly events = new AppEventHub();
   private readonly pickDirectoryHandler: () => DirectoryPickResponse | Promise<DirectoryPickResponse>;
+  private readonly cliHubRuntime: CliHubRuntimeOptions;
   private state: BootstrapState;
   private databaseInstance: AppDatabase | null = null;
   private configInstance: AppConfig | null = null;
@@ -22,6 +25,7 @@ export class AppContext {
 
   constructor(dataDirArg: string | null, options: AppContextOptions = {}) {
     this.pickDirectoryHandler = options.pickDirectory ?? pickDirectory;
+    this.cliHubRuntime = options.cliHub ?? {};
     this.state = resolveBootstrapState(dataDirArg);
     if (this.state.dataDir) {
       this.initializeDataDir(this.state.dataDir, false);
@@ -73,6 +77,10 @@ export class AppContext {
 
   pickDirectory(): DirectoryPickResponse | Promise<DirectoryPickResponse> {
     return this.pickDirectoryHandler();
+  }
+
+  cliHubRuntimeOptions(): CliHubRuntimeOptions {
+    return this.cliHubRuntime;
   }
 
   sessionIndexer(): SessionIndexService {

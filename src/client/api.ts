@@ -1,6 +1,8 @@
 import type {
   AppConfig,
   BootstrapState,
+  CliHubCli,
+  CliHubList,
   DeleteSessionResult,
   DirectoryCreateResponse,
   DirectoryPickResponse,
@@ -135,6 +137,19 @@ export const client = {
   deleteSkillHubSkill: (skillId: string) => apiDelete<SkillHubDeletePreview>(`/api/skillhub/skills/${encodeURIComponent(skillId)}`),
   openSkillHubSkill: (skillId: string, target: SkillHubOpenTarget) =>
     apiPost<LocalOpenResponse>(`/api/skillhub/skills/${encodeURIComponent(skillId)}/open`, { target }),
+  clihub: () => apiGet<CliHubList>("/api/clihub"),
+  refreshCliHubDiscovery: (cliId?: string) => apiPost<CliHubList>("/api/clihub/discovery/refresh", { ...(cliId ? { cliId } : {}) }),
+  addCliHubLocalPath: (executablePath: string, displayName?: string, commandName?: string) =>
+    apiPost<CliHubCli>("/api/clihub/custom/local-path", { executablePath, displayName, commandName }),
+  addCliHubInstallCommand: (installCommand: string, displayName?: string, commandName?: string) =>
+    apiPost<CliHubCli>("/api/clihub/custom/install-command", { installCommand, displayName, commandName }),
+  addCliHubChannel: (cliId: string, installCommand: string) =>
+    apiPost<CliHubCli>(`/api/clihub/clis/${encodeURIComponent(cliId)}/channels`, { installCommand }),
+  installCliHubCli: (cliId: string, channelId?: string) =>
+    apiPost<CliHubCli>(`/api/clihub/clis/${encodeURIComponent(cliId)}/install`, { ...(channelId ? { channelId } : {}) }),
+  checkCliHubUpdates: () => apiPost<CliHubList>("/api/clihub/updates/check"),
+  checkCliHubUpdate: (cliId: string) => apiPost<CliHubList>(`/api/clihub/clis/${encodeURIComponent(cliId)}/check-updates`),
+  updateCliHubCli: (cliId: string) => apiPost<CliHubCli>(`/api/clihub/clis/${encodeURIComponent(cliId)}/update`),
   mcphub: () => apiGet<McpHubList>("/api/mcphub"),
   importMcpHubJson: (input: string) => apiPost<McpHubImportResult>("/api/mcphub/import", { input }),
   deleteMcpHubServer: (serverId: string) => apiDelete<McpHubCleanupReport>(`/api/mcphub/servers/${encodeURIComponent(serverId)}`),

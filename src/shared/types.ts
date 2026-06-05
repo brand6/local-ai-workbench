@@ -73,6 +73,98 @@ export interface ToolStatus {
   sessionSources: string[];
 }
 
+export type CliHubCliKind = "project-tool" | "function" | "dependency" | "custom";
+export type CliHubSourceType = "builtin" | "custom";
+export type CliHubSourceState = "builtin" | "local-path" | "install-command";
+export type CliHubProvider = "npm" | "github-release" | "winget" | "choco" | "scoop" | "installer-command" | "local-path";
+export type CliHubProviderConfidence = "high" | "low";
+export type CliHubAvailabilityState = "unknown" | "available" | "unavailable";
+export type CliHubVersionState = "unknown" | "detected" | "failed";
+export type CliHubUpdateStatus = "unknown" | "up-to-date" | "update-available";
+export type CliHubOperationKind = "install" | "update-check" | "update" | "discovery";
+export type CliHubOperationStatus = "success" | "failed";
+
+export interface CliHubProviderRef {
+  provider: CliHubProvider;
+  packageId: string | null;
+  confidence: CliHubProviderConfidence;
+  reason: string;
+}
+
+export interface CliHubChannel {
+  channelId: string;
+  provider: Exclude<CliHubProvider, "local-path">;
+  label: string;
+  packageId: string | null;
+  installCommand: string[] | null;
+  updateCommand: string[] | null;
+  checkCommand: string[] | null;
+  appManaged: boolean;
+  metadata: Record<string, string>;
+  builtin: boolean;
+}
+
+export interface CliHubOperationResult {
+  kind: CliHubOperationKind;
+  status: CliHubOperationStatus;
+  provider: CliHubProvider | null;
+  startedAt: string;
+  completedAt: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  message: string;
+}
+
+export interface CliHubCli {
+  cliId: string;
+  displayName: string;
+  kind: CliHubCliKind;
+  sourceType: CliHubSourceType;
+  sourceState: CliHubSourceState;
+  commandNames: string[];
+  localPath: string | null;
+  channels: CliHubChannel[];
+  availabilityState: CliHubAvailabilityState;
+  resolvedPaths: string[];
+  version: string | null;
+  versionState: CliHubVersionState;
+  versionError: string | null;
+  discoveredAt: string | null;
+  currentProvider: CliHubProviderRef | null;
+  providerCandidates: CliHubProviderRef[];
+  updateStatus: CliHubUpdateStatus;
+  updateCheckedAt: string | null;
+  updateError: string | null;
+  recentOperation: CliHubOperationResult | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CliHubRunningOperation {
+  kind: CliHubOperationKind;
+  cliId: string;
+  cliDisplayName: string;
+  startedAt: string;
+}
+
+export interface CliHubList {
+  clis: CliHubCli[];
+  operation: CliHubRunningOperation | null;
+}
+
+export interface CliHubCustomLocalPathInput {
+  displayName?: string | null;
+  commandName?: string | null;
+  executablePath: string;
+}
+
+export interface CliHubCustomInstallCommandInput {
+  displayName?: string | null;
+  commandName?: string | null;
+  installCommand: string;
+}
+
 export type SkillHubSourceType = "local" | "github";
 
 export interface SkillHubConfig {
