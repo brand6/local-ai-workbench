@@ -225,6 +225,43 @@ describe("CliHub", () => {
     db.close();
   });
 
+  it("checks winget updates without running upgrade during check", async () => {
+    directory = testDir("clihub-winget-update");
+    const db = new AppDatabase(directory);
+    listCliHub(db);
+    const codex = db.getCliHubCli("codex");
+    if (!codex) throw new Error("missing codex fixture");
+    db.upsertCliHubCli({
+      ...codex,
+      availabilityState: "available",
+      currentProvider: { provider: "winget", packageId: "OpenAI.Codex", confidence: "high", reason: "test" }
+    });
+    const runner = new FakeCliRunner({
+      runs: {
+        "winget list --id OpenAI.Codex --exact --upgrade-available": {
+          exitCode: 0,
+          stdout: "Name  Id           Version  Available  Source\nCodex OpenAI.Codex 1.0.0    2.0.0      winget",
+          stderr: ""
+        },
+        "winget upgrade --id OpenAI.Codex --exact --disable-interactivity": { exitCode: 0, stdout: "updated", stderr: "" },
+        "C:\\Program Files\\WindowsApps\\OpenAI.Codex_2.0.0_x64__test\\codex.exe --version": { exitCode: 0, stdout: "codex 2.0.0", stderr: "" }
+      },
+      lookups: {
+        codex: ["C:\\Program Files\\WindowsApps\\OpenAI.Codex_2.0.0_x64__test\\codex.exe"]
+      }
+    });
+
+    const checked = await checkCliHubUpdates(db, "codex", { commandRunner: runner });
+    expect(checked.clis.find((cli) => cli.cliId === "codex")).toMatchObject({ updateStatus: "update-available" });
+    expect(runner.executed).toContain("winget list --id OpenAI.Codex --exact --upgrade-available");
+    expect(runner.executed).not.toContain("winget upgrade --id OpenAI.Codex --exact --disable-interactivity");
+
+    await updateCliHubCli(db, "codex", { commandRunner: runner });
+    expect(runner.executed).toContain("winget upgrade --id OpenAI.Codex --exact --disable-interactivity");
+
+    db.close();
+  });
+
   it("installs app-managed release binaries under dataDir and writes shims", async () => {
     directory = testDir("clihub-managed-binary");
     const db = new AppDatabase(directory);

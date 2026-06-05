@@ -421,13 +421,7 @@ async function checkOneCliUpdate(database: AppDatabase, cli: CliHubCli, options:
     return;
   }
   const result = await commandRunner(options).run(command[0] ?? "", command.slice(1));
-  const combined = `${result.stdout}\n${result.stderr}`.toLowerCase();
-  const updateStatus =
-    result.exitCode === 0 && !/(update-available|outdated|upgrade available|available update)/i.test(combined)
-      ? "up-to-date"
-      : result.exitCode === 0 || result.stdout.trim()
-        ? "update-available"
-        : "unknown";
+  const updateStatus = updateStatusFromCheck(provider, result);
   const message =
     updateStatus === "unknown"
       ? "更新检查失败"
@@ -639,7 +633,7 @@ function checkCommandFor(channel: CliHubChannel | null, provider: CliHubProvider
   const packageId = provider.packageId ?? channel?.packageId;
   if (!packageId) return null;
   if (provider.provider === "npm") return ["npm", "outdated", "-g", "--json", packageId];
-  if (provider.provider === "winget") return ["winget", "upgrade", "--id", packageId];
+  if (provider.provider === "winget") return ["winget", "list", "--id", packageId, "--exact", "--upgrade-available"];
   if (provider.provider === "choco") return ["choco", "outdated", "--limit-output", packageId];
   if (provider.provider === "scoop") return ["scoop", "status", packageId];
   if (provider.provider === "installer-command") return channel?.checkCommand ?? null;
@@ -651,10 +645,35 @@ function updateCommandFor(channel: CliHubChannel | null, provider: CliHubProvide
   const packageId = provider.packageId ?? channel?.packageId;
   if (!packageId) return null;
   if (provider.provider === "npm") return ["npm", "update", "-g", packageId];
-  if (provider.provider === "winget") return ["winget", "upgrade", "--id", packageId];
+  if (provider.provider === "winget") return ["winget", "upgrade", "--id", packageId, "--exact", "--disable-interactivity"];
   if (provider.provider === "choco") return ["choco", "upgrade", packageId, "-y"];
   if (provider.provider === "scoop") return ["scoop", "update", packageId];
   return null;
+}
+
+function updateStatusFromCheck(provider: CliHubProviderRef, result: CliHubCommandResult): CliHubCli["updateStatus"] {
+  if (provider.provider === "winget") return wingetUpdateStatus(provider, result);
+  const combined = `${result.stdout}\n${result.stderr}`.toLowerCase();
+  return result.exitCode === 0 && !/(update-available|outdated|upgrade available|available update)/i.test(combined)
+    ? "up-to-date"
+    : result.exitCode === 0 || result.stdout.trim()
+      ? "update-available"
+      : "unknown";
+}
+
+function wingetUpdateStatus(provider: CliHubProviderRef, result: CliHubCommandResult): CliHubCli["updateStatus"] {
+  const combined = `${result.stdout}\n${result.stderr}`;
+  if (wingetOutputHasPackageRow(result.stdout, provider.packageId)) return "update-available";
+  if (/no installed package found|no available upgrade|no newer package versions are available|找不到|未找到|没有可用|无可用/i.test(combined)) {
+    return "up-to-date";
+  }
+  if (result.exitCode === 0) return "up-to-date";
+  return "unknown";
+}
+
+function wingetOutputHasPackageRow(output: string, packageId: string | null): boolean {
+  if (!packageId) return false;
+  return output.toLowerCase().includes(packageId.toLowerCase());
 }
 
 function matchingChannel(cli: CliHubCli, provider: CliHubProviderRef): CliHubChannel | null {
