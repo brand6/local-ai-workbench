@@ -11,6 +11,7 @@ import type {
   ProjectLocalSkillMigrationResult,
   ProjectLocalSkillMigrationTarget,
   ProjectLocalSkillsState,
+  ProjectSkillLinkFailure,
   ProjectSkillTarget,
   SkillHubConfig,
   SkillHubDeletePreview,
@@ -228,7 +229,9 @@ export function applyGitHubSourceUpdate(
     if (!current) continue;
 
     if (item.kind === "deleted") {
-      removeTargets(database, item.affectedTargets);
+      const failures = removeTargets(database, item.affectedTargets);
+      const firstFailure = failures[0];
+      if (firstFailure) throw new Error(`SkillHub link 删除失败：${firstFailure.reason}`);
       fs.rmSync(current.libraryPath, { recursive: true, force: true });
       database.deleteSkillHubSkill(current.id);
       continue;
@@ -257,15 +260,18 @@ export function previewDeleteSkillHubSkill(database: AppDatabase, skillId: strin
   if (!skill) throw new Error("SkillHub skill not found");
   const affectedTargets = database.listProjectSkillTargetsForSkill(skillId);
   const brokenTargets = affectedTargets.filter((target) => !fs.existsSync(target.linkPath));
-  return { skill, affectedTargets, brokenTargets };
+  return { skill, affectedTargets, brokenTargets, failures: [] };
 }
 
 export function deleteSkillHubSkill(database: AppDatabase, skillId: string): SkillHubDeletePreview {
   const preview = previewDeleteSkillHubSkill(database, skillId);
-  removeTargets(database, preview.affectedTargets);
+  const failures = removeTargets(database, preview.affectedTargets);
+  if (failures.length > 0) {
+    return { ...preview, failures };
+  }
   fs.rmSync(preview.skill.libraryPath, { recursive: true, force: true });
   database.deleteSkillHubSkill(skillId);
-  return preview;
+  return { ...preview, failures };
 }
 
 export function openSkillHubSkill(database: AppDatabase, skillId: string, target: SkillHubOpenTarget): LocalOpenResponse {
@@ -1018,11 +1024,28 @@ function replaceDirectory(source: string, target: string): void {
   fs.cpSync(source, target, { recursive: true, force: true });
 }
 
-function removeTargets(database: AppDatabase, targets: ProjectSkillTarget[]): void {
+function removeTargets(database: AppDatabase, targets: ProjectSkillTarget[]): ProjectSkillLinkFailure[] {
+  const failures: ProjectSkillLinkFailure[] = [];
   for (const target of targets) {
-    removeDirectoryLink(target.linkPath);
-    database.deleteProjectSkillTarget(target.projectId, target.toolId, target.skillId, target.linkPath);
+    const removal = removeDirectoryLink(target.linkPath);
+    if (!removal.reason || removal.missing) {
+      database.deleteProjectSkillTarget(target.projectId, target.toolId, target.skillId, target.linkPath);
+    } else {
+      failures.push(skillLinkFailure(target, removal.reason));
+    }
   }
+  return failures;
+}
+
+function skillLinkFailure(target: ProjectSkillTarget, reason: string): ProjectSkillLinkFailure {
+  return {
+    projectId: target.projectId,
+    toolId: target.toolId as ToolId,
+    skillId: target.skillId,
+    linkPath: target.linkPath,
+    targetPath: target.targetPath,
+    reason
+  };
 }
 
 function normalizeRelativePath(input: string): string {

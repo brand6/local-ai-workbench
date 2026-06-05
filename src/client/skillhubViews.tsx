@@ -101,11 +101,19 @@ export function SkillHubPage({
         />
       ) : null}
 
-      <section className="toolbar-panel skillhub-import-panel" aria-label="技能导入">
-        <div className="section-title">
-          <h2>技能导入</h2>
-        </div>
-        <div className="skillhub-import-grid">
+      <section className="toolbar-panel compact skillhub-search-panel" aria-label="搜索技能">
+        <label className="field wide">
+          搜索技能
+          <input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="文件夹、名称、描述、路径或来源" />
+        </label>
+      </section>
+
+      <details className="toolbar-panel compact hub-import-panel skillhub-import-panel" role="region" aria-label="技能导入">
+        <summary>
+          <span className="hub-import-title">技能导入</span>
+          <span className="metric-pill">本地 / GitHub</span>
+        </summary>
+        <div className="hub-import-body skillhub-import-grid">
           <label className="field wide">
             本地技能路径
             <input value={localPath} onChange={(event) => setLocalPath(event.target.value)} placeholder="选择单个技能、skills 目录或父目录" />
@@ -128,14 +136,7 @@ export function SkillHubPage({
             </button>
           </div>
         </div>
-      </section>
-
-      <section className="toolbar-panel skillhub-search-panel" aria-label="搜索技能">
-        <label className="field wide">
-          搜索技能
-          <input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="文件夹、名称、描述、路径或来源" />
-        </label>
-      </section>
+      </details>
 
       {!skillHub ? (
         <div className="empty-state">

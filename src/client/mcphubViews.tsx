@@ -26,25 +26,28 @@ export function McpHubPage({
 
   return (
     <section className="content mcphub-page">
-      <section className="toolbar-panel mcphub-import-panel" aria-label="McpHub JSON 导入">
-        <div className="section-title">
-          <h2>JSON 导入</h2>
+      <details className="toolbar-panel compact hub-import-panel mcphub-import-panel" role="region" aria-label="McpHub JSON 导入">
+        <summary>
+          <span className="hub-import-title">JSON 导入</span>
+          <span className="metric-pill">mcpServers</span>
+        </summary>
+        <div className="hub-import-body mcphub-import-body">
+          <label className="field wide">
+            MCP JSON
+            <textarea
+              value={jsonInput}
+              onChange={(event) => setJsonInput(event.target.value)}
+              placeholder='粘贴 {"mcpServers": {"context7": {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]}}}'
+            />
+          </label>
+          <div className="inline-actions">
+            <button className="primary" type="button" disabled={busy || !jsonInput.trim()} onClick={() => onImportJson(jsonInput)}>
+              导入JSON
+            </button>
+          </div>
+          {lastImport ? <McpHubImportSummary result={lastImport} /> : null}
         </div>
-        <label className="field wide">
-          MCP JSON
-          <textarea
-            value={jsonInput}
-            onChange={(event) => setJsonInput(event.target.value)}
-            placeholder='粘贴 {"mcpServers": {"context7": {"command": "npx", "args": ["-y", "@upstash/context7-mcp"]}}}'
-          />
-        </label>
-        <div className="inline-actions">
-          <button className="primary" type="button" disabled={busy || !jsonInput.trim()} onClick={() => onImportJson(jsonInput)}>
-            导入JSON
-          </button>
-        </div>
-        {lastImport ? <McpHubImportSummary result={lastImport} /> : null}
-      </section>
+      </details>
 
       {!mcphub ? (
         <div className="empty-state">

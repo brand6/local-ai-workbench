@@ -375,7 +375,7 @@ describe("HomePage", () => {
     expect(screen.queryByText("扫描项目")).not.toBeInTheDocument();
   });
 
-  it("renders home stats and project actions in the topbar without the overview label", async () => {
+  it("renders home stats in the topbar and project actions in the command bar", async () => {
     const projects = [
       { ...projectFixture("E:\\repo-a"), id: "project-a", sessionCount: 3 },
       { ...projectFixture("E:\\repo-b"), id: "project-b", sessionCount: 2 }
@@ -393,11 +393,14 @@ describe("HomePage", () => {
     expect(within(stats).getByText("2")).toBeInTheDocument();
     expect(within(stats).getByText("会话")).toBeInTheDocument();
     expect(within(stats).getByText("5")).toBeInTheDocument();
-    expect(within(topbar).getByRole("button", { name: "新建项目" })).toBeInTheDocument();
-    expect(within(topbar).getByText("添加项目")).toBeInTheDocument();
-    expect(within(topbar).getByRole("button", { name: "选择文件夹" })).toBeInTheDocument();
-    expect(within(topbar).getByText("扫描项目")).toBeInTheDocument();
-    expect(within(topbar).getByRole("button", { name: "扫描" })).toBeInTheDocument();
+    expect(within(topbar).queryByRole("button", { name: "新建项目" })).not.toBeInTheDocument();
+
+    const commandBar = screen.getByRole("region", { name: "项目操作" });
+    expect(within(commandBar).getByRole("button", { name: "新建项目" })).toBeInTheDocument();
+    expect(within(commandBar).getByText("添加项目")).toBeInTheDocument();
+    expect(within(commandBar).getByRole("button", { name: "选择文件夹" })).toBeInTheDocument();
+    expect(within(commandBar).getByText("扫描项目")).toBeInTheDocument();
+    expect(within(commandBar).getByRole("button", { name: "扫描" })).toBeInTheDocument();
   });
 
   it("opens SkillHub from the topbar", async () => {
@@ -1857,15 +1860,17 @@ describe("HomePage", () => {
     await waitFor(() => expect(clientMock.openRuleFile).toHaveBeenCalledWith(project.id, "CLAUDE.md"));
   });
 
-  it("places refresh index before settings outside project detail", async () => {
+  it("keeps refresh index in the home command bar outside project detail", async () => {
     const { container } = render(<App />);
 
     await screen.findByText("还没有项目");
 
     const topbarActions = container.querySelector(".topbar-actions") as HTMLElement;
-    const refreshButton = within(topbarActions).getByRole("button", { name: "刷新索引" });
-    const settingsButton = within(topbarActions).getByRole("button", { name: "设置" });
-    expect(refreshButton.compareDocumentPosition(settingsButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(topbarActions).queryByRole("button", { name: "刷新索引" })).not.toBeInTheDocument();
+    expect(within(topbarActions).getByRole("button", { name: "设置" })).toBeInTheDocument();
+
+    const commandBar = screen.getByRole("region", { name: "项目操作" });
+    expect(within(commandBar).getByRole("button", { name: "刷新索引" })).toBeInTheDocument();
   });
 
   it("clears project detail notices when returning to the overview", async () => {

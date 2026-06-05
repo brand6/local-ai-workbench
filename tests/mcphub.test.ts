@@ -126,6 +126,44 @@ describe("McpHub", () => {
     db.close();
   });
 
+  it("keeps failed MCP cleanup bindings owned when deleting a center server", () => {
+    directory = testDir("mcphub-delete-partial-failure");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(path.join(projectRoot, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, ".mcp.json"), JSON.stringify({ mcpServers: {} }, null, 2), "utf8");
+    fs.writeFileSync(path.join(projectRoot, ".codex", "config.toml"), "", "utf8");
+    const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["claude", "codex"]);
+    const server = db.upsertMcpHubServer({
+      serverId: "docs",
+      name: "docs",
+      description: null,
+      transport: "stdio",
+      command: "node",
+      args: ["server.js"],
+      url: null,
+      headers: {},
+      env: {},
+      requiredEnv: []
+    });
+
+    applyProjectMcpServer(db, project, "claude", server.serverId);
+    applyProjectMcpServer(db, project, "codex", server.serverId);
+    fs.writeFileSync(path.join(projectRoot, ".mcp.json"), "{ invalid json", "utf8");
+
+    const deleted = deleteMcpHubServer(db, server.serverId);
+
+    expect(deleted.deleted).toBe(false);
+    expect(deleted.failures).toEqual([expect.objectContaining({ path: path.join(projectRoot, ".mcp.json") })]);
+    expect(deleted.bindingsRemoved.map((binding) => binding.toolId)).toEqual(["codex"]);
+    expect(db.getMcpHubServer(server.serverId)).not.toBeNull();
+    expect(db.getProjectMcpBinding(project.id, project.rootPath, "claude", server.serverId)).not.toBeNull();
+    expect(db.getProjectMcpBinding(project.id, project.rootPath, "codex", server.serverId)).toBeNull();
+    expect(fs.readFileSync(path.join(projectRoot, ".codex", "config.toml"), "utf8")).not.toContain("[mcp_servers.docs]");
+    db.close();
+  });
+
   it("marks MCP targets by current project tool enablement and refuses disabled tools", () => {
     directory = testDir("mcphub-project-tool-targets");
     const db = new AppDatabase(directory);

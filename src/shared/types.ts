@@ -517,6 +517,7 @@ export interface SkillHubDeletePreview {
   skill: SkillHubSkill;
   affectedTargets: ProjectSkillTarget[];
   brokenTargets: ProjectSkillTarget[];
+  failures: ProjectSkillLinkFailure[];
 }
 
 export type SkillHubOpenTarget = "document" | "folder";

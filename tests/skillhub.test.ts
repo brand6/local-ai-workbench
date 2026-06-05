@@ -180,6 +180,34 @@ describe("SkillHub", () => {
     db.close();
   });
 
+  it("keeps SkillHub targets and library content when project link removal fails", () => {
+    directory = testDir("skillhub-delete-link-failure");
+    const config = configFixture(directory);
+    const db = new AppDatabase(directory);
+    const source = path.join(directory, "source");
+    writeSkill(path.join(source, "skills", "review"), "review", "Review skill");
+    const imported = importLocalSkills(db, config, directory, source);
+    const skill = imported.imported[0];
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(path.join(projectRoot, ".codex", "skills"), { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    updateProjectToolTargets(db, project, ["codex"]);
+
+    const linked = setProjectSkillTargets(db, project, skill.id, ["codex"]);
+    const linkPath = linked.targets[0].linkPath;
+    fs.unlinkSync(linkPath);
+    fs.mkdirSync(linkPath, { recursive: true });
+    fs.writeFileSync(path.join(linkPath, "SKILL.md"), skillText("local-review", "Local replacement"), "utf8");
+
+    const deleted = deleteSkillHubSkill(db, skill.id);
+
+    expect(deleted.failures).toEqual([expect.objectContaining({ linkPath, reason: "目标不是 SkillHub 创建的 link" })]);
+    expect(fs.existsSync(skill.libraryPath)).toBe(true);
+    expect(db.getSkillHubSkill(skill.id)).not.toBeNull();
+    expect(db.listProjectSkillTargetsForSkill(skill.id)).toHaveLength(1);
+    db.close();
+  });
+
   it("does not infer Copilot from generic GitHub or VS Code project folders", () => {
     directory = testDir("skillhub-project-tool-targets-generic-github-vscode");
     const db = new AppDatabase(directory);

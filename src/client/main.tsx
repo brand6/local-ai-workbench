@@ -370,111 +370,114 @@ function App() {
   const showingMcpHub = view === "mcphub" && !selectedProject;
   const showingHookHub = view === "hookhub" && !selectedProject;
   const showingHub = showingSkillHub || showingMcpHub || showingHookHub;
-  const projectActions = selectedProject || showingHub ? null : (
-    <div className="home-actions topbar-home-actions" aria-label="项目操作">
-      <button className="primary" type="button" disabled={busy} onClick={() => setNewProjectDialogOpen(true)}>
-        新建项目
-      </button>
-      <div className="home-action-group">
-        <span className="action-label">添加项目</span>
-        <button className="primary" type="button" disabled={busy} onClick={() => void runAction(pickAndAddProject)}>
-          选择文件夹
+  const homeCommandBar = selectedProject || showingHub ? null : (
+    <section className="toolbar-panel compact home-command-panel" aria-label="项目操作">
+      <div className="home-actions">
+        <button className="primary" type="button" disabled={busy} onClick={() => setNewProjectDialogOpen(true)}>
+          新建项目
+        </button>
+        <div className="home-action-group">
+          <span className="action-label">添加项目</span>
+          <button className="primary" type="button" disabled={busy} onClick={() => void runAction(pickAndAddProject)}>
+            选择文件夹
+          </button>
+        </div>
+        <div className="home-action-group scan-action">
+          <span className="action-label">扫描项目</span>
+          <select
+            className="drive-select"
+            aria-label="扫描磁盘"
+            value={selectedDriveRoot}
+            onChange={(event) => {
+              selectedDriveRootRef.current = event.target.value;
+              setSelectedDriveRoot(event.target.value);
+            }}
+          >
+            {drives.map((drive) => (
+              <option key={drive.root} value={drive.root}>
+                {drive.label}
+              </option>
+            ))}
+          </select>
+          <button
+            className="secondary"
+            type="button"
+            disabled={busy || !selectedDriveRoot}
+            onClick={() => void runAction(() => scanRoot(selectedDriveRootRef.current || selectedDriveRoot))}
+          >
+            {scanStatus ? "扫描中..." : "扫描"}
+          </button>
+        </div>
+        <button className="secondary" type="button" onClick={() => setRefreshDialogOpen(true)} disabled={busy}>
+          刷新索引
         </button>
       </div>
-      <div className="home-action-group scan-action">
-        <span className="action-label">扫描项目</span>
-        <select
-          className="drive-select"
-          aria-label="扫描磁盘"
-          value={selectedDriveRoot}
-          onChange={(event) => {
-            selectedDriveRootRef.current = event.target.value;
-            setSelectedDriveRoot(event.target.value);
-          }}
-        >
-          {drives.map((drive) => (
-            <option key={drive.root} value={drive.root}>
-              {drive.label}
-            </option>
-          ))}
-        </select>
-        <button
-          className="secondary"
-          type="button"
-          disabled={busy || !selectedDriveRoot}
-          onClick={() => void runAction(() => scanRoot(selectedDriveRootRef.current || selectedDriveRoot))}
-        >
-          {scanStatus ? "扫描中..." : "扫描"}
-        </button>
-      </div>
-    </div>
+    </section>
   );
-
   return (
     <main className="app">
-      <header className={`topbar${selectedProject ? " topbar-project-mode" : ""}`}>
-        <button
-          className="brand"
-          type="button"
-          onClick={returnHome}
-        >
-          <span className="brand-mark" aria-hidden="true">
-            AI
-          </span>
-          <span>AI项目管理</span>
-        </button>
-        <button className={`topbar-link${view === "skillhub" ? " active" : ""}`} type="button" onClick={openSkillHub}>
-          SkillHub
-        </button>
-        <button className={`topbar-link${view === "mcphub" ? " active" : ""}`} type="button" onClick={openMcpHub}>
-          McpHub
-        </button>
-        <button className={`topbar-link${view === "hookhub" ? " active" : ""}`} type="button" onClick={openHookHub}>
-          HookHub
-        </button>
-        {selectedProject ? (
-          <div className="topbar-project-context">
-            <button className="secondary" type="button" onClick={returnHome}>
-              返回
-            </button>
-            <div className="topbar-project-title">
-              <h1>{lastSegment(selectedProject.rootPath)}</h1>
-              <label className="toggle project-subdirectory-toggle">
-                <input
-                  type="checkbox"
-                  checked={selectedProject.includeSubdirectories}
-                  onChange={(event) => void runAction(() => toggleInclude(selectedProject.id, event.target.checked))}
-                />
-                子目录
-              </label>
+      <header className={`topbar${selectedProject ? " topbar-project-mode" : showingHub ? " topbar-hub-mode" : " topbar-home-mode"}`}>
+        <div className="topbar-nav" aria-label="主导航">
+          <button
+            className="brand"
+            type="button"
+            onClick={returnHome}
+          >
+            <span className="brand-mark" aria-hidden="true">
+              AI
+            </span>
+            <span>AI项目管理</span>
+          </button>
+          <button className={`topbar-link${view === "skillhub" ? " active" : ""}`} type="button" onClick={openSkillHub}>
+            SkillHub
+          </button>
+          <button className={`topbar-link${view === "mcphub" ? " active" : ""}`} type="button" onClick={openMcpHub}>
+            McpHub
+          </button>
+          <button className={`topbar-link${view === "hookhub" ? " active" : ""}`} type="button" onClick={openHookHub}>
+            HookHub
+          </button>
+        </div>
+        <div className="topbar-context">
+          {selectedProject ? (
+            <div className="topbar-project-context">
+              <button className="secondary" type="button" onClick={returnHome}>
+                返回
+              </button>
+              <div className="topbar-project-title">
+                <h1>{lastSegment(selectedProject.rootPath)}</h1>
+                <label className="toggle project-subdirectory-toggle">
+                  <input
+                    type="checkbox"
+                    checked={selectedProject.includeSubdirectories}
+                    onChange={(event) => void runAction(() => toggleInclude(selectedProject.id, event.target.checked))}
+                  />
+                  子目录
+                </label>
+              </div>
             </div>
-          </div>
-        ) : showingHub ? (
-          <div className="topbar-project-context">
-            <button className="secondary" type="button" onClick={returnHome}>
-              返回
-            </button>
-            <div className="topbar-project-title">
-              <h1>{showingSkillHub ? "SkillHub" : showingMcpHub ? "McpHub" : "HookHub"}</h1>
+          ) : showingHub ? (
+            <div className="topbar-project-context">
+              <button className="secondary" type="button" onClick={returnHome}>
+                返回
+              </button>
+              <div className="topbar-project-title">
+                <h1>{showingSkillHub ? "SkillHub" : showingMcpHub ? "McpHub" : "HookHub"}</h1>
+              </div>
             </div>
-          </div>
-        ) : (
-          <div className="topbar-home-context">
-            <div className="summary-strip topbar-summary-strip" aria-label="项目统计">
-              <StatTile label="项目" value={projects.length} />
-              <StatTile label="会话" value={totalSessions} />
+          ) : (
+            <div className="topbar-home-context">
+              <div className="summary-strip topbar-summary-strip" aria-label="项目统计">
+                <StatTile label="项目" value={projects.length} />
+                <StatTile label="会话" value={totalSessions} />
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
         <div className="topbar-actions">
-          {projectActions}
           {showingSkillHub ? (
             <button className="secondary" type="button" onClick={() => void runAction(checkSkillHubUpdates)} disabled={busy}>
               检查更新
-            </button>
-          ) : !selectedProject && !showingMcpHub && !showingHookHub ? (
-            <button className="secondary" type="button" onClick={() => setRefreshDialogOpen(true)} disabled={busy}>
-              刷新索引
             </button>
           ) : null}
           {selectedProject ? (
@@ -671,6 +674,7 @@ function App() {
           onRemove={(id) => void runAction(() => removeProject(id))}
           onAddScanCandidate={(candidateId) => void runAction(() => addScanCandidate(candidateId))}
           onCloseScanResults={() => setScanResult(null)}
+          commandBar={homeCommandBar}
         />
       )}
     </main>
@@ -896,13 +900,13 @@ function App() {
       setMessage("已取消删除技能");
       return;
     }
-    await client.deleteSkillHubSkill(skillId);
+    const result = await client.deleteSkillHubSkill(skillId);
     setSkillHubUpdates(null);
     await loadSkillHub();
     if (projectSkillPanelOpen && selectedProjectId) {
       setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
     }
-    setMessage("SkillHub 技能已删除");
+    setMessage(result.failures.length ? `SkillHub 技能未删除：${result.failures.length} 个项目 link 清理失败` : "SkillHub 技能已删除");
   }
 
   async function openSkillHubSkill(skillId: string, target: SkillHubOpenTarget) {
@@ -951,7 +955,7 @@ function App() {
     if (projectMcpPanelOpen && selectedProjectId) {
       setProjectMcpState(await client.projectMcp(selectedProjectId, projectMcpTargetRoot ?? undefined));
     }
-    setMessage(`MCP server 已删除：清理 ${result.modifiedFiles.length} 个文件，跳过 ${result.skippedMissingFiles.length} 个缺失文件，失败 ${result.failures.length} 个`);
+    setMessage(`${result.deleted ? "MCP server 已删除" : "MCP server 未删除"}：清理 ${result.modifiedFiles.length} 个文件，跳过 ${result.skippedMissingFiles.length} 个缺失文件，失败 ${result.failures.length} 个`);
   }
 
   async function createHookHubSuite(input: HookHubSuiteInput) {
@@ -1851,7 +1855,8 @@ function HomePage({
   onOpen,
   onRemove,
   onAddScanCandidate,
-  onCloseScanResults
+  onCloseScanResults,
+  commandBar
 }: {
   projects: Project[];
   busy: boolean;
@@ -1861,9 +1866,12 @@ function HomePage({
   onRemove: (id: string) => void;
   onAddScanCandidate: (candidateId: string) => void;
   onCloseScanResults: () => void;
+  commandBar?: React.ReactNode;
 }) {
   return (
     <section className="content">
+      {commandBar}
+
       {scanStatus ? (
         <div className="inline-status" role="status" aria-live="polite">
           {scanStatus}
@@ -2186,22 +2194,11 @@ function ProjectDetailView({
     () => buildRepairSignals(project, detail, warnings, repairCandidates),
     [detail, project, repairCandidates, warnings]
   );
+  const enabledToolCount = projectToolTargets.filter((target) => target.enabled).length;
+  const ruleFileCount = ruleSyncStatus ? Object.values(ruleSyncStatus.files).filter((file) => file.exists).length : null;
   return (
     <section className="content">
-      <div className="toolbar-panel compact detail-controls">
-        <ProjectToolTargetSelector
-          targets={projectToolTargets}
-          busy={busy}
-          onUpdate={onUpdateProjectTools}
-        />
-        <ProjectRuleSyncPanel
-          status={ruleSyncStatus ?? null}
-          busy={busy}
-          onRefresh={onRefreshRuleSync}
-          onApply={onApplyRuleSync}
-          onCreateFile={onCreateRuleFile}
-          onOpenFile={onOpenRuleFile}
-        />
+      <div className="toolbar-panel compact detail-command-panel">
         <div className="toolbar detail-controls-toolbar">
           <label className="field wide detail-filter">
             筛选标题和摘要
@@ -2223,6 +2220,31 @@ function ProjectDetailView({
           </div>
         </div>
       </div>
+
+      <details className="toolbar-panel compact detail-management-panel">
+        <summary>
+          <span className="detail-management-title">项目配置</span>
+          <span className="detail-management-summary">
+            {projectToolTargets.length > 0 ? <span className="metric-pill">{enabledToolCount}/{projectToolTargets.length} 工具</span> : null}
+            {ruleFileCount !== null ? <span className="metric-pill">{ruleFileCount}/2 规则文件</span> : <span className="metric-pill">规则状态读取中</span>}
+          </span>
+        </summary>
+        <div className="detail-management-body">
+          <ProjectToolTargetSelector
+            targets={projectToolTargets}
+            busy={busy}
+            onUpdate={onUpdateProjectTools}
+          />
+          <ProjectRuleSyncPanel
+            status={ruleSyncStatus ?? null}
+            busy={busy}
+            onRefresh={onRefreshRuleSync}
+            onApply={onApplyRuleSync}
+            onCreateFile={onCreateRuleFile}
+            onOpenFile={onOpenRuleFile}
+          />
+        </div>
+      </details>
 
       {repairCandidates.length > 0 ? (
         <RepairPanel candidates={repairCandidates} busy={busy} onRepairProject={onRepairProject} />

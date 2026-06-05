@@ -239,6 +239,7 @@ export function disableProjectMcpServer(
 export function deleteMcpHubServer(database: AppDatabase, serverId: string): McpHubCleanupReport {
   if (isBuiltInMcpHubServer(serverId)) throw new Error("内置 MCP server 不能删除");
   const bindings = database.listProjectMcpBindingsForServer(serverId);
+  const removedBindings: typeof bindings = [];
   const modifiedFiles = new Set<string>();
   const skippedMissingFiles = new Set<string>();
   const failures: Array<{ path: string; reason: string }> = [];
@@ -249,16 +250,18 @@ export function deleteMcpHubServer(database: AppDatabase, serverId: string): Mcp
       const removal = removeRenderedConfigEntry(configPath, binding.toolId, binding.serverId);
       if (removal.modified) modifiedFiles.add(configPath);
       if (removal.missing) skippedMissingFiles.add(configPath);
+      database.deleteProjectMcpBinding(binding.projectId, binding.targetRootPath, binding.toolId, binding.serverId);
+      removedBindings.push(binding);
     } catch (error) {
       failures.push({ path: configPath, reason: error instanceof Error ? error.message : "清理失败" });
     }
   }
 
-  const deleted = database.deleteMcpHubServer(serverId);
+  const deleted = failures.length === 0 ? database.deleteMcpHubServer(serverId) : false;
   return {
     serverId,
     deleted,
-    bindingsRemoved: bindings,
+    bindingsRemoved: removedBindings,
     modifiedFiles: [...modifiedFiles],
     skippedMissingFiles: [...skippedMissingFiles],
     failures
