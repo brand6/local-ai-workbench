@@ -49,6 +49,7 @@ const clientMock = vi.hoisted(() => ({
   checkCliHubUpdates: vi.fn(),
   checkCliHubUpdate: vi.fn(),
   updateCliHubCli: vi.fn(),
+  launchCliHubUpdate: vi.fn(),
   mcphub: vi.fn(),
   importMcpHubJson: vi.fn(),
   deleteMcpHubServer: vi.fn(),
@@ -135,6 +136,12 @@ describe("HomePage", () => {
     clientMock.checkCliHubUpdates.mockResolvedValue(cliHubListFixture("update-available"));
     clientMock.checkCliHubUpdate.mockResolvedValue(cliHubListFixture("update-available"));
     clientMock.updateCliHubCli.mockResolvedValue(cliHubListFixture().clis[0]);
+    clientMock.launchCliHubUpdate.mockResolvedValue({
+      launched: true,
+      command: { command: "npm", args: ["update", "-g", "@openai/codex"], cwd: "C:\\tmp\\github-repo-manager" },
+      host: "powershell",
+      reason: null
+    });
     clientMock.mcphub.mockResolvedValue({
       servers: [
         {
@@ -463,12 +470,17 @@ describe("HomePage", () => {
     expect(screen.queryByRole("heading", { name: "技能分发中心" })).not.toBeInTheDocument();
     expect(clientMock.skillhub).toHaveBeenCalledWith("");
     expect(screen.getByText("还没有技能")).toBeInTheDocument();
+    expect(clientMock.skillhub).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "返回" }));
     expect(await screen.findByText("还没有项目")).toBeInTheDocument();
   });
 
   it("opens CliHub from the topbar and supports custom CLI actions", async () => {
+    const cliHubFixture = cliHubListFixture();
+    cliHubFixture.clis[1] = { ...cliHubFixture.clis[1], availabilityState: "unavailable" };
+    clientMock.refreshCliHubDiscovery.mockResolvedValue(cliHubFixture);
+
     const { container } = render(<App />);
 
     await screen.findByText("还没有项目");
@@ -486,12 +498,22 @@ describe("HomePage", () => {
     const codexSummary = within(codexRow).getByText("Codex").closest("summary") as HTMLElement;
     expect(codexSummary).not.toHaveTextContent("项目工具");
     expect(codexSummary).not.toHaveTextContent("内置");
+    expect(codexSummary).not.toHaveTextContent("可用");
+    expect(codexSummary).not.toHaveTextContent("未发现");
     expect(codexSummary).not.toHaveTextContent("更新未知");
     expect(codexSummary).not.toHaveTextContent("已是最新");
     expect(codexSummary).not.toHaveTextContent("可更新");
     expect(within(codexRow).queryByText("npm: @openai/codex")).not.toBeInTheDocument();
     expect(within(codexRow).queryByRole("button", { name: "添加渠道" })).not.toBeInTheDocument();
     expect(within(codexRow).queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
+
+    const ghRow = screen.getByText("GitHub CLI").closest("details") as HTMLElement;
+    const ghSummary = within(ghRow).getByText("GitHub CLI").closest("summary") as HTMLElement;
+    expect(ghSummary).toHaveTextContent("不可用");
+
+    const nodeRow = screen.getByText("Node.js").closest("details") as HTMLElement;
+    const nodeSummary = within(nodeRow).getByText("Node.js").closest("summary") as HTMLElement;
+    expect(nodeSummary).not.toHaveTextContent("未发现");
 
     const customPanel = screen.getByRole("region", { name: "CliHub 自定义 CLI" });
     fireEvent.click(within(customPanel).getByText("添加自定义 CLI"));
@@ -504,6 +526,11 @@ describe("HomePage", () => {
     await waitFor(() => expect(codexSummary).toHaveTextContent("可更新"));
     expect(within(codexRow).getByRole("button", { name: "更新" })).toBeInTheDocument();
     expect(container.querySelector(".toast-notice")).toHaveTextContent("CliHub 检查完成：Codex 可更新");
+
+    fireEvent.click(within(codexRow).getByRole("button", { name: "更新" }));
+    await waitFor(() => expect(clientMock.launchCliHubUpdate).toHaveBeenCalledWith("codex"));
+    expect(clientMock.updateCliHubCli).not.toHaveBeenCalled();
+    await waitFor(() => expect(container.querySelector(".toast-notice")).toHaveTextContent("已打开 CLI 更新终端：npm update -g @openai/codex"));
   });
 
   it("shows CliHub running operations only in the global toast", async () => {
@@ -527,6 +554,54 @@ describe("HomePage", () => {
     expect(container.querySelector(".clihub-page .notice.inline")).not.toBeInTheDocument();
   });
 
+  it("reloads CliHub rows when a terminal update completion event arrives", async () => {
+    const listeners = new Map<string, EventListenerOrEventListenerObject>();
+    class MockEventSource {
+      onerror: ((event: Event) => void) | null = null;
+
+      constructor(readonly url: string) {}
+
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+        listeners.set(type, listener);
+      }
+
+      close() {}
+    }
+    vi.stubGlobal("EventSource", MockEventSource);
+    clientMock.refreshCliHubDiscovery.mockResolvedValue(cliHubListFixture("update-available"));
+    clientMock.clihub.mockResolvedValue(cliHubListFixture("up-to-date"));
+
+    try {
+      render(<App />);
+
+      await screen.findByText("还没有项目");
+      fireEvent.click(screen.getByRole("button", { name: "CliHub" }));
+      const codexRow = await screen.findByText("Codex").then((node) => node.closest("details") as HTMLElement);
+      const codexSummary = within(codexRow).getByText("Codex").closest("summary") as HTMLElement;
+      await waitFor(() => expect(codexSummary).toHaveTextContent("可更新"));
+      clientMock.clihub.mockClear();
+
+      const listener = listeners.get("clihub:changed");
+      expect(listener).toBeTruthy();
+      const event = new Event("clihub:changed");
+      if (typeof listener === "function") {
+        listener(event);
+      } else {
+        listener?.handleEvent(event);
+      }
+
+      await waitFor(() => expect(clientMock.clihub).toHaveBeenCalledTimes(1));
+      await waitFor(() => {
+        const currentRow = screen.getByText("Codex").closest("details") as HTMLElement;
+        const currentSummary = within(currentRow).getByText("Codex").closest("summary") as HTMLElement;
+        expect(currentSummary).not.toHaveTextContent("可更新");
+        expect(within(currentRow).queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("opens McpHub from the topbar", async () => {
     render(<App />);
 
@@ -534,7 +609,7 @@ describe("HomePage", () => {
     fireEvent.click(screen.getByRole("button", { name: "McpHub" }));
 
     expect(await screen.findByRole("heading", { name: "McpHub" })).toBeInTheDocument();
-    expect(clientMock.mcphub).toHaveBeenCalled();
+    expect(clientMock.mcphub).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("region", { name: "McpHub JSON 导入" })).toBeInTheDocument();
     expect(screen.getByText("context7")).toBeInTheDocument();
     expect(screen.queryByText("还没有 MCP server")).not.toBeInTheDocument();
@@ -548,6 +623,7 @@ describe("HomePage", () => {
 
     expect(await screen.findByRole("heading", { name: "HookHub" })).toBeInTheDocument();
     expect(clientMock.hookhub).toHaveBeenCalledWith("");
+    expect(clientMock.hookhub).toHaveBeenCalledTimes(1);
     const operations = screen.getByRole("region", { name: "HookHub 操作" });
     expect(within(operations).getByRole("button", { name: "创建 suite" })).toBeInTheDocument();
     expect(within(operations).getByRole("button", { name: "导入 suite JSON" })).toBeInTheDocument();

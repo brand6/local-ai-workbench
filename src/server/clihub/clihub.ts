@@ -12,7 +12,8 @@ import type {
   CliHubOperationResult,
   CliHubProvider,
   CliHubProviderRef,
-  CliHubRunningOperation
+  CliHubRunningOperation,
+  LaunchCommand
 } from "../../shared/types.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";
@@ -38,6 +39,24 @@ export interface CliHubRuntimeOptions {
   operationRunner?: CliHubOperationRunner;
 }
 
+export interface CliHubUpdateLaunchPlan {
+  cli: CliHubCli;
+  provider: CliHubProvider;
+  command: LaunchCommand;
+  commandText: string;
+}
+
+export interface CliHubUpdateCompletionCallback {
+  url: string;
+  token: string;
+}
+
+export interface CliHubTerminalUpdateCompletion {
+  exitCode?: number | null;
+  stdout?: string | null;
+  stderr?: string | null;
+}
+
 interface BuiltInCli {
   cliId: string;
   displayName: string;
@@ -53,12 +72,18 @@ interface InstallCommandParseResult {
 }
 
 const outputLimit = 1200;
+const defaultCommandTimeoutMs = 30000;
+const discoveryCommandTimeoutMs = 3000;
+const versionCommandTimeoutMs = 5000;
+const pathWriteTimeoutMs = 10000;
+const updateCheckCommandTimeoutMs = 60000;
+const installOrUpdateCommandTimeoutMs = 5 * 60 * 1000;
 const defaultCommandRunner: CliHubCommandRunner = {
   async lookup(commandName: string) {
     const result =
       process.platform === "win32"
-        ? spawnSync("where.exe", [commandName], { encoding: "utf8", timeout: 3000 })
-        : spawnSync("sh", ["-lc", `command -v ${shellQuote(commandName)}`], { encoding: "utf8", timeout: 3000 });
+        ? spawnSync("where.exe", [commandName], { encoding: "utf8", timeout: discoveryCommandTimeoutMs })
+        : spawnSync("sh", ["-lc", `command -v ${shellQuote(commandName)}`], { encoding: "utf8", timeout: discoveryCommandTimeoutMs });
     if (result.status !== 0) return [];
     const paths = String(result.stdout ?? "")
       .split(/\r?\n/)
@@ -71,7 +96,7 @@ const defaultCommandRunner: CliHubCommandRunner = {
     const spawnOptions = {
       cwd: options.cwd,
       encoding: "utf8",
-      timeout: options.timeoutMs ?? 30000
+      timeout: options.timeoutMs ?? defaultCommandTimeoutMs
     } as const;
     const result =
       process.platform === "win32" && isWindowsShellCommand(resolvedCommand)
@@ -94,7 +119,7 @@ const defaultPathManager: CliHubPathManager = {
     if (entries.some((entry) => samePath(entry, directory))) return;
     const next = [...entries, directory].join(path.delimiter);
     if (process.platform === "win32") {
-      const result = spawnSync("setx", ["PATH", next], { encoding: "utf8", timeout: 10000 });
+      const result = spawnSync("setx", ["PATH", next], { encoding: "utf8", timeout: pathWriteTimeoutMs });
       if (result.status !== 0) throw new Error(`用户 PATH 写入失败：${clipText(String(result.stderr || result.stdout || ""))}`);
     }
     process.env[key] = next;
@@ -118,7 +143,10 @@ const builtInClis: BuiltInCli[] = [
     displayName: "Claude Code",
     kind: "project-tool",
     commandNames: ["claude"],
-    channels: [providerChannel("claude:npm", "npm", "@anthropic-ai/claude-code")]
+    channels: [
+      providerChannel("claude:npm", "npm", "@anthropic-ai/claude-code"),
+      providerChannel("claude:winget", "winget", "Anthropic.ClaudeCode")
+    ]
   },
   {
     cliId: "opencode",
@@ -146,7 +174,7 @@ const builtInClis: BuiltInCli[] = [
     displayName: "GitHub Copilot CLI",
     kind: "project-tool",
     commandNames: ["copilot"],
-    channels: []
+    channels: [providerChannel("copilot:npm", "npm", "@github/copilot")]
   },
   {
     cliId: "lark-cli",
@@ -333,7 +361,9 @@ export async function installCliHubCli(
         result = await installManagedBinary(cli, channel, dataDir, pathManager(options));
       } else {
         if (!channel.installCommand) throw new Error("安装渠道缺少 installCommand");
-        result = await commandRunner(options).run(channel.installCommand[0] ?? "", channel.installCommand.slice(1));
+        result = await commandRunner(options).run(channel.installCommand[0] ?? "", channel.installCommand.slice(1), {
+          timeoutMs: installOrUpdateCommandTimeoutMs
+        });
       }
       if (result.exitCode !== 0) throw new CliHubCommandError("CLI 安装失败", result);
       storeOperation(database, cli, commandOperation("install", "success", channel.provider, startedAt, result, "CLI 安装完成"));
@@ -376,7 +406,7 @@ export async function updateCliHubCli(database: AppDatabase, cliId: string, opti
     if (!command) throw new Error("当前 provider 没有明确更新命令");
     const startedAt = nowIso();
     try {
-      const result = await commandRunner(options).run(command[0] ?? "", command.slice(1));
+      const result = await commandRunner(options).run(command[0] ?? "", command.slice(1), { timeoutMs: installOrUpdateCommandTimeoutMs });
       if (result.exitCode !== 0) throw new CliHubCommandError("CLI 更新失败", result);
       storeOperation(database, cli, commandOperation("update", "success", provider.provider, startedAt, result, "CLI 更新完成"));
       await refreshCliHubDiscovery(database, cliId, options);
@@ -387,6 +417,94 @@ export async function updateCliHubCli(database: AppDatabase, cliId: string, opti
       throw error;
     }
   });
+}
+
+export function createCliHubUpdateLaunchPlan(database: AppDatabase, cliId: string, cwd: string): CliHubUpdateLaunchPlan {
+  ensureBuiltInCliHubClis(database);
+  const cli = requiredCli(database, cliId);
+  const provider = cli.currentProvider;
+  if (!provider || provider.confidence !== "high") throw new Error("当前 CLI 没有明确 provider，不能执行更新");
+  if (provider.provider === "local-path") throw new Error("本地路径 CLI 不支持更新");
+  const channel = matchingChannel(cli, provider);
+  const parts = updateCommandFor(channel, provider);
+  if (!parts?.[0]) throw new Error("当前 provider 没有明确更新命令");
+  return {
+    cli,
+    provider: provider.provider,
+    command: { command: parts[0], args: parts.slice(1), cwd },
+    commandText: formatCommandLine(parts)
+  };
+}
+
+export function withCliHubUpdateCompletionCallback(
+  plan: CliHubUpdateLaunchPlan,
+  callback: CliHubUpdateCompletionCallback,
+  platform: NodeJS.Platform = process.platform
+): CliHubUpdateLaunchPlan {
+  if (platform !== "win32") return plan;
+  return {
+    ...plan,
+    command: {
+      command: "powershell.exe",
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShellCommand(terminalUpdateCompletionScript(plan.command, callback))],
+      cwd: plan.command.cwd
+    }
+  };
+}
+
+export function recordCliHubUpdateTerminalLaunch(
+  database: AppDatabase,
+  plan: CliHubUpdateLaunchPlan,
+  launch: { launched: boolean; host: string; reason: string | null }
+): CliHubCli {
+  const startedAt = nowIso();
+  const message = launch.launched ? `已打开 ${launchHostLabel(launch.host)} 执行更新，实时状态以终端输出为准` : launch.reason ?? "更新终端启动失败";
+  storeOperation(
+    database,
+    plan.cli,
+    commandOperation(
+      "update",
+      launch.launched ? "success" : "failed",
+      plan.provider,
+      startedAt,
+      { exitCode: nullCode(), stdout: plan.commandText, stderr: launch.launched ? "" : message },
+      message
+    )
+  );
+  return requiredCli(database, plan.cli.cliId);
+}
+
+export async function completeCliHubTerminalUpdate(
+  database: AppDatabase,
+  cliId: string,
+  completion: CliHubTerminalUpdateCompletion,
+  options: CliHubRuntimeOptions = {}
+): Promise<CliHubList> {
+  ensureBuiltInCliHubClis(database);
+  const cli = requiredCli(database, cliId);
+  const provider = cli.currentProvider?.provider ?? null;
+  const startedAt = nowIso();
+  const exitCode = completionExitCode(completion.exitCode);
+  const result = {
+    exitCode,
+    stdout: completion.stdout ?? "",
+    stderr: completion.stderr ?? ""
+  };
+
+  if (exitCode !== 0) {
+    storeOperation(database, cli, commandOperation("update", "failed", provider, startedAt, result, `终端更新命令失败，退出码 ${exitCode}`));
+    return listCliHub(database, options);
+  }
+
+  storeOperation(database, cli, commandOperation("update", "success", provider, startedAt, result, "终端更新完成，正在刷新状态"));
+  await refreshCliHubDiscovery(database, cliId, options);
+  await checkOneCliUpdate(database, requiredCli(database, cliId), options);
+  const refreshed = requiredCli(database, cliId);
+  database.upsertCliHubCli({
+    ...refreshed,
+    recentOperation: commandOperation("update", "success", provider, startedAt, result, terminalUpdateCompletionMessage(refreshed.updateStatus))
+  });
+  return listCliHub(database, options);
 }
 
 export function parseCliHubInstallCommand(input: string): CliHubChannel {
@@ -420,8 +538,8 @@ async function checkOneCliUpdate(database: AppDatabase, cli: CliHubCli, options:
     });
     return;
   }
-  const result = await commandRunner(options).run(command[0] ?? "", command.slice(1));
-  const updateStatus = updateStatusFromCheck(provider, result);
+  const result = await commandRunner(options).run(command[0] ?? "", command.slice(1), { timeoutMs: updateCheckCommandTimeoutMs });
+  const updateStatus = updateStatusFromCheck(provider, result, channel);
   const message =
     updateStatus === "unknown"
       ? "更新检查失败"
@@ -498,7 +616,7 @@ async function discoverCli(cli: CliHubCli, runner: CliHubCommandRunner): Promise
 }
 
 async function readVersion(commandOrPath: string, runner: CliHubCommandRunner): Promise<{ version: string | null; state: CliHubCli["versionState"]; error: string | null }> {
-  const result = await runner.run(commandOrPath, ["--version"], { timeoutMs: 5000 });
+  const result = await runner.run(commandOrPath, ["--version"], { timeoutMs: versionCommandTimeoutMs });
   const output = firstOutputLine(result.stdout) ?? firstOutputLine(result.stderr);
   if (result.exitCode === 0 && output) return { version: output, state: "detected", error: null };
   return {
@@ -651,8 +769,8 @@ function updateCommandFor(channel: CliHubChannel | null, provider: CliHubProvide
   return null;
 }
 
-function updateStatusFromCheck(provider: CliHubProviderRef, result: CliHubCommandResult): CliHubCli["updateStatus"] {
-  if (provider.provider === "winget") return wingetUpdateStatus(provider, result);
+function updateStatusFromCheck(provider: CliHubProviderRef, result: CliHubCommandResult, channel: CliHubChannel | null): CliHubCli["updateStatus"] {
+  if (provider.provider === "winget") return wingetUpdateStatus(provider.packageId ?? channel?.packageId ?? null, result);
   const combined = `${result.stdout}\n${result.stderr}`.toLowerCase();
   return result.exitCode === 0 && !/(update-available|outdated|upgrade available|available update)/i.test(combined)
     ? "up-to-date"
@@ -661,9 +779,9 @@ function updateStatusFromCheck(provider: CliHubProviderRef, result: CliHubComman
       : "unknown";
 }
 
-function wingetUpdateStatus(provider: CliHubProviderRef, result: CliHubCommandResult): CliHubCli["updateStatus"] {
+function wingetUpdateStatus(packageId: string | null, result: CliHubCommandResult): CliHubCli["updateStatus"] {
   const combined = `${result.stdout}\n${result.stderr}`;
-  if (wingetOutputHasPackageRow(result.stdout, provider.packageId)) return "update-available";
+  if (wingetOutputHasPackageRow(result.stdout, packageId)) return "update-available";
   if (/no installed package found|no available upgrade|no newer package versions are available|找不到|未找到|没有可用|无可用/i.test(combined)) {
     return "up-to-date";
   }
@@ -715,8 +833,23 @@ class CliHubCommandError extends Error {
     message: string,
     readonly result: CliHubCommandResult
   ) {
-    super(message);
+    super(commandErrorMessage(message, result));
   }
+}
+
+function commandErrorMessage(message: string, result: CliHubCommandResult): string {
+  const detail = firstOutputLine(result.stderr) ?? firstOutputLine(result.stdout);
+  return detail ? `${message}：${clipText(detail)}` : message;
+}
+
+function terminalUpdateCompletionMessage(updateStatus: CliHubCli["updateStatus"]): string {
+  if (updateStatus === "up-to-date") return "终端更新完成，状态已刷新：已是最新版本";
+  if (updateStatus === "update-available") return "终端更新完成，状态已刷新：仍检测到可更新";
+  return "终端更新完成，状态已刷新：更新状态未知";
+}
+
+function completionExitCode(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : 0;
 }
 
 function requiredCli(database: AppDatabase, cliId: string): CliHubCli {
@@ -927,6 +1060,43 @@ function samePath(left: string, right: string): boolean {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function formatCommandLine(parts: string[]): string {
+  return parts.map((part) => (/\s/.test(part) ? `"${part.replaceAll("\"", "\\\"")}"` : part)).join(" ");
+}
+
+function terminalUpdateCompletionScript(command: LaunchCommand, callback: CliHubUpdateCompletionCallback): string {
+  const invoke = ["&", quotePowerShell(command.command), ...command.args.map(quotePowerShell)].join(" ");
+  return [
+    "$ErrorActionPreference = 'Continue'",
+    "$global:LASTEXITCODE = 0",
+    invoke,
+    "$commandSucceeded = $?",
+    "$updateExitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } elseif ($commandSucceeded) { 0 } else { 1 }",
+    "$body = @{ exitCode = $updateExitCode } | ConvertTo-Json -Compress",
+    "try {",
+    `  Invoke-RestMethod -Method Post -Uri ${quotePowerShell(callback.url)} -Headers @{ 'x-local-api-token' = ${quotePowerShell(callback.token)} } -ContentType 'application/json' -Body $body | Out-Null`,
+    "  Write-Host 'GitHub Repo Manager 已刷新 CliHub 状态。'",
+    "} catch {",
+    "  Write-Warning \"GitHub Repo Manager 状态刷新失败：$($_.Exception.Message)\"",
+    "}",
+    "exit $updateExitCode"
+  ].join("; ");
+}
+
+function encodePowerShellCommand(script: string): string {
+  return Buffer.from(script, "utf16le").toString("base64");
+}
+
+function quotePowerShell(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function launchHostLabel(host: string): string {
+  if (host === "windows-terminal") return "Windows Terminal PowerShell";
+  if (host === "powershell") return "PowerShell";
+  return "终端";
 }
 
 function sortWindowsCommandPaths(paths: string[]): string[] {

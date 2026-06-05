@@ -47,10 +47,14 @@ import {
   addCustomInstallCommandCli,
   addCustomLocalPathCli,
   checkCliHubUpdates,
+  completeCliHubTerminalUpdate,
+  createCliHubUpdateLaunchPlan,
   installCliHubCli,
   listCliHub,
+  recordCliHubUpdateTerminalLaunch,
   refreshCliHubDiscovery,
-  updateCliHubCli
+  updateCliHubCli,
+  withCliHubUpdateCompletionCallback
 } from "../clihub/clihub.js";
 import {
   applyProjectMcpServer,
@@ -400,6 +404,53 @@ export function installApi(app: Express, context: AppContext): void {
         response.json(await updateCliHubCli(context.database(), cliId, context.cliHubRuntimeOptions()));
       } catch (error) {
         response.status(400).json({ error: "clihub-update-failed", reason: error instanceof Error ? error.message : "clihub-update-failed" });
+      }
+    })
+  );
+
+  app.post("/api/clihub/clis/:cliId/update-terminal", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const cliId = stringParam(request, "cliId");
+    if (!dataDir) return;
+    if (!cliId) {
+      response.status(404).json({ error: "clihub-cli-not-found" });
+      return;
+    }
+    try {
+      const plan = createCliHubUpdateLaunchPlan(context.database(), cliId, dataDir);
+      const launchPlan = withCliHubUpdateCompletionCallback(plan, {
+        url: `${request.protocol}://${request.get("host")}/api/clihub/clis/${encodeURIComponent(cliId)}/update-terminal/complete`,
+        token: context.token
+      });
+      const launch = launchInTerminal(launchPlan.command, {
+        dryRun: Boolean(request.body?.dryRun),
+        windowTarget: "new"
+      });
+      recordCliHubUpdateTerminalLaunch(context.database(), plan, launch);
+      response.json({ ...launch, command: plan.command });
+    } catch (error) {
+      response.status(400).json({ error: "clihub-update-terminal-failed", reason: error instanceof Error ? error.message : "clihub-update-terminal-failed" });
+    }
+  });
+
+  app.post(
+    "/api/clihub/clis/:cliId/update-terminal/complete",
+    asyncHandler(async (request, response) => {
+      const cliId = stringParam(request, "cliId");
+      if (!cliId) {
+        response.status(404).json({ error: "clihub-cli-not-found" });
+        return;
+      }
+      try {
+        const result = await completeCliHubTerminalUpdate(context.database(), cliId, terminalUpdateCompletionBody(request), context.cliHubRuntimeOptions());
+        context.eventHub().emit({
+          type: "clihub:changed",
+          at: new Date().toISOString(),
+          cliId
+        });
+        response.json(result);
+      } catch (error) {
+        response.status(400).json({ error: "clihub-update-terminal-complete-failed", reason: error instanceof Error ? error.message : "clihub-update-terminal-complete-failed" });
       }
     })
   );
@@ -1177,6 +1228,15 @@ function stringBody(request: Request, key: string): string | null {
 function stringParam(request: Request, key: string): string | null {
   const value = request.params[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function terminalUpdateCompletionBody(request: Request): { exitCode: number | null; stdout: string | null; stderr: string | null } {
+  const exitCode = typeof request.body?.exitCode === "number" && Number.isFinite(request.body.exitCode) ? Math.trunc(request.body.exitCode) : null;
+  return {
+    exitCode,
+    stdout: rawStringBody(request, "stdout"),
+    stderr: rawStringBody(request, "stderr")
+  };
 }
 
 function rawStringBody(request: Request, key: string): string | null {

@@ -11,9 +11,11 @@ import {
   parseCliHubInstallCommand,
   refreshCliHubDiscovery,
   updateCliHubCli,
+  withCliHubUpdateCompletionCallback,
   type CliHubCommandResult,
   type CliHubCommandRunner
 } from "../src/server/clihub/clihub.js";
+import { buildTerminalHost } from "../src/server/launch/terminal.js";
 import { AppDatabase } from "../src/server/storage/database.js";
 import type { CliHubCli } from "../src/shared/types.js";
 import { cleanup, testDir } from "./helpers.js";
@@ -221,8 +223,69 @@ describe("CliHub", () => {
     expect(checked.clis.find((cli) => cli.cliId === "codex")).toMatchObject({ updateStatus: "update-available" });
     await updateCliHubCli(db, "codex", { commandRunner: runner });
     expect(runner.executed).toContain("npm update -g @openai/codex");
+    expect(runner.runOptions.get("npm update -g @openai/codex")?.timeoutMs).toBeGreaterThan(30000);
 
     db.close();
+  });
+
+  it("keeps failed update stderr in the operation message", async () => {
+    directory = testDir("clihub-update-failure-detail");
+    const db = new AppDatabase(directory);
+    listCliHub(db);
+    const opencode = db.getCliHubCli("opencode");
+    if (!opencode) throw new Error("missing opencode fixture");
+    db.upsertCliHubCli({
+      ...opencode,
+      availabilityState: "available",
+      resolvedPaths: ["C:\\Users\\tester\\AppData\\Roaming\\npm\\opencode.cmd"],
+      currentProvider: { provider: "npm", packageId: "opencode-ai", confidence: "high", reason: "test" },
+      updateStatus: "update-available"
+    });
+    const runner = new FakeCliRunner({
+      runs: {
+        "npm update -g opencode-ai": {
+          exitCode: 1,
+          stdout: "",
+          stderr: "EEXIST: file already exists, mkdir 'C:\\Users\\tester\\.config\\opencode'"
+        }
+      }
+    });
+
+    try {
+      await expect(updateCliHubCli(db, "opencode", { commandRunner: runner })).rejects.toThrow("EEXIST");
+      const failed = db.getCliHubCli("opencode")?.recentOperation;
+      expect(failed).toMatchObject({
+        kind: "update",
+        status: "failed",
+        exitCode: 1,
+        message: expect.stringContaining("EEXIST"),
+        stderr: expect.stringContaining("C:\\Users\\tester\\.config\\opencode")
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("encodes Windows terminal update callbacks so wt.exe does not split the script", () => {
+    const plan = withCliHubUpdateCompletionCallback(
+      {
+        cli: { cliId: "qwen" } as CliHubCli,
+        provider: "npm",
+        command: { command: "npm", args: ["update", "-g", "@qwen-code/qwen-code"], cwd: "E:\\repo" },
+        commandText: "npm update -g @qwen-code/qwen-code"
+      },
+      { url: "http://127.0.0.1:3987/api/clihub/clis/qwen/update-terminal/complete", token: "local-token" },
+      "win32"
+    );
+
+    expect(plan.command.args).toEqual(["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", expect.any(String)]);
+    const host = buildTerminalHost(plan.command, { platform: "win32", windowsTerminalAvailable: true });
+    const windowsTerminalArgs = host.args.join(" ");
+    expect(windowsTerminalArgs).not.toContain("; ");
+    expect(windowsTerminalArgs).not.toContain("exit $updateExitCode");
+
+    const encodedScript = plan.command.args.at(-1);
+    expect(Buffer.from(encodedScript ?? "", "base64").toString("utf16le")).toContain("exit $updateExitCode");
   });
 
   it("checks winget updates without running upgrade during check", async () => {
@@ -258,6 +321,71 @@ describe("CliHub", () => {
 
     await updateCliHubCli(db, "codex", { commandRunner: runner });
     expect(runner.executed).toContain("winget upgrade --id OpenAI.Codex --exact --disable-interactivity");
+    expect(runner.runOptions.get("winget upgrade --id OpenAI.Codex --exact --disable-interactivity")?.timeoutMs).toBeGreaterThan(30000);
+
+    db.close();
+  });
+
+  it("uses built-in winget channel package ids for detected local installs", async () => {
+    directory = testDir("clihub-winget-detected-channel");
+    const db = new AppDatabase(directory);
+    listCliHub(db);
+    const claude = db.getCliHubCli("claude");
+    if (!claude) throw new Error("missing claude fixture");
+    db.upsertCliHubCli({
+      ...claude,
+      availabilityState: "available",
+      resolvedPaths: ["C:\\Users\\tester\\AppData\\Local\\Microsoft\\WinGet\\Links\\claude.exe"],
+      version: "2.1.123 (Claude Code)",
+      versionState: "detected",
+      currentProvider: { provider: "winget", packageId: null, confidence: "high", reason: "路径位于 winget/WindowsApps 管理目录" }
+    });
+    const runner = new FakeCliRunner({
+      runs: {
+        "winget list --id Anthropic.ClaudeCode --exact --upgrade-available": {
+          exitCode: 0,
+          stdout: "Name        Id                   Version Available Source\nClaude Code Anthropic.ClaudeCode 2.1.123 2.1.163  winget",
+          stderr: ""
+        }
+      }
+    });
+
+    const checked = await checkCliHubUpdates(db, "claude", { commandRunner: runner });
+
+    expect(checked.clis.find((cli) => cli.cliId === "claude")).toMatchObject({ updateStatus: "update-available", updateError: null });
+    expect(runner.executed).toContain("winget list --id Anthropic.ClaudeCode --exact --upgrade-available");
+
+    db.close();
+  });
+
+  it("uses built-in npm channel package ids for detected local installs", async () => {
+    directory = testDir("clihub-npm-detected-channel");
+    const db = new AppDatabase(directory);
+    listCliHub(db);
+    const copilot = db.getCliHubCli("copilot");
+    if (!copilot) throw new Error("missing copilot fixture");
+    db.upsertCliHubCli({
+      ...copilot,
+      availabilityState: "available",
+      resolvedPaths: ["C:\\Users\\tester\\AppData\\Roaming\\npm\\copilot.cmd", "C:\\Users\\tester\\AppData\\Roaming\\npm\\copilot"],
+      version: "GitHub Copilot CLI 1.0.44",
+      versionState: "detected",
+      currentProvider: { provider: "npm", packageId: null, confidence: "high", reason: "路径位于 npm 全局目录" }
+    });
+    const runner = new FakeCliRunner({
+      runs: {
+        "npm outdated -g --json @github/copilot": {
+          exitCode: 1,
+          stdout: "{\"@github/copilot\":{\"current\":\"1.0.44\",\"wanted\":\"1.0.45\",\"latest\":\"1.0.45\"}}",
+          stderr: ""
+        }
+      }
+    });
+
+    const checked = await checkCliHubUpdates(db, "copilot", { commandRunner: runner });
+
+    expect(checked.clis.find((cli) => cli.cliId === "copilot")).toMatchObject({ updateStatus: "update-available", updateError: null });
+    expect(runner.executed).toContain("npm outdated -g --json @github/copilot");
 
     db.close();
   });
@@ -349,6 +477,7 @@ describe("CliHub", () => {
 
 class FakeCliRunner implements CliHubCommandRunner {
   executed: string[] = [];
+  runOptions = new Map<string, { timeoutMs?: number; cwd?: string } | undefined>();
   lookups: Record<string, string[]>;
   readonly runs: Record<string, CliHubCommandResult>;
   private readonly hook?: (this: FakeCliRunner, command: string, args: string[]) => void;
@@ -367,9 +496,10 @@ class FakeCliRunner implements CliHubCommandRunner {
     return this.lookups[commandName] ?? [];
   }
 
-  async run(command: string, args: string[]): Promise<CliHubCommandResult> {
+  async run(command: string, args: string[], options?: { timeoutMs?: number; cwd?: string }): Promise<CliHubCommandResult> {
     const key = [command, ...args].join(" ");
     this.executed.push(key);
+    this.runOptions.set(key, options);
     this.hook?.call(this, command, args);
     return this.runs[key] ?? { exitCode: 0, stdout: "", stderr: "" };
   }

@@ -175,13 +175,14 @@ function CliHubCliRow({
       cli.currentProvider.provider !== "local-path"
   );
   const updateStatusLabel = updateLabel(cli.updateStatus);
+  const availabilityStatusLabel = availabilityLabel(cli.availabilityState);
   return (
     <details className="clihub-cli-row">
       <summary>
         <span className="skillhub-source-main">
           <span className="skillhub-source-title">{cli.displayName}</span>
           <span className="metric-pill">{cli.commandNames.join(", ")}</span>
-          <span className={`metric-pill ${cli.availabilityState === "unavailable" ? "danger" : ""}`}>{availabilityLabel(cli.availabilityState)}</span>
+          {availabilityStatusLabel ? <span className="metric-pill danger">{availabilityStatusLabel}</span> : null}
           <span className="metric-pill">{versionLabel(cli)}</span>
           {updateStatusLabel ? <span className="metric-pill">{updateStatusLabel}</span> : null}
         </span>
@@ -201,7 +202,7 @@ function CliHubCliRow({
             检查更新
           </button>
           {canUpdate ? (
-            <button className="primary" type="button" disabled={busy} onClick={() => onUpdate(cli.cliId)}>
+            <button className="primary" type="button" disabled={busy} title="打开 PowerShell 执行更新并查看实时状态" onClick={() => onUpdate(cli.cliId)}>
               更新
             </button>
           ) : null}
@@ -266,10 +267,14 @@ function CliHubChannelRow({
 
 function OperationResult({ result }: { result: CliHubCli["recentOperation"] }) {
   if (!result) return null;
+  const output = result.status === "failed" ? result.stderr || result.stdout : "";
   return (
     <div className={`inline-warning ${result.status === "success" ? "success" : ""}`} role="status">
-      {operationLabel(result.kind)}：{result.message}
-      {result.exitCode !== null ? `，exit ${result.exitCode}` : ""}
+      <span>
+        {operationLabel(result.kind)}：{result.message}
+        {result.exitCode !== null ? `，exit ${result.exitCode}` : ""}
+      </span>
+      {output ? <pre className="operation-output">{output}</pre> : null}
     </div>
   );
 }
@@ -292,10 +297,9 @@ function sourceLabel(source: CliHubCli["sourceState"]): string {
   return "install-command";
 }
 
-function availabilityLabel(state: CliHubCli["availabilityState"]): string {
-  if (state === "available") return "可用";
+function availabilityLabel(state: CliHubCli["availabilityState"]): string | null {
   if (state === "unavailable") return "不可用";
-  return "未发现";
+  return null;
 }
 
 function versionLabel(cli: CliHubCli): string {

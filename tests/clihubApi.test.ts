@@ -99,6 +99,42 @@ describe("CliHub API", () => {
       .expect(200);
     expect(checked.body.clis.find((cli: { cliId: string }) => cli.cliId === "codex")).toMatchObject({ updateStatus: "update-available" });
 
+    runner.runs["npm outdated -g --json @openai/codex"] = { exitCode: 0, stdout: "{}", stderr: "" };
+    runner.runs["C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd --version"] = { exitCode: 0, stdout: "codex 2.0.0", stderr: "" };
+
+    const launched = await request(app)
+      .post("/api/clihub/clis/codex/update-terminal")
+      .set("x-local-api-token", context.token)
+      .send({ dryRun: true })
+      .expect(200);
+    expect(launched.body).toMatchObject({
+      launched: true,
+      command: { command: "npm", args: ["update", "-g", "@openai/codex"], cwd: directory }
+    });
+    expect(runner.executed).not.toContain("npm update -g @openai/codex");
+    const afterTerminalLaunch = await request(app).get("/api/clihub").set("x-local-api-token", context.token).expect(200);
+    expect(afterTerminalLaunch.body.clis.find((cli: { cliId: string }) => cli.cliId === "codex").recentOperation).toMatchObject({
+      kind: "update",
+      status: "success",
+      exitCode: null,
+      message: expect.stringContaining("终端")
+    });
+
+    const completed = await request(app)
+      .post("/api/clihub/clis/codex/update-terminal/complete")
+      .set("x-local-api-token", context.token)
+      .send({ exitCode: 0 })
+      .expect(200);
+    expect(completed.body.clis.find((cli: { cliId: string }) => cli.cliId === "codex")).toMatchObject({
+      version: "codex 2.0.0",
+      updateStatus: "up-to-date",
+      recentOperation: {
+        kind: "update",
+        status: "success",
+        message: expect.stringContaining("状态已刷新")
+      }
+    });
+
     await request(app).post("/api/clihub/clis/codex/update").set("x-local-api-token", context.token).expect(200);
     expect(runner.executed).toContain("npm update -g @openai/codex");
   });
@@ -107,7 +143,7 @@ describe("CliHub API", () => {
 class FakeCliRunner implements CliHubCommandRunner {
   executed: string[] = [];
   lookups: Record<string, string[]>;
-  private readonly runs: Record<string, CliHubCommandResult>;
+  readonly runs: Record<string, CliHubCommandResult>;
   private readonly hook?: (this: FakeCliRunner, command: string, args: string[]) => void;
 
   constructor(options: {

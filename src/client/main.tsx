@@ -119,6 +119,7 @@ function App() {
   const [ruleCreateContent, setRuleCreateContent] = useState("");
   const [ruleCreateLoading, setRuleCreateLoading] = useState(false);
   const selectedProjectIdRef = useRef<string | null>(null);
+  const viewRef = useRef(view);
   const queryRef = useRef("");
   const selectedDriveRootRef = useRef("");
   const autoReloadInFlightRef = useRef(false);
@@ -134,6 +135,10 @@ function App() {
   }, [selectedProjectId]);
 
   useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+
+  useEffect(() => {
     queryRef.current = query;
   }, [query]);
 
@@ -141,6 +146,7 @@ function App() {
     if (!bootstrap?.initialized || typeof EventSource === "undefined") return;
 
     let reloadTimer: number | null = null;
+    let cliHubReloadTimer: number | null = null;
     const events = new EventSource(client.eventsUrl());
     const scheduleReload = () => {
       if (reloadTimer !== null) window.clearTimeout(reloadTimer);
@@ -149,14 +155,24 @@ function App() {
         void reloadFromSessionEvent();
       }, 200);
     };
+    const scheduleCliHubReload = () => {
+      if (viewRef.current !== "clihub") return;
+      if (cliHubReloadTimer !== null) window.clearTimeout(cliHubReloadTimer);
+      cliHubReloadTimer = window.setTimeout(() => {
+        cliHubReloadTimer = null;
+        void loadCliHub(false);
+      }, 200);
+    };
 
     events.addEventListener("sessions:changed", scheduleReload);
+    events.addEventListener("clihub:changed", scheduleCliHubReload);
     events.onerror = () => {
       // EventSource reconnects automatically; keep the UI quiet during transient local restarts.
     };
 
     return () => {
       if (reloadTimer !== null) window.clearTimeout(reloadTimer);
+      if (cliHubReloadTimer !== null) window.clearTimeout(cliHubReloadTimer);
       events.close();
     };
   }, [bootstrap?.initialized]);
@@ -358,7 +374,6 @@ function App() {
     setMessage("");
     clearProjectViewState();
     setView("skillhub");
-    void loadSkillHub();
   }
 
   function openCliHub() {
@@ -373,7 +388,6 @@ function App() {
     setMessage("");
     clearProjectViewState();
     setView("mcphub");
-    void loadMcpHub();
   }
 
   function openHookHub() {
@@ -381,7 +395,6 @@ function App() {
     setMessage("");
     clearProjectViewState();
     setView("hookhub");
-    void loadHookHub();
   }
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
@@ -1022,11 +1035,16 @@ function App() {
   }
 
   async function updateCliHubCli(cliId: string) {
-    setCliHubStatus("CliHub 正在更新 CLI");
-    await client.updateCliHubCli(cliId);
-    setCliHub(await client.clihub());
-    setCliHubStatus("");
-    setMessage("CliHub CLI 更新完成");
+    setCliHubStatus("CliHub 正在打开更新终端");
+    try {
+      const result = await client.launchCliHubUpdate(cliId);
+      const commandText = [result.command.command, ...result.command.args].join(" ");
+      setMessage(result.launched ? `已打开 CLI 更新终端：${commandText}` : result.reason ?? "CLI 更新终端启动失败");
+    } finally {
+      const latest = await client.clihub().catch(() => null);
+      if (latest) setCliHub(latest);
+      setCliHubStatus("");
+    }
   }
 
   async function addCliHubLocalPath(input: { executablePath: string; displayName?: string; commandName?: string }) {

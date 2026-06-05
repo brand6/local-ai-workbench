@@ -150,6 +150,7 @@ export const client = {
   checkCliHubUpdates: () => apiPost<CliHubList>("/api/clihub/updates/check"),
   checkCliHubUpdate: (cliId: string) => apiPost<CliHubList>(`/api/clihub/clis/${encodeURIComponent(cliId)}/check-updates`),
   updateCliHubCli: (cliId: string) => apiPost<CliHubCli>(`/api/clihub/clis/${encodeURIComponent(cliId)}/update`),
+  launchCliHubUpdate: (cliId: string) => apiPost<LaunchResponse>(`/api/clihub/clis/${encodeURIComponent(cliId)}/update-terminal`),
   mcphub: () => apiGet<McpHubList>("/api/mcphub"),
   importMcpHubJson: (input: string) => apiPost<McpHubImportResult>("/api/mcphub/import", { input }),
   deleteMcpHubServer: (serverId: string) => apiDelete<McpHubCleanupReport>(`/api/mcphub/servers/${encodeURIComponent(serverId)}`),
