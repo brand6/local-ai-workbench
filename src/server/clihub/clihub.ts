@@ -60,17 +60,23 @@ const defaultCommandRunner: CliHubCommandRunner = {
         ? spawnSync("where.exe", [commandName], { encoding: "utf8", timeout: 3000 })
         : spawnSync("sh", ["-lc", `command -v ${shellQuote(commandName)}`], { encoding: "utf8", timeout: 3000 });
     if (result.status !== 0) return [];
-    return String(result.stdout ?? "")
+    const paths = String(result.stdout ?? "")
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
+    return process.platform === "win32" ? sortWindowsCommandPaths(paths) : paths;
   },
   async run(command: string, args: string[], options = {}) {
-    const result = spawnSync(command, args, {
+    const resolvedCommand = process.platform === "win32" ? resolveWindowsCommand(command) : command;
+    const spawnOptions = {
       cwd: options.cwd,
       encoding: "utf8",
       timeout: options.timeoutMs ?? 30000
-    });
+    } as const;
+    const result =
+      process.platform === "win32" && isWindowsShellCommand(resolvedCommand)
+        ? spawnSync(windowsCommandLine([resolvedCommand, ...args]), { ...spawnOptions, shell: true })
+        : spawnSync(resolvedCommand, args, spawnOptions);
     const errorText = result.error instanceof Error ? result.error.message : "";
     return {
       exitCode: result.status ?? (result.error ? 1 : 0),
@@ -159,6 +165,13 @@ const builtInClis: BuiltInCli[] = [
       providerChannel("gh:choco", "choco", "gh"),
       providerChannel("gh:scoop", "scoop", "gh")
     ]
+  },
+  {
+    cliId: "playwright",
+    displayName: "Playwright",
+    kind: "function",
+    commandNames: ["playwright"],
+    channels: [providerChannel("playwright:npm", "npm", "@playwright/test")]
   },
   {
     cliId: "node",
@@ -341,13 +354,13 @@ export async function checkCliHubUpdates(
 ): Promise<CliHubList> {
   ensureBuiltInCliHubClis(database);
   const target = cliId ? requiredCli(database, cliId) : { cliId: "all", displayName: "全部 CLI" };
-  return operationRunner(options).run(target, "update-check", async () => {
+  await operationRunner(options).run(target, "update-check", async () => {
     const clis = cliId ? [requiredCli(database, cliId)] : database.listCliHubClis();
     for (const cli of clis) {
       await checkOneCliUpdate(database, cli, options);
     }
-    return listCliHub(database, options);
   });
+  return listCliHub(database, options);
 }
 
 export async function updateCliHubCli(database: AppDatabase, cliId: string, options: CliHubRuntimeOptions = {}): Promise<CliHubCli> {
@@ -508,8 +521,8 @@ function inferProvider(resolvedPath: string, channels: CliHubChannel[]): { curre
       ? providerRef("scoop", channels, "路径位于 Scoop apps/shims")
       : normalized.includes("\\chocolatey\\bin\\")
         ? providerRef("choco", channels, "路径位于 Chocolatey bin")
-        : normalized.includes("\\winget\\") || normalized.includes("\\microsoft\\winget\\")
-          ? providerRef("winget", channels, "路径位于 winget 管理目录")
+        : normalized.includes("\\winget\\") || normalized.includes("\\microsoft\\winget\\") || normalized.includes("\\windowsapps\\")
+          ? providerRef("winget", channels, "路径位于 winget/WindowsApps 管理目录")
           : normalized.includes("\\appdata\\roaming\\npm\\") || normalized.includes("\\node_modules\\")
             ? providerRef("npm", channels, "路径位于 npm 全局目录")
             : null;
@@ -895,6 +908,56 @@ function samePath(left: string, right: string): boolean {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function sortWindowsCommandPaths(paths: string[]): string[] {
+  return [...paths].sort((left, right) => windowsCommandPriority(left) - windowsCommandPriority(right));
+}
+
+function windowsCommandPriority(commandPath: string): number {
+  const extension = path.extname(commandPath).toLowerCase();
+  if (extension === ".exe" || extension === ".com") return 0;
+  if (extension === ".cmd" || extension === ".bat") return 1;
+  return 2;
+}
+
+function resolveWindowsCommand(command: string): string {
+  if (path.isAbsolute(command) || command.includes("\\") || command.includes("/")) {
+    return resolveWindowsPathCommand(command);
+  }
+  const result = spawnSync("where.exe", [command], { encoding: "utf8", timeout: 3000 });
+  if (result.status !== 0) return command;
+  const match = sortWindowsCommandPaths(
+    String(result.stdout ?? "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+  )[0];
+  return match ?? command;
+}
+
+function resolveWindowsPathCommand(command: string): string {
+  if (fs.existsSync(command)) return command;
+  if (path.extname(command)) return command;
+  for (const extension of [".exe", ".com", ".cmd", ".bat"]) {
+    const candidate = `${command}${extension}`;
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return command;
+}
+
+function isWindowsShellCommand(command: string): boolean {
+  const extension = path.extname(command).toLowerCase();
+  return extension === ".cmd" || extension === ".bat";
+}
+
+function windowsCommandLine(parts: string[]): string {
+  return parts.map(quoteWindowsCmdArg).join(" ");
+}
+
+function quoteWindowsCmdArg(value: string): string {
+  if (!value) return "\"\"";
+  return `"${value.replaceAll("\"", "\"\"")}"`;
 }
 
 function errorMessage(error: unknown): string {

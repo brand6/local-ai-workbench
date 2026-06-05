@@ -28,16 +28,10 @@ export function CliHubPage({
 
   return (
     <section className="content clihub-page">
-      {clihub?.operation ? (
-        <div className="notice inline" role="status">
-          CliHub 正在{operationLabel(clihub.operation.kind)}：{clihub.operation.cliDisplayName}
-        </div>
-      ) : null}
-
       <section className="toolbar-panel compact clihub-actions-panel" aria-label="CliHub 操作">
         <div className="home-actions">
           <button className="primary" type="button" disabled={busy} onClick={() => onRefresh()}>
-            刷新发现
+            检测已安装Cli
           </button>
           <button className="secondary" type="button" disabled={busy} onClick={onCheckAll}>
             检查全部更新
@@ -65,7 +59,6 @@ export function CliHubPage({
                     key={cli.cliId}
                     cli={cli}
                     busy={busy}
-                    onRefresh={onRefresh}
                     onCheckOne={onCheckOne}
                     onInstall={onInstall}
                     onUpdate={onUpdate}
@@ -161,7 +154,6 @@ function CustomCliPanel({
 function CliHubCliRow({
   cli,
   busy,
-  onRefresh,
   onCheckOne,
   onInstall,
   onUpdate,
@@ -169,25 +161,29 @@ function CliHubCliRow({
 }: {
   cli: CliHubCli;
   busy: boolean;
-  onRefresh: (cliId?: string) => void;
   onCheckOne: (cliId: string) => void;
   onInstall: (cliId: string, channelId: string) => void;
   onUpdate: (cliId: string) => void;
   onAddChannel: (cliId: string, installCommand: string) => void;
 }) {
   const [channelInput, setChannelInput] = useState("");
-  const canUpdate = Boolean(cli.currentProvider && cli.currentProvider.confidence === "high" && cli.currentProvider.provider !== "local-path");
+  const isInstalled = cli.availabilityState === "available";
+  const canUpdate = Boolean(
+    cli.updateStatus === "update-available" &&
+      cli.currentProvider &&
+      cli.currentProvider.confidence === "high" &&
+      cli.currentProvider.provider !== "local-path"
+  );
+  const updateStatusLabel = updateLabel(cli.updateStatus);
   return (
     <details className="clihub-cli-row">
       <summary>
         <span className="skillhub-source-main">
           <span className="skillhub-source-title">{cli.displayName}</span>
           <span className="metric-pill">{cli.commandNames.join(", ")}</span>
-          <span className="metric-pill">{kindLabel(cli.kind)}</span>
-          <span className="metric-pill">{sourceLabel(cli.sourceState)}</span>
           <span className={`metric-pill ${cli.availabilityState === "unavailable" ? "danger" : ""}`}>{availabilityLabel(cli.availabilityState)}</span>
           <span className="metric-pill">{versionLabel(cli)}</span>
-          <span className="metric-pill">{updateLabel(cli.updateStatus)}</span>
+          {updateStatusLabel ? <span className="metric-pill">{updateStatusLabel}</span> : null}
         </span>
       </summary>
       <div className="skillhub-skill-body clihub-cli-body">
@@ -199,12 +195,8 @@ function CliHubCliRow({
         {cli.resolvedPaths.length ? <small>paths: {cli.resolvedPaths.join("；")}</small> : <small>paths: 未发现</small>}
         {cli.versionError ? <small>version: {cli.versionError}</small> : null}
         {cli.providerCandidates.length ? <small>provider candidates: {cli.providerCandidates.map((candidate) => `${candidate.provider}:${candidate.packageId ?? "unknown"}`).join("；")}</small> : null}
-        {cli.updateError ? <small>update: {cli.updateError}</small> : null}
-        {cli.recentOperation ? <OperationResult result={cli.recentOperation} /> : null}
+        {cli.recentOperation && cli.recentOperation.kind !== "update-check" ? <OperationResult result={cli.recentOperation} /> : null}
         <div className="card-actions clihub-row-actions">
-          <button className="secondary" type="button" disabled={busy} onClick={() => onRefresh(cli.cliId)}>
-            刷新发现
-          </button>
           <button className="secondary" type="button" disabled={busy} onClick={() => onCheckOne(cli.cliId)}>
             检查更新
           </button>
@@ -214,16 +206,16 @@ function CliHubCliRow({
             </button>
           ) : null}
         </div>
-        {cli.channels.length ? (
+        {!isInstalled && cli.channels.length ? (
           <div className="clihub-channel-list" aria-label={`${cli.displayName} 安装渠道`}>
             {cli.channels.map((channel) => (
               <CliHubChannelRow key={channel.channelId} cli={cli} channel={channel} busy={busy} onInstall={onInstall} />
             ))}
           </div>
-        ) : (
+        ) : !isInstalled ? (
           <div className="empty-state compact">没有可用安装渠道</div>
-        )}
-        {cli.sourceType === "builtin" ? (
+        ) : null}
+        {!isInstalled && cli.sourceType === "builtin" ? (
           <div className="clihub-add-channel">
             <label className="field wide">
               追加安装渠道
@@ -294,10 +286,6 @@ function groupLabel(kind: CliHubCli["kind"]): string {
   return "自定义 CLI";
 }
 
-function kindLabel(kind: CliHubCli["kind"]): string {
-  return groupLabel(kind).replace(" CLI", "");
-}
-
 function sourceLabel(source: CliHubCli["sourceState"]): string {
   if (source === "builtin") return "内置";
   if (source === "local-path") return "local-path";
@@ -316,10 +304,9 @@ function versionLabel(cli: CliHubCli): string {
   return "版本未检查";
 }
 
-function updateLabel(status: CliHubCli["updateStatus"]): string {
-  if (status === "up-to-date") return "已是最新";
+function updateLabel(status: CliHubCli["updateStatus"]): string | null {
   if (status === "update-available") return "可更新";
-  return "更新未知";
+  return null;
 }
 
 function providerLabel(cli: CliHubCli): string {

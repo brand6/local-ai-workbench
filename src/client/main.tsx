@@ -366,7 +366,6 @@ function App() {
     setMessage("");
     clearProjectViewState();
     setView("clihub");
-    void loadCliHub(true);
   }
 
   function openMcpHub() {
@@ -392,6 +391,8 @@ function App() {
   const showingMcpHub = view === "mcphub" && !selectedProject;
   const showingHookHub = view === "hookhub" && !selectedProject;
   const showingHub = showingSkillHub || showingCliHub || showingMcpHub || showingHookHub;
+  const cliHubOperationStatus = showingCliHub && cliHub?.operation ? cliHubOperationMessage(cliHub.operation) : "";
+  const transientStatus = scanStatus || cliHubStatus || cliHubOperationStatus;
   const homeCommandBar = selectedProject || showingHub ? null : (
     <section className="toolbar-panel compact home-command-panel" aria-label="项目操作">
       <div className="home-actions">
@@ -450,11 +451,11 @@ function App() {
             </span>
             <span>AI项目管理</span>
           </button>
-          <button className={`topbar-link${view === "skillhub" ? " active" : ""}`} type="button" onClick={openSkillHub}>
-            SkillHub
-          </button>
           <button className={`topbar-link${view === "clihub" ? " active" : ""}`} type="button" onClick={openCliHub}>
             CliHub
+          </button>
+          <button className={`topbar-link${view === "skillhub" ? " active" : ""}`} type="button" onClick={openSkillHub}>
+            SkillHub
           </button>
           <button className={`topbar-link${view === "mcphub" ? " active" : ""}`} type="button" onClick={openMcpHub}>
             McpHub
@@ -620,17 +621,7 @@ function App() {
         />
       ) : null}
 
-      {cliHubStatus && busy ? (
-        <div className="notice" role="status" aria-live="polite">
-          {cliHubStatus}
-        </div>
-      ) : null}
-
-      {message ? (
-        <div className="notice" role="status" aria-live="polite">
-          {message}
-        </div>
-      ) : null}
+      <GlobalNotice message={message} busyMessage={transientStatus} />
 
       {showingSkillHub ? (
         <SkillHubPage
@@ -712,7 +703,6 @@ function App() {
         <HomePage
           projects={projects}
           busy={busy}
-          scanStatus={scanStatus}
           scanResult={scanResult}
           onOpen={openProject}
           onRemove={(id) => void runAction(() => removeProject(id))}
@@ -994,7 +984,16 @@ function App() {
     setCliHub(result);
     setCliHubStatus("");
     const available = result.clis.filter((cli) => cli.updateStatus === "update-available").length;
-    setMessage(available ? `CliHub 检查完成：${available} 个 CLI 可更新` : "CliHub 检查完成：没有可更新 CLI");
+    const failed = result.clis.filter((cli) => cli.updateError).length;
+    if (available && failed) {
+      setMessage(`CliHub 检查完成：${available} 个 CLI 可更新，${failed} 个检查失败`);
+    } else if (available) {
+      setMessage(`CliHub 检查完成：${available} 个 CLI 可更新`);
+    } else if (failed) {
+      setMessage(`CliHub 检查完成：${failed} 个 CLI 检查失败`);
+    } else {
+      setMessage("CliHub 检查完成：没有可更新 CLI");
+    }
   }
 
   async function checkCliHubUpdate(cliId: string) {
@@ -1002,7 +1001,16 @@ function App() {
     const result = await client.checkCliHubUpdate(cliId);
     setCliHub(result);
     setCliHubStatus("");
-    setMessage("CliHub 更新检查完成");
+    const cli = result.clis.find((item) => item.cliId === cliId);
+    if (cli?.updateError) {
+      setMessage(`CliHub 检查失败：${cli.displayName} ${cli.updateError}`);
+    } else if (cli?.updateStatus === "update-available") {
+      setMessage(`CliHub 检查完成：${cli.displayName} 可更新`);
+    } else if (cli?.updateStatus === "up-to-date") {
+      setMessage(`CliHub 检查完成：${cli.displayName} 已是最新`);
+    } else {
+      setMessage("CliHub 更新检查完成");
+    }
   }
 
   async function installCliHubCli(cliId: string, channelId: string) {
@@ -1515,6 +1523,43 @@ function Shell({ message }: { message: string }) {
   );
 }
 
+export function GlobalNotice({ message, busyMessage = "" }: { message: string; busyMessage?: string | null }) {
+  const activeMessage = busyMessage?.trim() ? busyMessage.trim() : message.trim();
+  const [hiddenMessage, setHiddenMessage] = useState("");
+
+  useEffect(() => {
+    if (!activeMessage) {
+      setHiddenMessage("");
+      return;
+    }
+
+    setHiddenMessage("");
+    const timer = window.setTimeout(() => setHiddenMessage(activeMessage), 10000);
+    return () => window.clearTimeout(timer);
+  }, [activeMessage]);
+
+  if (!activeMessage || hiddenMessage === activeMessage) return null;
+
+  return (
+    <div className="toast-viewport" aria-live="polite" aria-atomic="true">
+      <div className="toast-notice" role="status">
+        {activeMessage}
+      </div>
+    </div>
+  );
+}
+
+function cliHubOperationMessage(operation: NonNullable<CliHubList["operation"]>): string {
+  return `CliHub 正在${cliHubOperationLabel(operation.kind)}：${operation.cliDisplayName}`;
+}
+
+function cliHubOperationLabel(kind: string): string {
+  if (kind === "install") return "安装";
+  if (kind === "update-check") return "检查更新";
+  if (kind === "update") return "更新";
+  return "刷新发现";
+}
+
 function NewProjectDialog({
   tools = [],
   busy,
@@ -1952,7 +1997,6 @@ function SetupScreen({
 function HomePage({
   projects,
   busy,
-  scanStatus,
   scanResult,
   onOpen,
   onRemove,
@@ -1962,7 +2006,6 @@ function HomePage({
 }: {
   projects: Project[];
   busy: boolean;
-  scanStatus: string;
   scanResult: ScanResultState | null;
   onOpen: (id: string) => void;
   onRemove: (id: string) => void;
@@ -1973,12 +2016,6 @@ function HomePage({
   return (
     <section className="content">
       {commandBar}
-
-      {scanStatus ? (
-        <div className="inline-status" role="status" aria-live="polite">
-          {scanStatus}
-        </div>
-      ) : null}
 
       {scanResult ? (
         <ScanResultsDialog

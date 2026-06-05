@@ -35,7 +35,9 @@ describe("CliHub API", () => {
     const app = await createHttpApp(context, { dev: false, serveClient: false });
 
     const listed = await request(app).get("/api/clihub").set("x-local-api-token", context.token).expect(200);
-    expect(listed.body.clis.map((cli: { cliId: string }) => cli.cliId)).toEqual(expect.arrayContaining(["codex", "claude", "gh", "node", "npm", "git"]));
+    expect(listed.body.clis.map((cli: { cliId: string }) => cli.cliId)).toEqual(
+      expect.arrayContaining(["codex", "claude", "gh", "playwright", "node", "npm", "git"])
+    );
 
     const refreshed = await request(app)
       .post("/api/clihub/discovery/refresh")

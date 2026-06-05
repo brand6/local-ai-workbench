@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AppConfig,
@@ -20,7 +20,7 @@ import type {
   ToolId,
   ToolStatus
 } from "../src/shared/types.js";
-import { App, HomePage, ProjectDetailView } from "../src/client/main.js";
+import { App, GlobalNotice, HomePage, ProjectDetailView } from "../src/client/main.js";
 
 const clientMock = vi.hoisted(() => ({
   bootstrap: vi.fn(),
@@ -377,7 +377,6 @@ describe("HomePage", () => {
       <HomePage
         projects={[]}
         busy={false}
-        scanStatus=""
         scanResult={null}
         onOpen={vi.fn()}
         onRemove={vi.fn()}
@@ -406,7 +405,9 @@ describe("HomePage", () => {
     await screen.findByText("repo-a");
 
     const topbar = container.querySelector(".topbar") as HTMLElement;
+    const topbarLinks = [...topbar.querySelectorAll(".topbar-link")].map((button) => button.textContent?.trim());
     const stats = within(topbar).getByLabelText("项目统计");
+    expect(topbarLinks).toEqual(["CliHub", "SkillHub", "McpHub", "HookHub"]);
     expect(within(topbar).queryByText("项目总览")).not.toBeInTheDocument();
     expect(within(stats).getByText("项目")).toBeInTheDocument();
     expect(within(stats).getByText("2")).toBeInTheDocument();
@@ -420,6 +421,36 @@ describe("HomePage", () => {
     expect(within(commandBar).getByRole("button", { name: "选择文件夹" })).toBeInTheDocument();
     expect(within(commandBar).getByText("扫描项目")).toBeInTheDocument();
     expect(within(commandBar).getByRole("button", { name: "扫描" })).toBeInTheDocument();
+  });
+
+  it("renders global feedback as one floating toast", () => {
+    const { container } = render(<GlobalNotice message="项目已添加" busyMessage="CliHub 正在检查更新" />);
+
+    const viewport = container.querySelector(".toast-viewport");
+    const toasts = container.querySelectorAll(".toast-notice");
+
+    expect(viewport).toBeInTheDocument();
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]).toHaveTextContent("CliHub 正在检查更新");
+    expect(screen.queryByText("项目已添加")).not.toBeInTheDocument();
+    expect(container.querySelector(".notice")).not.toBeInTheDocument();
+  });
+
+  it("dismisses global feedback after 10 seconds", () => {
+    vi.useFakeTimers();
+    try {
+      const { container } = render(<GlobalNotice message="项目已添加" />);
+
+      expect(container.querySelector(".toast-notice")).toHaveTextContent("项目已添加");
+
+      act(() => {
+        vi.advanceTimersByTime(10000);
+      });
+
+      expect(container.querySelector(".toast-notice")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("opens SkillHub from the topbar", async () => {
@@ -438,16 +469,29 @@ describe("HomePage", () => {
   });
 
   it("opens CliHub from the topbar and supports custom CLI actions", async () => {
-    render(<App />);
+    const { container } = render(<App />);
 
     await screen.findByText("还没有项目");
     fireEvent.click(screen.getByRole("button", { name: "CliHub" }));
 
     expect(await screen.findByRole("heading", { name: "CliHub" })).toBeInTheDocument();
-    expect(clientMock.refreshCliHubDiscovery).toHaveBeenCalled();
     expect(screen.getByRole("region", { name: "项目工具 CLI" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "检测已安装Cli" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "刷新发现" })).not.toBeInTheDocument();
     expect(screen.getByText("Codex")).toBeInTheDocument();
+    expect(clientMock.refreshCliHubDiscovery).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "卸载" })).not.toBeInTheDocument();
+
+    const codexRow = screen.getByText("Codex").closest("details") as HTMLElement;
+    const codexSummary = within(codexRow).getByText("Codex").closest("summary") as HTMLElement;
+    expect(codexSummary).not.toHaveTextContent("项目工具");
+    expect(codexSummary).not.toHaveTextContent("内置");
+    expect(codexSummary).not.toHaveTextContent("更新未知");
+    expect(codexSummary).not.toHaveTextContent("已是最新");
+    expect(codexSummary).not.toHaveTextContent("可更新");
+    expect(within(codexRow).queryByText("npm: @openai/codex")).not.toBeInTheDocument();
+    expect(within(codexRow).queryByRole("button", { name: "添加渠道" })).not.toBeInTheDocument();
+    expect(within(codexRow).queryByRole("button", { name: "更新" })).not.toBeInTheDocument();
 
     const customPanel = screen.getByRole("region", { name: "CliHub 自定义 CLI" });
     fireEvent.click(within(customPanel).getByText("添加自定义 CLI"));
@@ -455,9 +499,32 @@ describe("HomePage", () => {
     fireEvent.click(within(customPanel).getByRole("button", { name: "添加本地 CLI" }));
     await waitFor(() => expect(clientMock.addCliHubLocalPath).toHaveBeenCalledWith("C:\\Tools\\internal.exe", "", ""));
 
-    const codexRow = screen.getByText("Codex").closest("details") as HTMLElement;
     fireEvent.click(within(codexRow).getByRole("button", { name: "检查更新" }));
     await waitFor(() => expect(clientMock.checkCliHubUpdate).toHaveBeenCalledWith("codex"));
+    await waitFor(() => expect(codexSummary).toHaveTextContent("可更新"));
+    expect(within(codexRow).getByRole("button", { name: "更新" })).toBeInTheDocument();
+    expect(container.querySelector(".toast-notice")).toHaveTextContent("CliHub 检查完成：Codex 可更新");
+  });
+
+  it("shows CliHub running operations only in the global toast", async () => {
+    clientMock.refreshCliHubDiscovery.mockResolvedValue({
+      ...cliHubListFixture(),
+      operation: {
+        kind: "update-check",
+        cliId: "claude",
+        cliDisplayName: "Claude Code",
+        startedAt: "2026-06-01T00:00:00Z"
+      }
+    });
+
+    const { container } = render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "CliHub" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("CliHub 正在检查更新：Claude Code");
+    expect(container.querySelector(".toast-notice")).toHaveTextContent("CliHub 正在检查更新：Claude Code");
+    expect(container.querySelector(".clihub-page .notice.inline")).not.toBeInTheDocument();
   });
 
   it("opens McpHub from the topbar", async () => {
@@ -677,7 +744,6 @@ describe("HomePage", () => {
       <HomePage
         projects={projects}
         busy={false}
-        scanStatus=""
         scanResult={null}
         onOpen={vi.fn()}
         onRemove={vi.fn()}
@@ -693,23 +759,6 @@ describe("HomePage", () => {
     expect(screen.queryByText("包含子目录")).not.toBeInTheDocument();
   });
 
-  it("surfaces scan progress while a scan is running", () => {
-    render(
-      <HomePage
-        projects={[]}
-        busy={true}
-        scanStatus={"正在扫描：E:\\workspace"}
-        scanResult={null}
-        onOpen={vi.fn()}
-        onRemove={vi.fn()}
-        onAddScanCandidate={vi.fn()}
-        onCloseScanResults={vi.fn()}
-      />
-    );
-
-    expect(screen.getByRole("status")).toHaveTextContent("正在扫描：E:\\workspace");
-  });
-
   it("shows scan progress before the scan request resolves", async () => {
     let resolveScan: (value: { scanRunId: string; candidates: [] }) => void = () => {};
     clientMock.startScan.mockReturnValue(
@@ -718,13 +767,15 @@ describe("HomePage", () => {
       })
     );
 
-    render(<App />);
+    const { container } = render(<App />);
 
     await screen.findByText("还没有项目");
     await waitFor(() => expect(screen.getByRole("button", { name: "扫描" })).not.toBeDisabled());
     fireEvent.click(screen.getByRole("button", { name: "扫描" }));
 
     expect(await screen.findByRole("status")).toHaveTextContent("正在扫描：E:\\");
+    expect(container.querySelector(".toast-notice")).toHaveTextContent("正在扫描：E:\\");
+    expect(container.querySelector(".inline-status")).not.toBeInTheDocument();
 
     resolveScan({ scanRunId: "scan-1", candidates: [] });
     expect(await screen.findByText("扫描完成：未发现候选")).toBeInTheDocument();
@@ -885,7 +936,6 @@ describe("HomePage", () => {
       <HomePage
         projects={[]}
         busy={false}
-        scanStatus=""
         scanResult={null}
         onOpen={vi.fn()}
         onRemove={vi.fn()}

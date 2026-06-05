@@ -16,7 +16,7 @@ This slice establishes the center inventory only. It should not install, update,
 
 - [ ] A top-level `CliHub` entry appears alongside existing Hub entries.
 - [ ] CliHub lists built-in project tool CLIs: `codex`, `claude`, `opencode`, `qwen`, `qoder`, and `copilot`.
-- [ ] CliHub lists built-in function CLIs: `lark-cli` and `gh`.
+- [ ] CliHub lists built-in function CLIs: `lark-cli`, `gh`, and `playwright`.
 - [ ] CliHub lists built-in dependency CLIs: `node`, `npm`, and `git`.
 - [ ] Each CLI row shows display name, command names, CLI kind, source state, availability state, version state, and update state placeholders.
 - [ ] CliHub has no uninstall action.

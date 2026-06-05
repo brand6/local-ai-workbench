@@ -19,6 +19,7 @@ import type { CliHubCli } from "../src/shared/types.js";
 import { cleanup, testDir } from "./helpers.js";
 
 let directory: string | null = null;
+const itWindows = process.platform === "win32" ? it : it.skip;
 
 afterEach(() => {
   if (directory) cleanup(directory);
@@ -39,9 +40,19 @@ describe("CliHub", () => {
       "qoder",
       "qwen"
     ]);
-    expect(clihub.clis.filter((cli) => cli.kind === "function").map((cli) => cli.cliId)).toEqual(["gh", "lark-cli"]);
+    expect(clihub.clis.filter((cli) => cli.kind === "function").map((cli) => cli.cliId)).toEqual(["gh", "playwright", "lark-cli"]);
     expect(clihub.clis.filter((cli) => cli.kind === "dependency").map((cli) => cli.cliId)).toEqual(["git", "node", "npm"]);
     expect(clihub.clis.find((cli) => cli.cliId === "codex")?.channels.some((channel) => channel.provider === "npm")).toBe(true);
+    expect(clihub.clis.find((cli) => cli.cliId === "playwright")?.channels).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channelId: "playwright:npm",
+          provider: "npm",
+          packageId: "@playwright/test",
+          installCommand: ["npm", "install", "-g", "@playwright/test"]
+        })
+      ])
+    );
 
     db.close();
   });
@@ -88,7 +99,73 @@ describe("CliHub", () => {
       versionState: "failed"
     });
 
+    const windowsAppsCodexPath = "C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0.0_x64__test\\codex.exe";
+    await refreshCliHubDiscovery(
+      db,
+      "codex",
+      {
+        commandRunner: new FakeCliRunner({
+          lookups: { codex: [windowsAppsCodexPath] },
+          runs: {
+            [`${windowsAppsCodexPath} --version`]: { exitCode: 0, stdout: "codex 2.0.0", stderr: "" }
+          }
+        })
+      }
+    );
+    expect(db.getCliHubCli("codex")).toMatchObject({
+      availabilityState: "available",
+      version: "codex 2.0.0",
+      currentProvider: { provider: "winget", packageId: "OpenAI.Codex", confidence: "high" }
+    });
+
     db.close();
+  });
+
+  itWindows("runs Windows command shims during discovery and update checks", async () => {
+    directory = testDir("clihub-windows-shims");
+    const db = new AppDatabase(directory);
+    const shimDir = path.join(directory, "bin");
+    fs.mkdirSync(shimDir, { recursive: true });
+    const localCliPath = path.join(shimDir, "local-tool.cmd");
+    const npmPath = path.join(shimDir, "npm.cmd");
+    fs.writeFileSync(localCliPath, "@echo off\r\necho local-tool 1.0.0\r\n", "utf8");
+    fs.writeFileSync(
+      npmPath,
+      "@echo off\r\nif \"%1\"==\"outdated\" (\r\n  echo {}\r\n  exit /b 0\r\n)\r\necho npm 11.0.0\r\n",
+      "utf8"
+    );
+    const originalPath = process.env.Path;
+    const originalPATH = process.env.PATH;
+    process.env.Path = [shimDir, originalPath ?? originalPATH ?? ""].filter(Boolean).join(path.delimiter);
+    process.env.PATH = process.env.Path;
+
+    try {
+      const local = await addCustomLocalPathCli(db, { executablePath: localCliPath });
+      expect(local).toMatchObject({
+        availabilityState: "available",
+        version: "local-tool 1.0.0",
+        versionState: "detected"
+      });
+
+      listCliHub(db);
+      const codex = db.getCliHubCli("codex");
+      if (!codex) throw new Error("missing codex fixture");
+      db.upsertCliHubCli({
+        ...codex,
+        availabilityState: "available",
+        currentProvider: { provider: "npm", packageId: "@openai/codex", confidence: "high", reason: "test" }
+      });
+
+      const checked = await checkCliHubUpdates(db, "codex");
+      expect(checked.clis.find((cli) => cli.cliId === "codex")).toMatchObject({
+        updateStatus: "up-to-date",
+        updateError: null
+      });
+    } finally {
+      process.env.Path = originalPath;
+      process.env.PATH = originalPATH;
+      db.close();
+    }
   });
 
   it("adds custom CLIs only from concrete local paths or structured install commands", async () => {
@@ -140,6 +217,7 @@ describe("CliHub", () => {
     await expect(installCliHubCli(db, directory, "codex", "codex:winget", { commandRunner: runner })).rejects.toThrow("已阻止安装第二份");
 
     const checked = await checkCliHubUpdates(db, "codex", { commandRunner: runner });
+    expect(checked.operation).toBeNull();
     expect(checked.clis.find((cli) => cli.cliId === "codex")).toMatchObject({ updateStatus: "update-available" });
     await updateCliHubCli(db, "codex", { commandRunner: runner });
     expect(runner.executed).toContain("npm update -g @openai/codex");
