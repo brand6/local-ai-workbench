@@ -565,13 +565,7 @@ function renderServerForTarget(server: McpHubServer, targetRootPath: string, too
     if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
     return compactObject({ url: rendered.url, headers: rendered.headers });
   }
-  if (toolId === "gemini") {
-    if (rendered.transport === "stdio") {
-      return compactObject({ type: "stdio", command: rendered.command, args: rendered.args, env: rendered.env });
-    }
-    return compactObject({ httpUrl: rendered.url, headers: rendered.headers });
-  }
-  if (toolId === "cursor" || toolId === "copilot_vscode") {
+  if (toolId === "cursor") {
     if (rendered.transport === "stdio") {
       return compactObject({ type: "stdio", command: rendered.command, args: rendered.args, env: rendered.env });
     }
@@ -580,10 +574,6 @@ function renderServerForTarget(server: McpHubServer, targetRootPath: string, too
   if (toolId === "antigravity") {
     if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
     return compactObject({ serverUrl: rendered.url, headers: rendered.headers });
-  }
-  if (toolId === "junie") {
-    if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
-    return compactObject({ url: rendered.url, headers: rendered.headers });
   }
   if (rendered.transport === "stdio") {
     return compactObject({
@@ -614,7 +604,7 @@ function writeRenderedConfig(configPath: string, toolId: McpHubTargetToolId, ser
     const root = readJsonObjectFile(configPath);
     const serverMap = isRecord(root[key]) ? { ...root[key] } : {};
     serverMap[serverId] = rendered;
-    writeJsonObjectFile(configPath, withTargetJsonDefaults(toolId, { ...root, [key]: serverMap }));
+    writeJsonObjectFile(configPath, { ...root, [key]: serverMap });
     return;
   }
   writeCodexMcpSection(configPath, serverId, rendered);
@@ -628,26 +618,15 @@ function removeRenderedConfigEntry(configPath: string, toolId: McpHubTargetToolI
     if (!isRecord(root[key]) || !(serverId in root[key])) return { modified: false, missing: false, reason: "entry 已不存在" };
     const serverMap = { ...root[key] };
     delete serverMap[serverId];
-    writeJsonObjectFile(configPath, withTargetJsonDefaults(toolId, { ...root, [key]: serverMap }));
+    writeJsonObjectFile(configPath, { ...root, [key]: serverMap });
     return { modified: true, missing: false, reason: null };
   }
   return removeCodexMcpSection(configPath, serverId);
 }
 
-function jsonServerMapKey(toolId: Exclude<McpHubTargetToolId, "codex">): "mcpServers" | "mcp" | "servers" {
+function jsonServerMapKey(toolId: Exclude<McpHubTargetToolId, "codex">): "mcpServers" | "mcp" {
   if (toolId === "opencode") return "mcp";
-  if (toolId === "copilot_vscode") return "servers";
   return "mcpServers";
-}
-
-function withTargetJsonDefaults(toolId: Exclude<McpHubTargetToolId, "codex">, root: JsonRecord): JsonRecord {
-  if (toolId !== "gemini") return root;
-  const existingContext = isRecord(root.context) ? root.context : {};
-  return {
-    ...root,
-    context: { ...existingContext, fileName: stringField(existingContext, "fileName") ?? "AGENTS.md" },
-    contextFileName: typeof root.contextFileName === "string" ? root.contextFileName : "AGENTS.md"
-  };
 }
 
 function readJsonObjectFile(configPath: string): JsonRecord {
@@ -784,16 +763,10 @@ function mcpTargetForRoot(rootPath: string, toolId: McpHubTargetToolId, toolTarg
       return { ...base, toolId, label: "Codex", supported: true, configPath: path.join(rootPath, ".codex", "config.toml"), reason: null };
     case "opencode":
       return { ...base, toolId, label: "OpenCode", supported: true, configPath: path.join(rootPath, "opencode.json"), reason: null };
-    case "gemini":
-      return { ...base, toolId, label: "Gemini CLI", supported: true, configPath: path.join(rootPath, ".gemini", "settings.json"), reason: null };
     case "cursor":
       return { ...base, toolId, label: "Cursor", supported: true, configPath: path.join(rootPath, ".cursor", "mcp.json"), reason: null };
-    case "copilot_vscode":
-      return { ...base, toolId, label: "Copilot VS Code", supported: true, configPath: path.join(rootPath, ".vscode", "mcp.json"), reason: null };
     case "antigravity":
       return { ...base, toolId, label: "Antigravity", supported: true, configPath: path.join(rootPath, ".agents", "mcp_config.json"), reason: null };
-    case "junie":
-      return { ...base, toolId, label: "Junie", supported: true, configPath: path.join(rootPath, ".junie", "mcp", "mcp.json"), reason: null };
   }
   const exhaustive: never = toolId;
   return { ...base, toolId: exhaustive, label: exhaustive, supported: false, configPath: rootPath, reason: "未知 MCP 目标" };

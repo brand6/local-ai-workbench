@@ -10,6 +10,9 @@ import {
   isToolId,
   type AppConfig,
   type McpHubTargetToolId,
+  type PluginHubComponentRef,
+  type PluginHubCustomPluginInput,
+  type PluginHubSourceDeleteMode,
   type ProjectLocalMcpMigrationMode,
   type ProjectLocalSkillMigrationMode,
   type ProjectLocalSkillMigrationTarget,
@@ -85,6 +88,20 @@ import {
   updateHookHubSuite,
   writeProjectHooks
 } from "../hookhub/hookhub.js";
+import {
+  createCustomPlugin,
+  deletePluginHubPlugin,
+  deletePluginHubSource,
+  importPluginHubLocalSource,
+  installProjectPlugin,
+  listPluginHub,
+  listProjectPluginState,
+  previewDeletePluginHubPlugin,
+  previewDeletePluginHubSource,
+  syncProjectPluginBinding,
+  uninstallProjectPluginBinding,
+  updateCustomPlugin
+} from "../pluginhub/pluginhub.js";
 import { applyRuleSync, commitRuleSyncTarget, createRuleFile, createRuleTemplateFile, getRuleSyncStatus, openRuleFile, prepareRuleFileCreate } from "../skillhub/ruleSync.js";
 import { listProjectSkillTargetsState, listProjectToolTargets, setProjectSkillTargets, unavailableProjectToolIds, updateProjectToolTargets } from "../skillhub/projectSkills.js";
 import type { AppContext } from "../appContext.js";
@@ -560,6 +577,92 @@ export function installApi(app: Express, context: AppContext): void {
     }
   });
 
+  app.get("/api/pluginhub", (_request, response) => {
+    response.json(listPluginHub(context.database()));
+  });
+
+  app.post("/api/pluginhub/import/local", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const inputPath = stringBody(request, "path");
+    if (!dataDir) return;
+    if (!inputPath) {
+      response.status(400).json({ error: "path is required" });
+      return;
+    }
+    try {
+      response.json(importPluginHubLocalSource(context.database(), context.config(), dataDir, inputPath));
+    } catch (error) {
+      response.status(400).json({ error: "pluginhub-local-import-failed", reason: error instanceof Error ? error.message : "pluginhub-local-import-failed" });
+    }
+  });
+
+  app.post("/api/pluginhub/custom", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const input = pluginHubCustomPluginInputBody(request);
+    if (!dataDir) return;
+    if (!input) {
+      response.status(400).json({ error: "name is required" });
+      return;
+    }
+    try {
+      response.status(201).json(createCustomPlugin(context.database(), dataDir, input));
+    } catch (error) {
+      response.status(400).json({ error: "pluginhub-custom-create-failed", reason: error instanceof Error ? error.message : "pluginhub-custom-create-failed" });
+    }
+  });
+
+  app.put("/api/pluginhub/custom/:pluginId", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const input = pluginHubCustomPluginInputBody(request);
+    if (!dataDir) return;
+    if (!input) {
+      response.status(400).json({ error: "name is required" });
+      return;
+    }
+    try {
+      response.json(updateCustomPlugin(context.database(), dataDir, request.params.pluginId, input));
+    } catch (error) {
+      response.status(400).json({ error: "pluginhub-custom-update-failed", reason: error instanceof Error ? error.message : "pluginhub-custom-update-failed" });
+    }
+  });
+
+  app.get("/api/pluginhub/sources/:sourceId/delete-preview", (request, response) => {
+    try {
+      response.json(previewDeletePluginHubSource(context.database(), request.params.sourceId));
+    } catch (error) {
+      response.status(404).json({ error: "pluginhub-source-delete-preview-failed", reason: error instanceof Error ? error.message : "pluginhub-source-delete-preview-failed" });
+    }
+  });
+
+  app.delete("/api/pluginhub/sources/:sourceId", (request, response) => {
+    const mode = pluginHubSourceDeleteModeBody(request);
+    if (!mode) {
+      response.status(400).json({ error: "mode must be delete-custom-plugins or remove-custom-components" });
+      return;
+    }
+    try {
+      response.json(deletePluginHubSource(context.database(), request.params.sourceId, mode));
+    } catch (error) {
+      response.status(400).json({ error: "pluginhub-source-delete-failed", reason: error instanceof Error ? error.message : "pluginhub-source-delete-failed" });
+    }
+  });
+
+  app.get("/api/pluginhub/plugins/:pluginId/delete-preview", (request, response) => {
+    try {
+      response.json(previewDeletePluginHubPlugin(context.database(), request.params.pluginId));
+    } catch (error) {
+      response.status(404).json({ error: "pluginhub-plugin-delete-preview-failed", reason: error instanceof Error ? error.message : "pluginhub-plugin-delete-preview-failed" });
+    }
+  });
+
+  app.delete("/api/pluginhub/plugins/:pluginId", (request, response) => {
+    try {
+      response.json(deletePluginHubPlugin(context.database(), request.params.pluginId));
+    } catch (error) {
+      response.status(400).json({ error: "pluginhub-plugin-delete-failed", reason: error instanceof Error ? error.message : "pluginhub-plugin-delete-failed" });
+    }
+  });
+
   app.get("/api/projects", (_request, response) => {
     response.json(context.database().listProjects());
   });
@@ -690,6 +793,47 @@ export function installApi(app: Express, context: AppContext): void {
       response.json(migrateProjectLocalSkill(context.database(), context.config(), dataDir, project, toolId, folderName, mode, target));
     } catch (error) {
       response.status(400).json({ error: "project-local-skill-migration-failed", reason: error instanceof Error ? error.message : "project-local-skill-migration-failed" });
+    }
+  });
+
+  app.get("/api/projects/:id/plugins", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
+    response.json(listProjectPluginState(context.database(), project));
+  });
+
+  app.put("/api/projects/:id/plugins/:pluginId", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = toolIdBody(request);
+    if (!project) return;
+    if (!toolId) {
+      response.status(400).json({ error: "toolId is required" });
+      return;
+    }
+    try {
+      response.json(installProjectPlugin(context.database(), project, request.params.pluginId, toolId, { conflictMode: pluginHubConflictModeBody(request) }));
+    } catch (error) {
+      response.status(400).json({ error: "project-plugin-install-failed", reason: error instanceof Error ? error.message : "project-plugin-install-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/plugin-bindings/:bindingId/sync", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
+    try {
+      response.json(syncProjectPluginBinding(context.database(), project, request.params.bindingId, { conflictMode: pluginHubConflictModeBody(request) }));
+    } catch (error) {
+      response.status(400).json({ error: "project-plugin-sync-failed", reason: error instanceof Error ? error.message : "project-plugin-sync-failed" });
+    }
+  });
+
+  app.delete("/api/projects/:id/plugin-bindings/:bindingId", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
+    try {
+      response.json(uninstallProjectPluginBinding(context.database(), project, request.params.bindingId));
+    } catch (error) {
+      response.status(400).json({ error: "project-plugin-uninstall-failed", reason: error instanceof Error ? error.message : "project-plugin-uninstall-failed" });
     }
   });
 
@@ -1338,6 +1482,58 @@ function hookHubPayloadsBody(request: Request): Partial<Record<HookHubSupportedT
     if (Object.prototype.hasOwnProperty.call(value, toolId)) payloads[toolId] = value[toolId];
   }
   return payloads;
+}
+
+function pluginHubCustomPluginInputBody(request: Request): PluginHubCustomPluginInput | null {
+  const name = stringBody(request, "name");
+  if (!name) return null;
+  const privateFileInputs: unknown[] = Array.isArray(request.body?.privateFiles) ? request.body.privateFiles : [];
+  return {
+    name,
+    displayName: stringBody(request, "displayName"),
+    description: stringBody(request, "description"),
+    componentRefs: pluginHubComponentRefsBody(request),
+    privateFiles: privateFileInputs
+      .filter((item: unknown): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      .flatMap((item) => {
+        const sourceRelativePath = typeof item.sourceRelativePath === "string" ? item.sourceRelativePath.trim() : "";
+        const content = typeof item.content === "string" ? item.content : "";
+        if (!sourceRelativePath) return [];
+        return [
+          {
+            sourceRelativePath,
+            targetRelativePath: typeof item.targetRelativePath === "string" ? item.targetRelativePath.trim() : null,
+            content,
+            required: typeof item.required === "boolean" ? item.required : true
+          }
+        ];
+      })
+  };
+}
+
+function pluginHubComponentRefsBody(request: Request): PluginHubComponentRef[] {
+  const value = request.body?.componentRefs;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item: unknown) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const record = item as Record<string, unknown>;
+    const type = record.type;
+    const componentId = typeof record.componentId === "string" ? record.componentId.trim() : "";
+    if ((type !== "skill" && type !== "agent" && type !== "mcp" && type !== "hook") || !componentId) return [];
+    return [{ type, componentId, required: Boolean(record.required) }];
+  });
+}
+
+function pluginHubConflictModeBody(request: Request): "overwrite" | "skip" | null {
+  const value = request.body?.conflictMode;
+  return value === "overwrite" || value === "skip" ? value : null;
+}
+
+function pluginHubSourceDeleteModeBody(request: Request): PluginHubSourceDeleteMode | null {
+  const bodyValue = request.body?.mode;
+  const queryValue = request.query.mode;
+  const value = typeof bodyValue === "string" ? bodyValue : typeof queryValue === "string" ? queryValue : null;
+  return value === "delete-custom-plugins" || value === "remove-custom-components" ? value : null;
 }
 
 function stringArrayBody(request: Request, key: string): string[] {

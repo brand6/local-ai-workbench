@@ -37,16 +37,16 @@ export function defaultAppConfig(): AppConfig {
   const tools: Record<ToolId, { command: string; sessionSources?: string[] }> = {
     codex: { command: "codex" },
     claude: { command: "claude" },
+    cline: { command: "cline" },
     opencode: { command: "opencode" },
+    kilo: { command: "kilo" },
     qwen: { command: "qwen" },
+    kimi: { command: "kimi" },
     qoder: { command: "qodercli" },
+    codebuddy: { command: "codebuddy" },
     copilot: { command: "copilot" },
-    gemini: { command: "gemini" },
     cursor: { command: "cursor-agent" },
-    antigravity: { command: "agy" },
-    windsurf: { command: "windsurf" },
-    junie: { command: "junie" },
-    copilot_vscode: { command: "code" }
+    antigravity: { command: "agy" }
   };
   return { version: 1, tools, terminal: { mode: "new-window" }, skillhub: { rootDir: "" } };
 }

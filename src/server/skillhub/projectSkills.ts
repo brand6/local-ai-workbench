@@ -13,7 +13,7 @@ import type {
 } from "../../shared/types.js";
 import { toolIds } from "../../shared/types.js";
 import type { AppDatabase } from "../storage/database.js";
-import { isPathInsideOrEqual } from "../core/pathUtils.js";
+import { isPathInsideOrEqual, normalizeFsPath } from "../core/pathUtils.js";
 import { projectConfigurableToolStatuses, toolAdapters } from "../tools/adapters.js";
 import { createDirectoryLink, linkPointsTo, pathExists, removeDirectoryLink } from "./links.js";
 
@@ -103,6 +103,10 @@ export function setProjectSkillTargets(
     if (existingByLink && existingByLink.skillId !== skill.id) {
       const existingSkill = database.getSkillHubSkill(existingByLink.skillId);
       conflicts.push({ toolId, linkPath, existingSkill, requestedSkill: skill });
+      if (isPluginOwnedSkillTarget(database, project.id, toolId, linkPath, existingByLink.skillId)) {
+        failures.push(failure(project.id, toolId, skill.id, linkPath, skill.libraryPath, "该目标由项目 Plugin 管理，请从 Plugin 入口卸载或同步"));
+        continue;
+      }
       if (!options.replaceConflicts) continue;
       const removal = removeDirectoryLink(existingByLink.linkPath);
       if (removal.reason && !removal.missing) {
@@ -114,6 +118,10 @@ export function setProjectSkillTargets(
 
     if (pathExists(linkPath)) {
       if (!linkPointsTo(linkPath, skill.libraryPath)) {
+        if (existingByLink && isPluginOwnedSkillTarget(database, project.id, toolId, linkPath, existingByLink.skillId)) {
+          failures.push(failure(project.id, toolId, skill.id, linkPath, skill.libraryPath, "该目标由项目 Plugin 管理，请从 Plugin 入口卸载或同步"));
+          continue;
+        }
         if (!options.replaceConflicts) {
           conflicts.push({ toolId, linkPath, existingSkill: existingByLink ? database.getSkillHubSkill(existingByLink.skillId) : null, requestedSkill: skill });
           continue;
@@ -165,6 +173,19 @@ function scopedProjectSkillTargets(database: AppDatabase, projectId: string, too
   );
 }
 
+function isPluginOwnedSkillTarget(database: AppDatabase, projectId: string, toolId: ToolId, linkPath: string, skillId: string): boolean {
+  return database.listProjectPluginBindings(projectId).some((binding) =>
+    binding.componentOwnership.some(
+      (owner) =>
+        owner.ownerState === "managed" &&
+        owner.type === "skill" &&
+        owner.toolId === toolId &&
+        owner.componentId === skillId &&
+        normalizeFsPath(owner.linkPath) === normalizeFsPath(linkPath)
+    )
+  );
+}
+
 export function ensureProjectToolTargets(database: AppDatabase, project: Project, config?: AppConfig): void {
   const stored = new Map(database.listStoredProjectToolTargets(project.id).map((target) => [target.toolId, target]));
   const inferred = inferProjectToolIds(database, project);
@@ -193,16 +214,16 @@ function inferProjectToolIds(database: AppDatabase, project: Project): Set<ToolI
 const projectTraceMap: Record<ToolId, string[]> = {
   codex: [".codex", "AGENTS.md"],
   claude: [".claude", "CLAUDE.md"],
+  cline: [],
   opencode: [".opencode", "OPENCODE.md"],
+  kilo: [".kilo", ".kilocode", "KILO.md"],
   qwen: [".qwen", "QWEN.md"],
+  kimi: [],
   qoder: [".qoder", "QODER.md"],
+  codebuddy: [],
   copilot: [".github/copilot-instructions.md"],
-  gemini: [".gemini", "GEMINI.md"],
   cursor: [".cursor", ".cursorrules"],
-  antigravity: [".agents/mcp_config.json"],
-  windsurf: [".windsurf"],
-  junie: [".junie"],
-  copilot_vscode: [".vscode/mcp.json"]
+  antigravity: [".agents/mcp_config.json"]
 };
 
 function uniqueToolIds(toolIds: ToolId[]): ToolId[] {

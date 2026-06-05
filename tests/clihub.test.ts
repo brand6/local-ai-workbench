@@ -44,17 +44,19 @@ describe("CliHub", () => {
     expect(clihub.clis.filter((cli) => cli.kind === "project-tool").map((cli) => cli.cliId)).toEqual([
       "antigravity",
       "claude",
+      "cline",
+      "codebuddy",
       "codex",
-      "copilot_vscode",
       "cursor",
-      "gemini",
       "copilot",
-      "junie",
+      "kilo",
+      "kimi",
       "opencode",
       "qoder",
-      "qwen",
-      "windsurf"
+      "qwen"
     ]);
+    expect(clihub.clis.map((cli) => cli.cliId)).not.toEqual(expect.arrayContaining(["deepcode", "reasonix"]));
+    expect(clihub.clis.map((cli) => cli.cliId)).not.toEqual(expect.arrayContaining(["aider"]));
     expect(clihub.clis.filter((cli) => cli.kind === "function").map((cli) => cli.cliId)).toEqual(["gh", "playwright", "lark-cli"]);
     expect(clihub.clis.filter((cli) => cli.kind === "dependency").map((cli) => cli.cliId)).toEqual(["git", "node", "npm"]);
     expect(channels("codex").some((channel) => channel.provider === "npm")).toBe(true);
@@ -78,13 +80,53 @@ describe("CliHub", () => {
         })
       ])
     );
-    expect(channels("gemini")).toEqual(
+    expect(channels("cline")).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          channelId: "gemini:npm",
+          channelId: "cline:npm",
           provider: "npm",
-          packageId: "@google/gemini-cli",
-          installCommand: ["npm", "install", "-g", "@google/gemini-cli"]
+          packageId: "cline",
+          installCommand: ["npm", "install", "-g", "cline"]
+        })
+      ])
+    );
+    expect(channels("codebuddy")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channelId: "codebuddy:npm",
+          provider: "npm",
+          packageId: "@tencent-ai/codebuddy-code",
+          installCommand: ["npm", "install", "-g", "@tencent-ai/codebuddy-code"]
+        })
+      ])
+    );
+    expect(channels("kimi")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channelId: "kimi:npm",
+          provider: "npm",
+          packageId: "@moonshot-ai/kimi-code",
+          installCommand: ["npm", "install", "-g", "@moonshot-ai/kimi-code"]
+        }),
+        expect.objectContaining({
+          channelId: "kimi:official-posix",
+          provider: "installer-command",
+          installCommand: ["bash", "-lc", "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"]
+        }),
+        expect.objectContaining({
+          channelId: "kimi:official-windows",
+          provider: "installer-command",
+          installCommand: ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://code.kimi.com/kimi-code/install.ps1 | iex"]
+        })
+      ])
+    );
+    expect(channels("kilo")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channelId: "kilo:npm",
+          provider: "npm",
+          packageId: "@kilocode/cli",
+          installCommand: ["npm", "install", "-g", "@kilocode/cli"]
         })
       ])
     );
@@ -116,43 +158,25 @@ describe("CliHub", () => {
         })
       ])
     );
-    expect(channels("windsurf")).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ channelId: "windsurf:winget", provider: "winget", packageId: "Codeium.Windsurf" }),
-        expect.objectContaining({ channelId: "windsurf:choco", provider: "choco", packageId: "windsurf" })
-      ])
-    );
-    expect(channels("junie")).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          channelId: "junie:official-posix",
-          provider: "installer-command",
-          installCommand: ["bash", "-lc", "curl -fsSL https://junie.jetbrains.com/install.sh | bash"]
-        }),
-        expect.objectContaining({
-          channelId: "junie:official-windows",
-          provider: "installer-command",
-          installCommand: ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "iex (irm 'https://junie.jetbrains.com/install.ps1')"]
-        })
-      ])
-    );
-    expect(channels("copilot_vscode")).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ channelId: "copilot-vscode:winget-vscode", provider: "winget", packageId: "Microsoft.VisualStudioCode" }),
-        expect.objectContaining({ channelId: "copilot-vscode:choco-vscode", provider: "choco", packageId: "vscode" }),
-        expect.objectContaining({ channelId: "copilot-vscode:scoop-vscode", provider: "scoop", packageId: "vscode" }),
-        expect.objectContaining({
-          channelId: "copilot-vscode:copilot-extension",
-          provider: "installer-command",
-          installCommand: ["code", "--install-extension", "GitHub.copilot"]
-        }),
-        expect.objectContaining({
-          channelId: "copilot-vscode:copilot-chat-extension",
-          provider: "installer-command",
-          installCommand: ["code", "--install-extension", "GitHub.copilot-chat"]
-        })
-      ])
-    );
+    db.close();
+  });
+
+  it("prunes stale built-in CLI rows that were removed from the inventory", () => {
+    directory = testDir("clihub-stale-builtins");
+    const db = new AppDatabase(directory);
+    const staleBuiltInIds = ["copilot_vscode", "deepcode", "gemini", "junie", "reasonix", "windsurf"];
+    for (const cliId of staleBuiltInIds) {
+      db.upsertCliHubCli(staleCliHubCli(cliId, "builtin"));
+    }
+    db.upsertCliHubCli(staleCliHubCli("custom-local-gemini", "custom"));
+    db.upsertCliHubCli(staleCliHubCli("custom-local-deepcode", "custom"));
+
+    const clihub = listCliHub(db);
+    const cliIds = clihub.clis.map((cli) => cli.cliId);
+
+    expect(cliIds.filter((cliId) => staleBuiltInIds.includes(cliId))).toEqual([]);
+    expect(cliIds).toContain("custom-local-gemini");
+    expect(cliIds).toContain("custom-local-deepcode");
 
     db.close();
   });
@@ -572,6 +596,31 @@ describe("CliHub", () => {
     db.close();
   });
 });
+
+function staleCliHubCli(cliId: string, sourceType: "builtin" | "custom"): Omit<CliHubCli, "createdAt" | "updatedAt"> {
+  return {
+    cliId,
+    displayName: cliId,
+    kind: sourceType === "builtin" ? "project-tool" : "custom",
+    sourceType,
+    sourceState: sourceType === "builtin" ? "builtin" : "local-path",
+    commandNames: [cliId],
+    localPath: sourceType === "custom" ? path.join(directory ?? "", `${cliId}.cmd`) : null,
+    channels: [],
+    availabilityState: "unknown",
+    resolvedPaths: [],
+    version: null,
+    versionState: "unknown",
+    versionError: null,
+    discoveredAt: null,
+    currentProvider: null,
+    providerCandidates: [],
+    updateStatus: "unknown",
+    updateCheckedAt: null,
+    updateError: null,
+    recentOperation: null
+  };
+}
 
 class FakeCliRunner implements CliHubCommandRunner {
   executed: string[] = [];

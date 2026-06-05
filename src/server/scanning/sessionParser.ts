@@ -4,7 +4,7 @@ import type { ParserWarning, ResumeStatus, SessionEntry, ToolId } from "../../sh
 import { normalizeFsPath } from "../core/pathUtils.js";
 import { maxIso, nowIso, toIso } from "../core/time.js";
 
-interface ParseContext {
+export interface ParseContext {
   toolId: ToolId;
   parserVersion: string;
   sourceFormat: string;
@@ -12,7 +12,7 @@ interface ParseContext {
   scanRunId: string | null;
 }
 
-interface ParsedValue {
+export interface ParsedValue {
   session: SessionEntry | null;
   warnings: Array<Omit<ParserWarning, "id" | "createdAt">>;
   skipped: boolean;
@@ -35,27 +35,18 @@ export function parseSessionFile(context: ParseContext): ParsedValue {
   }
 
   const stat = fs.statSync(context.sourceFile);
-  const content = fs.readFileSync(context.sourceFile, "utf8");
-  const events: unknown[] = [];
-  const lines = content.split(/\r?\n/);
+  const parsedEvents = readSessionEvents(context, warnings);
+  const events = parsedEvents.events;
 
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]?.trim();
-    if (!line) continue;
-    try {
-      events.push(JSON.parse(line));
-    } catch (error) {
-      warnings.push({
-        scanRunId: context.scanRunId,
-        toolId: context.toolId,
-        sourceFile: context.sourceFile,
-        errorType: "malformed-jsonl",
-        message: error instanceof Error ? error.message : "Malformed JSONL line",
-        line: index + 1
-      });
-    }
-  }
+  return parseSessionEvents(context, events, stat, warnings);
+}
 
+export function parseSessionEvents(
+  context: ParseContext,
+  events: unknown[],
+  stat: fs.Stats,
+  warnings: Array<Omit<ParserWarning, "id" | "createdAt">> = []
+): ParsedValue {
   if (events.length === 0) {
     warnings.push({
       scanRunId: context.scanRunId,
@@ -72,6 +63,55 @@ export function parseSessionFile(context: ParseContext): ParsedValue {
     return { session: null, warnings, skipped: true };
   }
 
+  const session = buildSessionEntry(context, events, stat, warnings);
+  return { session, warnings, skipped: false };
+}
+
+export function parseSessionIndexFile(context: ParseContext): { sessions: SessionEntry[]; warnings: Array<Omit<ParserWarning, "id" | "createdAt">>; skipped: boolean } {
+  const warnings: Array<Omit<ParserWarning, "id" | "createdAt">> = [];
+  const stat = fs.statSync(context.sourceFile);
+  const content = fs.readFileSync(context.sourceFile, "utf8");
+  const sessions: SessionEntry[] = [];
+  const lines = content.split(/\r?\n/);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]?.trim();
+    if (!line) continue;
+    try {
+      const event = JSON.parse(line);
+      sessions.push(buildSessionEntry(context, [event], stat, warnings));
+    } catch (error) {
+      warnings.push({
+        scanRunId: context.scanRunId,
+        toolId: context.toolId,
+        sourceFile: context.sourceFile,
+        errorType: "malformed-jsonl",
+        message: error instanceof Error ? error.message : "Malformed JSONL line",
+        line: index + 1
+      });
+    }
+  }
+
+  if (sessions.length === 0) {
+    warnings.push({
+      scanRunId: context.scanRunId,
+      toolId: context.toolId,
+      sourceFile: context.sourceFile,
+      errorType: "empty-session-index",
+      message: "No readable indexed sessions were found",
+      line: null
+    });
+  }
+
+  return { sessions, warnings, skipped: sessions.length === 0 };
+}
+
+function buildSessionEntry(
+  context: ParseContext,
+  events: unknown[],
+  stat: fs.Stats,
+  warnings: Array<Omit<ParserWarning, "id" | "createdAt">>
+): SessionEntry {
   const nativeSessionId = extractSessionId(events, context.sourceFile, context.toolId);
   const cwd = findSessionCwd(events);
   const normalizedCwd = cwd ? normalizeFsPath(cwd) : null;
@@ -143,7 +183,48 @@ export function parseSessionFile(context: ParseContext): ParsedValue {
     indexedAt: nowIso()
   };
 
-  return { session, warnings, skipped: false };
+  return session;
+}
+
+function readSessionEvents(context: ParseContext, warnings: Array<Omit<ParserWarning, "id" | "createdAt">>): { events: unknown[] } {
+  const content = fs.readFileSync(context.sourceFile, "utf8");
+  if (path.extname(context.sourceFile).toLowerCase() === ".json") {
+    try {
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) return { events: parsed };
+      if (parsed && typeof parsed === "object") return { events: [parsed] };
+    } catch (error) {
+      warnings.push({
+        scanRunId: context.scanRunId,
+        toolId: context.toolId,
+        sourceFile: context.sourceFile,
+        errorType: "malformed-json",
+        message: error instanceof Error ? error.message : "Malformed JSON file",
+        line: null
+      });
+      return { events: [] };
+    }
+  }
+
+  const events: unknown[] = [];
+  const lines = content.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]?.trim();
+    if (!line) continue;
+    try {
+      events.push(JSON.parse(line));
+    } catch (error) {
+      warnings.push({
+        scanRunId: context.scanRunId,
+        toolId: context.toolId,
+        sourceFile: context.sourceFile,
+        errorType: "malformed-jsonl",
+        message: error instanceof Error ? error.message : "Malformed JSONL line",
+        line: index + 1
+      });
+    }
+  }
+  return { events };
 }
 
 function isClaudeMetadataFile(sourceFile: string): boolean {
@@ -193,15 +274,22 @@ function extractSessionId(events: unknown[], sourceFile: string, toolId: ToolId)
   }
 
   const keys = sessionIdKeys(toolId);
-  return findFirstString(events, keys) ?? inferIdFromFilename(sourceFile);
+  const explicitId = findFirstString(events, keys);
+  if (explicitId) return explicitId;
+  return inferIdFromFilename(sourceFile);
 }
 
 function sessionIdKeys(toolId: ToolId): string[] {
   if (toolId === "claude") return ["sessionId", "session_id", "conversationId"];
+  if (toolId === "cline") return ["taskId", "task_id", "sessionId", "session_id", "conversationId", "id"];
   if (toolId === "qwen") return ["session_id", "sessionId", "conversation_id", "conversationId", "id", "uuid"];
+  if (toolId === "kimi") return ["session_id", "sessionId", "conversation_id", "conversationId", "id", "uuid"];
   if (toolId === "opencode") return ["sessionID", "sessionId", "session_id", "conversationId", "id"];
   if (toolId === "qoder") return ["sessionId", "session_id", "conversationId", "id"];
+  if (toolId === "codebuddy") return ["sessionId", "session_id", "conversationId", "conversation_id", "id", "uuid"];
   if (toolId === "copilot") return ["sessionId", "session_id", "conversationId", "id"];
+  if (toolId === "cursor") return ["chatId", "chat_id", "composerId", "composer_id", "agentId", "agent_id", "sessionId", "session_id", "conversationId", "id"];
+  if (toolId === "antigravity") return ["conversationId", "conversation_id", "sessionId", "session_id", "uuid", "id"];
   return ["session_id", "sessionId", "conversation_id", "conversationId"];
 }
 
@@ -249,7 +337,12 @@ function findSessionTitle(events: unknown[]): string | null {
   for (const event of events) {
     if (!event || typeof event !== "object" || Array.isArray(event)) continue;
     const record = event as Record<string, unknown>;
-    const title = directString(record, "title") ?? directString(record, "conversationTitle");
+    const title =
+      directString(record, "title") ??
+      directString(record, "conversationTitle") ??
+      directString(record, "chatTitle") ??
+      directString(record, "sessionTitle") ??
+      directString(record, "description");
     if (title) return title;
 
     const eventKind = directString(record, "type")?.toLowerCase();
@@ -318,12 +411,37 @@ function getSessionMetaPayloadString(event: unknown, key: string): string | null
 }
 
 function findSessionCwd(events: unknown[]): string | null {
-  const directKeys = ["cwd", "current_working_directory", "workingDirectory", "working_dir", "projectRoot", "workspaceRoot"];
+  const directKeys = [
+    "cwd",
+    "current_working_directory",
+    "workingDirectory",
+    "working_directory",
+    "working_dir",
+    "workDir",
+    "workdir",
+    "dir",
+    "workspaceDir",
+    "workspace_dir",
+    "directory",
+    "projectRoot",
+    "project_root",
+    "projectPath",
+    "project_path",
+    "workspaceRoot",
+    "workspace_root",
+    "workspacePath",
+    "workspace_path",
+    "rootPath",
+    "root_path"
+  ];
   const nestedPaths = [
     ["session_meta", "payload", "cwd"],
     ["sessionMeta", "cwd"],
     ["workspace", "cwd"],
-    ["workspace", "root"]
+    ["workspace", "root"],
+    ["workspace", "path"],
+    ["project", "root"],
+    ["project", "path"]
   ];
 
   for (const event of events) {
@@ -367,10 +485,14 @@ function extractTextFromUserEvent(event: unknown, options: { allowCommand: boole
   const codexContent = codexUserMessageContent(record);
   if (codexContent) return titleCandidateFromContent(codexContent, options);
   const role = directString(record, "type") ?? getPathString(record, ["message", "role"]) ?? directString(record, "role");
-  if (role && !["user", "human"].includes(role.toLowerCase())) return null;
+  if (role && !userRoleTypes().has(role.toLowerCase().replace(/[-\s]+/g, "_"))) return null;
   const content = userMessageContent(record);
   if (!content) return null;
   return titleCandidateFromContent(content, options);
+}
+
+function userRoleTypes(): Set<string> {
+  return new Set(["user", "human", "user_input", "user_message"]);
 }
 
 function titleCandidateFromContent(content: string, options: { allowCommand: boolean }): string | null {
@@ -417,7 +539,7 @@ function userMessageContent(record: Record<string, unknown>): string | null {
     const partsExtracted = textContent(parts);
     if (partsExtracted) return partsExtracted;
   }
-  return textContent(record.content);
+  return textContent(record.content) ?? directString(record, "text") ?? directString(record, "prompt") ?? directString(record, "input");
 }
 
 function textContent(value: unknown): string | null {
@@ -447,7 +569,19 @@ function compactText(text: string): string {
 }
 
 function findAllTimestamps(value: unknown): string[] {
-  const keys = new Set(["timestamp", "created_at", "createdAt", "updated_at", "updatedAt", "time"]);
+  const keys = new Set([
+    "timestamp",
+    "created_at",
+    "createdAt",
+    "created",
+    "updated_at",
+    "updatedAt",
+    "lastUpdatedAt",
+    "lastActivityAt",
+    "lastModifiedAt",
+    "modifiedAt",
+    "time"
+  ]);
   const results: string[] = [];
 
   function visit(node: unknown): void {

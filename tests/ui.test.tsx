@@ -4,11 +4,13 @@ import type {
   AppConfig,
   CliHubList,
   HookHubSuite,
+  PluginHubList,
   Project,
   ProjectDetail,
   ProjectHookBinding,
   ProjectHookState,
   ProjectLocalSkillsState,
+  ProjectPluginState,
   ProjectRepairCandidate,
   ProjectToolTarget,
   RefreshResult,
@@ -61,12 +63,24 @@ const clientMock = vi.hoisted(() => ({
   syncHookHubSuite: vi.fn(),
   importHookHubSuite: vi.fn(),
   importNativeHooks: vi.fn(),
+  pluginhub: vi.fn(),
+  importLocalPlugin: vi.fn(),
+  createCustomPlugin: vi.fn(),
+  updateCustomPlugin: vi.fn(),
+  previewDeletePluginHubSource: vi.fn(),
+  deletePluginHubSource: vi.fn(),
+  previewDeletePluginHubPlugin: vi.fn(),
+  deletePluginHubPlugin: vi.fn(),
   projectToolTargets: vi.fn(),
   updateProjectToolTargets: vi.fn(),
   projectSkillTargets: vi.fn(),
   updateProjectSkillTargets: vi.fn(),
   projectLocalSkills: vi.fn(),
   migrateProjectLocalSkill: vi.fn(),
+  projectPlugins: vi.fn(),
+  installProjectPlugin: vi.fn(),
+  syncProjectPlugin: vi.fn(),
+  uninstallProjectPlugin: vi.fn(),
   projectMcp: vi.fn(),
   applyProjectMcp: vi.fn(),
   disableProjectMcp: vi.fn(),
@@ -193,9 +207,34 @@ describe("HomePage", () => {
     clientMock.syncHookHubSuite.mockResolvedValue({ suiteId: "suite-1", projectId: null, updated: [], skipped: [] });
     clientMock.importHookHubSuite.mockResolvedValue({ action: "created", suite: hookHubSuiteFixture(), conflict: null });
     clientMock.importNativeHooks.mockResolvedValue({ action: "created", suite: hookHubSuiteFixture(), conflict: null });
+    clientMock.pluginhub.mockResolvedValue(pluginHubListFixture());
+    clientMock.importLocalPlugin.mockResolvedValue({ source: pluginHubSourceFixture(), plugins: [pluginHubPluginFixture()], importedSkills: [], skipped: [] });
+    clientMock.createCustomPlugin.mockResolvedValue(pluginHubPluginFixture({ id: "plugin-custom", kind: "custom", sourceId: null }));
+    clientMock.previewDeletePluginHubSource.mockResolvedValue({
+      source: pluginHubSourceFixture(),
+      sourcePlugins: [pluginHubPluginFixture()],
+      sourceComponents: [],
+      customPlugins: [],
+      projectBindings: [],
+      failures: []
+    });
+    clientMock.deletePluginHubSource.mockResolvedValue({
+      source: pluginHubSourceFixture(),
+      sourcePlugins: [pluginHubPluginFixture()],
+      sourceComponents: [],
+      customPlugins: [],
+      projectBindings: [],
+      failures: []
+    });
+    clientMock.previewDeletePluginHubPlugin.mockResolvedValue({ plugin: pluginHubPluginFixture(), projectBindings: [], failures: [] });
+    clientMock.deletePluginHubPlugin.mockResolvedValue({ plugin: pluginHubPluginFixture(), projectBindings: [], failures: [] });
     clientMock.projectToolTargets.mockResolvedValue([]);
     clientMock.projectSkillTargets.mockResolvedValue({ projectId: "project-1", toolTargets: [], skillTargets: [], skills: [] });
     clientMock.projectLocalSkills.mockResolvedValue({ projectId: "project-1", toolTargets: [], migrationSources: [], skills: [] });
+    clientMock.projectPlugins.mockResolvedValue(projectPluginStateFixture(projectFixture("E:\\old")));
+    clientMock.installProjectPlugin.mockResolvedValue(projectPluginApplyResultFixture(projectFixture("E:\\old")));
+    clientMock.syncProjectPlugin.mockResolvedValue(projectPluginApplyResultFixture(projectFixture("E:\\old")));
+    clientMock.uninstallProjectPlugin.mockResolvedValue({ ...projectPluginApplyResultFixture(projectFixture("E:\\old")), binding: null, message: "Plugin 已从项目卸载" });
     clientMock.projectMcp.mockResolvedValue({ projectId: "project-1", targetRootPath: "E:\\old", targets: [], servers: [], bindings: [], localEntries: [] });
     clientMock.projectHooks.mockResolvedValue(projectHookStateFixture(projectFixture("E:\\old")));
     clientMock.writeProjectHooks.mockResolvedValue({ projectId: "project-1", targetRootPath: "E:\\old", toolId: "claude", status: "drifted" });
@@ -414,7 +453,7 @@ describe("HomePage", () => {
     const topbar = container.querySelector(".topbar") as HTMLElement;
     const topbarLinks = [...topbar.querySelectorAll(".topbar-link")].map((button) => button.textContent?.trim());
     const stats = within(topbar).getByLabelText("项目统计");
-    expect(topbarLinks).toEqual(["CliHub", "SkillHub", "McpHub", "HookHub"]);
+    expect(topbarLinks).toEqual(["CliHub", "PluginHub", "SkillHub", "McpHub", "HookHub"]);
     expect(within(topbar).queryByText("项目总览")).not.toBeInTheDocument();
     expect(within(stats).getByText("项目")).toBeInTheDocument();
     expect(within(stats).getByText("2")).toBeInTheDocument();
@@ -474,6 +513,41 @@ describe("HomePage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "返回" }));
     expect(await screen.findByText("还没有项目")).toBeInTheDocument();
+  });
+
+  it("opens PluginHub from the topbar and imports local plugins", async () => {
+    clientMock.pickDirectory.mockResolvedValue({ path: "C:\\tmp\\wshobson-agents", cancelled: false });
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "PluginHub" }));
+
+    expect(await screen.findByRole("heading", { name: "PluginHub" })).toBeInTheDocument();
+    expect(clientMock.pluginhub).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("region", { name: "Sources" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Plugins" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Custom Plugins" })).toBeInTheDocument();
+    expect(screen.getByText("python-development")).toBeInTheDocument();
+
+    const customRegion = screen.getByRole("region", { name: "Custom Plugins" });
+    fireEvent.click(within(customRegion).getByText("custom-review"));
+    fireEvent.click(within(customRegion).getByRole("button", { name: "编辑 plugin" }));
+    const editDialog = await screen.findByRole("dialog", { name: "编辑 Plugin" });
+    fireEvent.change(within(editDialog).getByLabelText("描述"), { target: { value: "Updated custom" } });
+    fireEvent.click(within(editDialog).getByRole("button", { name: "编辑 Plugin" }));
+    await waitFor(() => expect(clientMock.updateCustomPlugin).toHaveBeenCalled());
+    expect(clientMock.updateCustomPlugin.mock.calls[0]?.[0]).toBe("plugin-custom");
+    expect(clientMock.updateCustomPlugin.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ name: "custom-review", description: "Updated custom" }));
+    expect(clientMock.updateCustomPlugin.mock.calls[0]?.[1]).not.toHaveProperty("privateFiles");
+    fireEvent.click(within(editDialog).getByRole("button", { name: "关闭" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "添加 Plugin" }));
+    const dialog = await screen.findByRole("dialog", { name: "添加 Plugin" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "选择目录" }));
+    await waitFor(() => expect(within(dialog).getByLabelText("本地 plugin source")).toHaveValue("C:\\tmp\\wshobson-agents"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "导入" }));
+
+    await waitFor(() => expect(clientMock.importLocalPlugin).toHaveBeenCalledWith("C:\\tmp\\wshobson-agents"));
   });
 
   it("opens CliHub from the topbar and supports custom CLI actions", async () => {
@@ -1361,6 +1435,98 @@ describe("HomePage", () => {
       })
     );
     expect(await screen.findByText("本地技能已换成 SkillHub link")).toBeInTheDocument();
+  });
+
+  it("opens the project Plugin panel and installs a complete plugin", async () => {
+    const project = projectFixture("E:\\old");
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.projectPlugins.mockResolvedValue(projectPluginStateFixture(project));
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByRole("button", { name: "Plugin" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目 Plugin 管理" });
+    expect(clientMock.projectPlugins).toHaveBeenCalledWith(project.id, project.rootPath);
+    expect(within(panel).getByRole("region", { name: "安装 Plugin" })).toBeInTheDocument();
+    expect(within(panel).getByRole("region", { name: "已安装 Plugin" })).toBeInTheDocument();
+    expect(within(panel).getAllByText("python-development").length).toBeGreaterThan(0);
+
+    fireEvent.click(within(panel).getByRole("button", { name: "安装" }));
+
+    await waitFor(() => expect(clientMock.installProjectPlugin).toHaveBeenCalledWith(project.id, "plugin-1", "codex", project.rootPath, null));
+    expect(await screen.findByText("项目 Plugin 已安装")).toBeInTheDocument();
+  });
+
+  it("shows plugin-owned skills as readonly and groups them in the Plugin tab", async () => {
+    const project = projectFixture("E:\\old");
+    const source = skillHubSourceFixture("source-local", "local-source", "local");
+    const skill = skillHubSkillFixture(source, "skill-1", "review", "Review code");
+    const pluginState = projectPluginStateFixture(project);
+    const pluginBinding = pluginState.bindings[0];
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.projectSkillTargets.mockResolvedValue({
+      projectId: project.id,
+      toolTargets: [projectToolTargetFixture(project, "codex", true)],
+      skillTargets: [
+        {
+          projectId: project.id,
+          toolId: "codex",
+          skillId: skill.id,
+          linkPath: `${project.rootPath}\\.codex\\skills\\review`,
+          targetPath: skill.libraryPath,
+          createdAt: "2026-06-01T00:00:00Z",
+          updatedAt: "2026-06-01T00:00:00Z"
+        }
+      ],
+      skills: [skill]
+    });
+    clientMock.projectLocalSkills.mockResolvedValue({
+      projectId: project.id,
+      toolTargets: [projectToolTargetFixture(project, "codex", true)],
+      migrationSources: [],
+      skills: [
+        {
+          projectId: project.id,
+          toolId: "codex",
+          type: "plugin",
+          folderName: "review",
+          skillName: "review",
+          description: "Review code",
+          skillPath: `${project.rootPath}\\.codex\\skills\\review`,
+          skillHubSkill: skill,
+          pluginBinding,
+          plugin: pluginBinding.plugin,
+          migratable: false,
+          reason: "该技能由项目 Plugin 管理，请从 Plugin 入口卸载或同步"
+        }
+      ]
+    } satisfies ProjectLocalSkillsState);
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByRole("button", { name: "技能" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目技能管理" });
+    const skillRow = within(panel).getByText("review").closest("details") as HTMLElement;
+    expect(within(skillRow).getByText("Plugin managed")).toBeInTheDocument();
+    for (const checkbox of within(skillRow).getAllByRole("checkbox")) {
+      expect(checkbox).toBeDisabled();
+    }
+    expect(within(skillRow).getByText("该技能由项目 Plugin 管理，请从 Plugin 入口卸载或同步。")).toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByRole("tab", { name: "Plugin" }));
+
+    expect(within(panel).getByRole("region", { name: "python-development 技能" })).toBeInTheDocument();
+    expect(within(panel).getAllByText("Plugin").length).toBeGreaterThan(0);
   });
 
   it("lets a project local skill migrate into a new local source directory", async () => {
@@ -2661,6 +2827,129 @@ function projectHookStateFixture(project: Project): ProjectHookState {
   };
 }
 
+function pluginHubSourceFixture(): PluginHubList["sources"][number] {
+  return {
+    id: "source-1",
+    kind: "library",
+    label: "wshobson-agents",
+    inputPath: "C:\\tmp\\wshobson-agents",
+    resolvedPath: "c:\\tmp\\wshobson-agents",
+    pluginCount: 1,
+    componentCount: 1,
+    privateFileCount: 1,
+    createdAt: "2026-06-01T00:00:00Z",
+    updatedAt: "2026-06-01T00:00:00Z"
+  };
+}
+
+function pluginHubPluginFixture(overrides: Partial<PluginHubList["plugins"][number]> = {}): PluginHubList["plugins"][number] {
+  const source = pluginHubSourceFixture();
+  return {
+    id: "plugin-1",
+    kind: "source",
+    sourceId: source.id,
+    name: "python-development",
+    displayName: "python-development",
+    description: "Python workflow plugin",
+    componentRefs: [{ type: "skill", componentId: "skill-1", required: false }],
+    privateFiles: [
+      {
+        id: "private-1",
+        pluginId: "plugin-1",
+        sourceRelativePath: "plugins/python-development/.codex-plugin/plugin.json",
+        targetRelativePath: ".agents/plugins/python-development/.codex-plugin/plugin.json",
+        contentPath: "C:\\tmp\\plugin.json",
+        contentHash: "private-hash",
+        required: true
+      }
+    ],
+    harnessSupport: { codex: "native", claude: "planned" },
+    createdAt: "2026-06-01T00:00:00Z",
+    updatedAt: "2026-06-01T00:00:00Z",
+    source,
+    ...overrides
+  };
+}
+
+function pluginHubListFixture(): PluginHubList {
+  const source = pluginHubSourceFixture();
+  const sourcePlugin = pluginHubPluginFixture({ source });
+  const customPlugin = pluginHubPluginFixture({
+    id: "plugin-custom",
+    kind: "custom",
+    sourceId: null,
+    name: "custom-review",
+    displayName: "custom-review",
+    source: null
+  });
+  return {
+    sources: [source],
+    plugins: [sourcePlugin, customPlugin],
+    sourcePlugins: [sourcePlugin],
+    customPlugins: [customPlugin],
+    skills: []
+  };
+}
+
+function projectPluginStateFixture(project: Project): ProjectPluginState {
+  const plugin = pluginHubPluginFixture();
+  const binding = {
+    id: "binding-1",
+    projectId: project.id,
+    targetRootPath: project.rootPath,
+    toolId: "codex" as const,
+    pluginId: plugin.id,
+    managedComponentCount: 1,
+    existingComponentCount: 0,
+    privateFileCount: 1,
+    topologyHash: "topology-hash",
+    componentOwnership: [
+      {
+        type: "skill" as const,
+        componentId: "skill-1",
+        toolId: "codex" as const,
+        targetPath: "C:\\tmp\\github-repo-manager\\skillhub\\library\\source\\review",
+        linkPath: `${project.rootPath}\\.codex\\skills\\review`,
+        ownerState: "managed" as const,
+        required: false,
+        reason: null
+      }
+    ],
+    privateFileOwnership: [
+      {
+        privateFileId: "private-1",
+        toolId: "codex" as const,
+        targetPath: `${project.rootPath}\\.agents\\plugins\\python-development\\.codex-plugin\\plugin.json`,
+        ownerState: "managed" as const,
+        reason: null
+      }
+    ],
+    installedAt: "2026-06-01T00:00:00Z",
+    createdAt: "2026-06-01T00:00:00Z",
+    updatedAt: "2026-06-01T00:00:00Z",
+    plugin
+  };
+  return {
+    projectId: project.id,
+    targetRootPath: project.rootPath,
+    plugins: pluginHubListFixture().plugins,
+    bindings: [binding],
+    syncRequiredPluginIds: []
+  };
+}
+
+function projectPluginApplyResultFixture(project: Project) {
+  return {
+    projectId: project.id,
+    binding: projectPluginStateFixture(project).bindings[0],
+    preflight: [],
+    backups: [],
+    blocked: false,
+    requiresConfirmation: false,
+    message: "Plugin 已安装"
+  };
+}
+
 function skillHubSourceFixture(id: string, label: string, type: SkillHubSource["type"]): SkillHubSource {
   return {
     id,
@@ -2726,10 +3015,18 @@ function appConfigFixture(mode: AppConfig["terminal"]["mode"] = "new-window", sk
     tools: {
       codex: { command: "codex" },
       claude: { command: "claude" },
+      cline: { command: "cline" },
       opencode: { command: "opencode" },
+      kilo: { command: "kilo" },
       qwen: { command: "qwen" },
+      deepcode: { command: "deepcode" },
+      kimi: { command: "kimi" },
       qoder: { command: "qodercli" },
-      copilot: { command: "copilot" }
+      codebuddy: { command: "codebuddy" },
+      copilot: { command: "copilot" },
+      cursor: { command: "cursor-agent" },
+      antigravity: { command: "agy" },
+      reasonix: { command: "reasonix" }
     },
     terminal: { mode },
     skillhub: { rootDir: skillHubRoot }

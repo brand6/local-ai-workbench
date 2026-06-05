@@ -35,19 +35,17 @@ const AI_TRACE_NAMES: Array<{ name: string; tool: ToolId }> = [
   { name: "CLAUDE.md", tool: "claude" },
   { name: ".opencode", tool: "opencode" },
   { name: "OPENCODE.md", tool: "opencode" },
+  { name: ".kilo", tool: "kilo" },
+  { name: ".kilocode", tool: "kilo" },
+  { name: "KILO.md", tool: "kilo" },
   { name: ".qwen", tool: "qwen" },
   { name: "QWEN.md", tool: "qwen" },
   { name: ".qoder", tool: "qoder" },
   { name: "QODER.md", tool: "qoder" },
   { name: "copilot-instructions.md", tool: "copilot" },
-  { name: ".gemini", tool: "gemini" },
-  { name: "GEMINI.md", tool: "gemini" },
   { name: ".cursor", tool: "cursor" },
   { name: ".cursorrules", tool: "cursor" },
-  { name: "mcp_config.json", tool: "antigravity" },
-  { name: ".windsurf", tool: "windsurf" },
-  { name: ".junie", tool: "junie" },
-  { name: "mcp.json", tool: "copilot_vscode" }
+  { name: "mcp_config.json", tool: "antigravity" }
 ];
 
 export interface ProjectScanRequest {

@@ -1,16 +1,16 @@
 export const toolIds = [
   "codex",
   "claude",
+  "cline",
   "opencode",
+  "kilo",
   "qwen",
+  "kimi",
   "qoder",
+  "codebuddy",
   "copilot",
-  "gemini",
   "cursor",
-  "antigravity",
-  "windsurf",
-  "junie",
-  "copilot_vscode"
+  "antigravity"
 ] as const;
 export type ToolId = (typeof toolIds)[number];
 
@@ -229,6 +229,184 @@ export interface SkillHubList {
   sources: SkillHubSource[];
 }
 
+export type PluginHubSourceKind = "library" | "single-plugin";
+export type PluginHubPluginKind = "source" | "custom";
+export type PluginHubComponentType = "skill" | "agent" | "mcp" | "hook";
+export type PluginHubHarnessSupport = "native" | "component-only" | "unsupported" | "planned";
+export type PluginHubSourceDeleteMode = "delete-custom-plugins" | "remove-custom-components";
+
+export interface PluginHubSource {
+  id: string;
+  kind: PluginHubSourceKind;
+  label: string;
+  inputPath: string;
+  resolvedPath: string;
+  pluginCount: number;
+  componentCount: number;
+  privateFileCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PluginHubComponentRef {
+  type: PluginHubComponentType;
+  componentId: string;
+  required: boolean;
+}
+
+export interface PluginHubPrivateFile {
+  id: string;
+  pluginId: string;
+  sourceRelativePath: string;
+  targetRelativePath: string;
+  contentPath: string;
+  contentHash: string;
+  required: boolean;
+}
+
+export interface PluginHubPlugin {
+  id: string;
+  kind: PluginHubPluginKind;
+  sourceId: string | null;
+  name: string;
+  displayName: string;
+  description: string | null;
+  componentRefs: PluginHubComponentRef[];
+  privateFiles: PluginHubPrivateFile[];
+  harnessSupport: Partial<Record<ToolId, PluginHubHarnessSupport>>;
+  createdAt: string;
+  updatedAt: string;
+  source: PluginHubSource | null;
+}
+
+export interface PluginHubList {
+  sources: PluginHubSource[];
+  plugins: PluginHubPlugin[];
+  sourcePlugins: PluginHubPlugin[];
+  customPlugins: PluginHubPlugin[];
+  skills: SkillHubSkill[];
+}
+
+export interface PluginHubImportSkipped {
+  path: string;
+  reason: string;
+}
+
+export interface PluginHubImportResult {
+  source: PluginHubSource;
+  plugins: PluginHubPlugin[];
+  importedSkills: SkillHubSkill[];
+  skipped: PluginHubImportSkipped[];
+}
+
+export interface PluginHubCustomPluginInput {
+  name: string;
+  displayName?: string | null;
+  description?: string | null;
+  componentRefs?: PluginHubComponentRef[];
+  privateFiles?: Array<{
+    sourceRelativePath: string;
+    targetRelativePath?: string | null;
+    content: string;
+    required?: boolean;
+  }>;
+}
+
+export interface PluginHubDeleteFailure {
+  path: string;
+  reason: string;
+}
+
+export interface PluginHubSourceDeletePreview {
+  source: PluginHubSource;
+  sourcePlugins: PluginHubPlugin[];
+  sourceComponents: SkillHubSkill[];
+  customPlugins: PluginHubPlugin[];
+  projectBindings: ProjectPluginBinding[];
+  failures: PluginHubDeleteFailure[];
+}
+
+export interface PluginHubPluginDeletePreview {
+  plugin: PluginHubPlugin;
+  projectBindings: ProjectPluginBinding[];
+  failures: PluginHubDeleteFailure[];
+}
+
+export interface ProjectPluginComponentOwnership {
+  type: PluginHubComponentType;
+  componentId: string;
+  toolId: ToolId;
+  targetPath: string;
+  linkPath: string;
+  ownerState: "managed" | "existing";
+  required: boolean;
+  reason: string | null;
+}
+
+export interface ProjectPluginPrivateFileOwnership {
+  privateFileId: string;
+  toolId: ToolId;
+  targetPath: string;
+  ownerState: "managed" | "blocked";
+  reason: string | null;
+}
+
+export interface ProjectPluginBinding {
+  id: string;
+  projectId: string;
+  targetRootPath: string;
+  toolId: ToolId;
+  pluginId: string;
+  managedComponentCount: number;
+  existingComponentCount: number;
+  privateFileCount: number;
+  topologyHash: string;
+  componentOwnership: ProjectPluginComponentOwnership[];
+  privateFileOwnership: ProjectPluginPrivateFileOwnership[];
+  installedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  plugin: PluginHubPlugin | null;
+}
+
+export interface ProjectPluginPreflightItem {
+  targetPath: string;
+  targetResourceType: "skill" | "private-file";
+  existingOwnerType: "none" | "same-component" | "different-component" | "plugin-private" | "local";
+  overwriteReason: string;
+  backupRequired: boolean;
+  required: boolean;
+  componentId: string | null;
+  privateFileId: string | null;
+}
+
+export interface ProjectLocalFileBackup {
+  originalPath: string;
+  backupPath: string;
+  metadataPath: string;
+  hub: string;
+  targetResourceType: "skill" | "private-file";
+  createdAt: string;
+}
+
+export interface ProjectPluginApplyResult {
+  projectId: string;
+  binding: ProjectPluginBinding | null;
+  preflight: ProjectPluginPreflightItem[];
+  backups: ProjectLocalFileBackup[];
+  blocked: boolean;
+  requiresConfirmation: boolean;
+  message: string;
+}
+
+export interface ProjectPluginState {
+  projectId: string;
+  targetRootPath: string;
+  plugins: PluginHubPlugin[];
+  bindings: ProjectPluginBinding[];
+  syncRequiredPluginIds: string[];
+}
+
 export interface SkillHubImportSkipped {
   path: string;
   reason: string;
@@ -307,7 +485,7 @@ export interface ProjectSkillUpdateResult {
   requiresConfirmation: boolean;
 }
 
-export type ProjectLocalSkillType = "skillhub" | "local";
+export type ProjectLocalSkillType = "skillhub" | "local" | "plugin";
 export type ProjectLocalSkillMigrationMode = "overwrite-skillhub" | "link-existing";
 export type ProjectLocalSkillMigrationAction = "migrated" | "overwrote-skillhub" | "linked-existing" | "needs-confirmation";
 export type ProjectLocalSkillMigrationTarget =
@@ -323,6 +501,8 @@ export interface ProjectLocalSkill {
   description: string | null;
   skillPath: string;
   skillHubSkill: SkillHubSkill | null;
+  pluginBinding: ProjectPluginBinding | null;
+  plugin: PluginHubPlugin | null;
   migratable: boolean;
   reason: string | null;
 }
@@ -345,7 +525,7 @@ export interface ProjectLocalSkillMigrationResult {
 }
 
 export type McpHubTransport = "stdio" | "http";
-export const mcpHubTargetToolIds = ["claude", "codex", "opencode", "gemini", "cursor", "copilot_vscode", "antigravity", "junie"] as const;
+export const mcpHubTargetToolIds = ["claude", "codex", "opencode", "cursor", "antigravity"] as const;
 export type McpHubTargetToolId = (typeof mcpHubTargetToolIds)[number];
 
 export function isMcpHubTargetToolId(value: unknown): value is McpHubTargetToolId {

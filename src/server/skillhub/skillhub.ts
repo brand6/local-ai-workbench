@@ -30,6 +30,7 @@ import type {
 import type { AppDatabase } from "../storage/database.js";
 import { nowIso } from "../core/time.js";
 import { openLocalPath } from "../core/localFilesystem.js";
+import { normalizeFsPath } from "../core/pathUtils.js";
 import { createDirectoryLink, linkPointsTo, pathExists, removeDirectoryLink } from "./links.js";
 import { listProjectToolTargets } from "./projectSkills.js";
 
@@ -295,17 +296,20 @@ export function listProjectLocalSkillsState(database: AppDatabase, project: Proj
       const linkedSkill = skillHubSkills.find((skill) => linkPointsTo(skillPath, skill.libraryPath)) ?? null;
       const metadata = readSkillMetadata(path.join(skillPath, "SKILL.md"));
       const isLink = fs.lstatSync(skillPath).isSymbolicLink();
+      const pluginBinding = linkedSkill ? findPluginSkillOwner(database, project.id, target.toolId, skillPath, linkedSkill.id) : null;
       skills.push({
         projectId: project.id,
         toolId: target.toolId,
-        type: linkedSkill ? "skillhub" : "local",
+        type: pluginBinding ? "plugin" : linkedSkill ? "skillhub" : "local",
         folderName: entry.name,
         skillName: linkedSkill?.skillName ?? metadata.name,
         description: linkedSkill?.description ?? metadata.description,
         skillPath,
         skillHubSkill: linkedSkill,
+        pluginBinding,
+        plugin: pluginBinding?.plugin ?? null,
         migratable: !linkedSkill && !isLink,
-        reason: !linkedSkill && isLink ? "目标是外部 link，不能自动迁移" : null
+        reason: pluginBinding ? "该技能由项目 Plugin 管理，请从 Plugin 入口卸载或同步" : !linkedSkill && isLink ? "目标是外部 link，不能自动迁移" : null
       });
     }
   }
@@ -317,6 +321,23 @@ export function listProjectLocalSkillsState(database: AppDatabase, project: Proj
     migrationSources: database.listSkillHubSources().filter((source) => source.type === "local"),
     skills
   };
+}
+
+function findPluginSkillOwner(database: AppDatabase, projectId: string, toolId: ToolId, linkPath: string, skillId: string) {
+  return (
+    database
+      .listProjectPluginBindings(projectId)
+      .find((binding) =>
+        binding.componentOwnership.some(
+          (owner) =>
+            owner.ownerState === "managed" &&
+            owner.type === "skill" &&
+            owner.toolId === toolId &&
+            owner.componentId === skillId &&
+            normalizeFsPath(owner.linkPath) === normalizeFsPath(linkPath)
+        )
+      ) ?? null
+  );
 }
 
 export function migrateProjectLocalSkill(

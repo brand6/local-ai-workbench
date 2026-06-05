@@ -36,7 +36,7 @@ interface MigrationSourceOption {
   path: string | null;
 }
 
-type ProjectSkillsTab = "skillhub" | "local";
+type ProjectSkillsTab = "skillhub" | "local" | "plugin";
 
 interface ProjectLocalSkillMigrationItem {
   toolId: ToolId;
@@ -295,17 +295,28 @@ export function ProjectSkillsPanel({
         >
           本地技能
         </button>
+        <button
+          className={activeTab === "plugin" ? "active" : ""}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "plugin"}
+          onClick={() => setActiveTab("plugin")}
+        >
+          Plugin
+        </button>
       </div>
 
       {activeTab === "skillhub" ? (
-        <ProjectSkillTabContent state={skillState} busy={busy} lastResult={lastResult} onUpdateSkill={onUpdateSkill} />
-      ) : (
+        <ProjectSkillTabContent state={skillState} localSkillState={localSkillState} busy={busy} lastResult={lastResult} onUpdateSkill={onUpdateSkill} />
+      ) : activeTab === "local" ? (
         <ProjectLocalSkillTabContent
           state={localSkillState}
           busy={busy}
           onPickDirectory={onPickDirectory}
           onMigrateLocalSkills={onMigrateLocalSkills}
         />
+      ) : (
+        <ProjectPluginSkillTabContent state={localSkillState} />
       )}
     </aside>
   );
@@ -313,17 +324,23 @@ export function ProjectSkillsPanel({
 
 function ProjectSkillTabContent({
   state,
+  localSkillState,
   busy,
   lastResult,
   onUpdateSkill
 }: {
   state: ProjectSkillTargetsState | null;
+  localSkillState: ProjectLocalSkillsState | null;
   busy: boolean;
   lastResult: ProjectSkillUpdateResult | null;
   onUpdateSkill: (skillId: string, toolIds: ToolId[]) => void;
 }) {
   const [query, setQuery] = useState("");
   const enabledToolTargets = useMemo(() => state?.toolTargets.filter((target) => target.enabled) ?? [], [state]);
+  const pluginOwnedSkillIds = useMemo(
+    () => new Set((localSkillState?.skills ?? []).filter((skill) => skill.type === "plugin" && skill.skillHubSkill).map((skill) => skill.skillHubSkill?.id as string)),
+    [localSkillState]
+  );
   const filteredSkills = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return (state?.skills ?? []).filter((skill) => {
@@ -374,18 +391,21 @@ function ProjectSkillTabContent({
                       const supportedEnabled = enabledToolTargets.filter((target) => target.supported).map((target) => target.toolId);
                       const checked = supportedEnabled.length > 0 && supportedEnabled.every((toolId) => active.includes(toolId));
                       const indeterminate = supportedEnabled.some((toolId) => active.includes(toolId)) && !checked;
+                      const pluginOwned = pluginOwnedSkillIds.has(skill.id);
                       return (
                         <details className="skill-target-row" key={skill.id}>
                           <summary>
                             <IndeterminateCheckbox
                               checked={checked}
                               indeterminate={indeterminate}
-                              disabled={busy || supportedEnabled.length === 0}
+                              disabled={busy || supportedEnabled.length === 0 || pluginOwned}
                               onChange={(next) => onUpdateSkill(skill.id, next ? supportedEnabled : [])}
                             />
                             <span>{skill.folderName}</span>
+                            {pluginOwned ? <span className="metric-pill warning">Plugin managed</span> : null}
                           </summary>
                           <p>{skill.description ?? skill.skillName ?? "无描述"}</p>
+                          {pluginOwned ? <div className="inline-warning">该技能由项目 Plugin 管理，请从 Plugin 入口卸载或同步。</div> : null}
                           <div className="tool-chip-list">
                             {enabledToolTargets.length === 0 ? <div className="empty-state compact">还没有项目使用工具</div> : null}
                             {enabledToolTargets.map((target) => (
@@ -393,7 +413,7 @@ function ProjectSkillTabContent({
                                 <input
                                   type="checkbox"
                                   checked={active.includes(target.toolId)}
-                                  disabled={busy || !target.supported}
+                                  disabled={busy || !target.supported || pluginOwned}
                                   onChange={(event) => {
                                     const next = event.target.checked
                                       ? [...active, target.toolId]
@@ -530,6 +550,45 @@ function ProjectLocalSkillTabContent({
   );
 }
 
+function ProjectPluginSkillTabContent({ state }: { state: ProjectLocalSkillsState | null }) {
+  const pluginSkills = useMemo(() => state?.skills.filter((skill) => skill.type === "plugin") ?? [], [state]);
+  const groups = useMemo(() => {
+    const byPlugin = new Map<string, { label: string; skills: ProjectLocalSkill[] }>();
+    for (const skill of pluginSkills) {
+      const pluginId = skill.plugin?.id ?? "unknown";
+      const label = skill.plugin?.displayName ?? "Unknown Plugin";
+      const current = byPlugin.get(pluginId) ?? { label, skills: [] };
+      current.skills.push(skill);
+      byPlugin.set(pluginId, current);
+    }
+    return [...byPlugin.entries()].map(([id, group]) => ({ id, ...group }));
+  }, [pluginSkills]);
+
+  return (
+    <div className="project-plugin-skill-tab-panel" role="tabpanel">
+      {!state ? (
+        <div className="muted">正在读取 Plugin 技能...</div>
+      ) : groups.length === 0 ? (
+        <div className="empty-state compact">还没有 Plugin 技能</div>
+      ) : (
+        <div className="project-local-skill-list">
+          {groups.map((group) => (
+            <ProjectLocalSkillGroup
+              key={group.id}
+              title={group.label}
+              skills={group.skills}
+              busy={true}
+              selectedSkillKeys={[]}
+              migrationMode={false}
+              onToggleSkill={() => {}}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProjectLocalSkillGroup({
   title,
   skills,
@@ -610,7 +669,7 @@ function ProjectLocalSkillRow({
         <p>{skill.description ?? skill.skillName ?? "无描述"}</p>
         <div className="project-local-skill-title">
           <span className="metric-pill">{skill.toolId}</span>
-          <span className="metric-pill">{skill.type === "skillhub" ? "SkillHub" : "Local"}</span>
+          <span className="metric-pill">{skill.type === "plugin" ? "Plugin" : skill.type === "skillhub" ? "SkillHub" : "Local"}</span>
         </div>
         <small>{skill.skillHubSkill?.libraryRelativePath ?? skill.skillPath}</small>
         {!skill.migratable && skill.reason ? <div className="inline-warning">{skill.reason}</div> : null}

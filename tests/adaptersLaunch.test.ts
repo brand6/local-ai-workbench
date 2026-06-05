@@ -3,7 +3,14 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultAppConfig } from "../src/server/core/bootstrap.js";
 import { buildTerminalHost, launchInTerminal, terminalWindowTarget } from "../src/server/launch/terminal.js";
-import { adapterFor, claudeAdapter, codexAdapter, opencodeAdapter, projectVisibleToolStatuses } from "../src/server/tools/adapters.js";
+import {
+  adapterFor,
+  claudeAdapter,
+  codexAdapter,
+  kiloAdapter,
+  opencodeAdapter,
+  projectVisibleToolStatuses
+} from "../src/server/tools/adapters.js";
 import { toolIds, type SessionEntry, type ToolId } from "../src/shared/types.js";
 import { cleanup, testDir } from "./helpers.js";
 
@@ -45,8 +52,20 @@ describe("tool adapters and terminal launcher", () => {
 
   it("registers MVP-B tools behind the shared adapter interface", () => {
     const config = defaultAppConfig();
-    const fullLifecycleIds: ToolId[] = ["codex", "claude", "opencode", "qwen", "qoder", "copilot"];
-    const launchOnlyIds: ToolId[] = ["gemini", "cursor", "antigravity", "windsurf", "junie"];
+    const fullLifecycleIds: ToolId[] = [
+      "codex",
+      "claude",
+      "cline",
+      "opencode",
+      "kilo",
+      "qwen",
+      "kimi",
+      "qoder",
+      "codebuddy",
+      "copilot",
+      "cursor",
+      "antigravity"
+    ];
     const session: SessionEntry = {
       id: "tool:s1",
       toolId: "opencode",
@@ -64,13 +83,19 @@ describe("tool adapters and terminal launcher", () => {
     };
 
     expect(Object.keys(config.tools).sort()).toEqual([...toolIds].sort());
-    for (const id of [...fullLifecycleIds, ...launchOnlyIds]) {
+    for (const id of fullLifecycleIds) {
       expect(adapterFor(id).buildNewSessionCommand(config, "E:\\repo").cwd).toBe("E:\\repo");
     }
     expect(adapterFor("opencode").buildResumeCommand(config, { ...session, toolId: "opencode" }).args).toEqual(["--session", "s1"]);
+    expect(adapterFor("kilo").buildResumeCommand(config, { ...session, toolId: "kilo" }).args).toEqual(["run", "--interactive", "--session", "s1"]);
     expect(adapterFor("qwen").buildResumeCommand(config, { ...session, toolId: "qwen" }).args).toEqual(["--resume", "s1"]);
+    expect(adapterFor("kimi").buildResumeCommand(config, { ...session, toolId: "kimi" }).args).toEqual(["--session", "s1"]);
     expect(adapterFor("qoder").buildResumeCommand(config, { ...session, toolId: "qoder" }).args).toEqual(["-r", "s1"]);
+    expect(adapterFor("codebuddy").buildResumeCommand(config, { ...session, toolId: "codebuddy" }).args).toEqual(["--resume", "s1"]);
     expect(adapterFor("copilot").buildResumeCommand(config, { ...session, toolId: "copilot" }).args).toEqual(["--resume", "s1"]);
+    expect(adapterFor("cline").buildResumeCommand(config, { ...session, toolId: "cline" }).args).toEqual(["--id", "s1"]);
+    expect(adapterFor("cursor").buildResumeCommand(config, { ...session, toolId: "cursor" }).args).toEqual(["--resume", "s1"]);
+    expect(adapterFor("antigravity").buildResumeCommand(config, { ...session, toolId: "antigravity" }).args).toEqual(["--conversation", "s1"]);
   });
 
   it("exposes project-visible tools from adapter capabilities instead of hard-coded ids", () => {
@@ -78,24 +103,31 @@ describe("tool adapters and terminal launcher", () => {
     expect(statuses.map((status) => status.toolId)).toEqual([
       "codex",
       "claude",
+      "cline",
       "opencode",
+      "kilo",
       "qwen",
+      "kimi",
       "qoder",
+      "codebuddy",
       "copilot",
-      "gemini",
       "cursor",
-      "antigravity",
-      "windsurf",
-      "junie"
+      "antigravity"
     ]);
     expect(statuses.every((status) => status.capabilities.launchNew)).toBe(true);
     expect(statuses.filter((status) => status.capabilities.scanHistory).map((status) => status.toolId)).toEqual([
       "codex",
       "claude",
+      "cline",
       "opencode",
+      "kilo",
       "qwen",
+      "kimi",
       "qoder",
-      "copilot"
+      "codebuddy",
+      "copilot",
+      "cursor",
+      "antigravity"
     ]);
   });
 
@@ -105,6 +137,15 @@ describe("tool adapters and terminal launcher", () => {
       path.join(opencodeHome, "opencode.db"),
       path.join(opencodeHome, "project")
     ]);
+  });
+
+  it("points Kilo Code CLI history scanning at the SQLite database by default", () => {
+    const kiloHome = path.join("E:\\", "tools", "kilo");
+    const explicitDb = path.join(kiloHome, "custom.db");
+
+    expect(kiloAdapter.defaultSessionSources({ KILO_DATA_DIR: kiloHome })).toEqual([path.join(kiloHome, "kilo.db")]);
+    expect(kiloAdapter.defaultSessionSources({ KILO_DATA_DIR: kiloHome, KILO_DB: "sessions.db" })).toEqual([path.join(kiloHome, "sessions.db")]);
+    expect(kiloAdapter.defaultSessionSources({ KILO_DB: explicitDb })).toEqual([explicitDb]);
   });
 
   it("validates cwd before launch and supports dry-run terminal construction", () => {

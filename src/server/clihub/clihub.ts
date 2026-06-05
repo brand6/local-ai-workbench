@@ -149,11 +149,25 @@ const builtInClis: BuiltInCli[] = [
     ]
   },
   {
+    cliId: "cline",
+    displayName: "Cline",
+    kind: "project-tool",
+    commandNames: ["cline"],
+    channels: [providerChannel("cline:npm", "npm", "cline")]
+  },
+  {
     cliId: "opencode",
     displayName: "OpenCode",
     kind: "project-tool",
     commandNames: ["opencode"],
     channels: [providerChannel("opencode:npm", "npm", "opencode-ai")]
+  },
+  {
+    cliId: "kilo",
+    displayName: "Kilo Code CLI",
+    kind: "project-tool",
+    commandNames: ["kilo"],
+    channels: [providerChannel("kilo:npm", "npm", "@kilocode/cli")]
   },
   {
     cliId: "qwen",
@@ -163,6 +177,28 @@ const builtInClis: BuiltInCli[] = [
     channels: [providerChannel("qwen:npm", "npm", "@qwen-code/qwen-code")]
   },
   {
+    cliId: "kimi",
+    displayName: "Kimi Code",
+    kind: "project-tool",
+    commandNames: ["kimi"],
+    channels: [
+      providerChannel("kimi:npm", "npm", "@moonshot-ai/kimi-code"),
+      installerCommandChannel("kimi:official-posix", "official install script: macOS/Linux/WSL", "kimi", [
+        "bash",
+        "-lc",
+        "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"
+      ]),
+      installerCommandChannel("kimi:official-windows", "official install script: Windows PowerShell", "kimi", [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "irm https://code.kimi.com/kimi-code/install.ps1 | iex"
+      ])
+    ]
+  },
+  {
     cliId: "qoder",
     displayName: "Qoder",
     kind: "project-tool",
@@ -170,18 +206,18 @@ const builtInClis: BuiltInCli[] = [
     channels: [providerChannel("qoder:npm", "npm", "@qoder-ai/qodercli")]
   },
   {
+    cliId: "codebuddy",
+    displayName: "CodeBuddy Code",
+    kind: "project-tool",
+    commandNames: ["codebuddy"],
+    channels: [providerChannel("codebuddy:npm", "npm", "@tencent-ai/codebuddy-code")]
+  },
+  {
     cliId: "copilot",
     displayName: "GitHub Copilot CLI",
     kind: "project-tool",
     commandNames: ["copilot"],
     channels: [providerChannel("copilot:npm", "npm", "@github/copilot")]
-  },
-  {
-    cliId: "gemini",
-    displayName: "Gemini CLI",
-    kind: "project-tool",
-    commandNames: ["gemini"],
-    channels: [providerChannel("gemini:npm", "npm", "@google/gemini-cli")]
   },
   {
     cliId: "cursor",
@@ -222,58 +258,6 @@ const builtInClis: BuiltInCli[] = [
         "Bypass",
         "-Command",
         "iex (irm 'https://antigravity.google/cli/install.ps1')"
-      ])
-    ]
-  },
-  {
-    cliId: "windsurf",
-    displayName: "Windsurf",
-    kind: "project-tool",
-    commandNames: ["windsurf"],
-    channels: [
-      providerChannel("windsurf:winget", "winget", "Codeium.Windsurf"),
-      providerChannel("windsurf:choco", "choco", "windsurf")
-    ]
-  },
-  {
-    cliId: "junie",
-    displayName: "Junie",
-    kind: "project-tool",
-    commandNames: ["junie"],
-    channels: [
-      installerCommandChannel("junie:official-posix", "official install script: macOS/Linux", "junie", [
-        "bash",
-        "-lc",
-        "curl -fsSL https://junie.jetbrains.com/install.sh | bash"
-      ]),
-      installerCommandChannel("junie:official-windows", "official install script: Windows PowerShell", "junie", [
-        "powershell",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        "iex (irm 'https://junie.jetbrains.com/install.ps1')"
-      ])
-    ]
-  },
-  {
-    cliId: "copilot_vscode",
-    displayName: "Copilot VS Code",
-    kind: "project-tool",
-    commandNames: ["code"],
-    channels: [
-      providerChannel("copilot-vscode:winget-vscode", "winget", "Microsoft.VisualStudioCode"),
-      providerChannel("copilot-vscode:choco-vscode", "choco", "vscode"),
-      providerChannel("copilot-vscode:scoop-vscode", "scoop", "vscode"),
-      installerCommandChannel("copilot-vscode:copilot-extension", "VS Code extension: GitHub.copilot", "GitHub.copilot", [
-        "code",
-        "--install-extension",
-        "GitHub.copilot"
-      ]),
-      installerCommandChannel("copilot-vscode:copilot-chat-extension", "VS Code extension: GitHub.copilot-chat", "GitHub.copilot-chat", [
-        "code",
-        "--install-extension",
-        "GitHub.copilot-chat"
       ])
     ]
   },
@@ -359,6 +343,7 @@ export function listCliHub(database: AppDatabase, options: CliHubRuntimeOptions 
 }
 
 export function ensureBuiltInCliHubClis(database: AppDatabase): void {
+  database.deleteStaleBuiltInCliHubClis(builtInClis.map((cli) => cli.cliId));
   for (const builtIn of builtInClis) {
     const existing = database.getCliHubCli(builtIn.cliId);
     const channels = mergeChannels(builtIn.channels, existing?.channels ?? []);

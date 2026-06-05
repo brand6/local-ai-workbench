@@ -839,6 +839,8 @@ label,
 }
 
 .hookhub-page textarea,
+.pluginhub-page textarea,
+.pluginhub-custom-dialog textarea,
 .project-hooks-panel textarea {
   width: 100%;
   min-height: 132px;
@@ -858,6 +860,85 @@ label,
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
   gap: 12px;
+}
+
+.pluginhub-toolbar-panel .toolbar {
+  justify-content: flex-start;
+}
+
+.pluginhub-section,
+.project-plugin-install,
+.project-plugin-bindings {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.pluginhub-list,
+.pluginhub-skill-picker-list {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pluginhub-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.pluginhub-row summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.pluginhub-row-title {
+  min-width: 0;
+  flex: 1;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.pluginhub-row-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+  min-width: 0;
+}
+
+.pluginhub-row-body p,
+.pluginhub-row-body small {
+  margin: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.project-plugin-install-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 180px) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.pluginhub-skill-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+}
+
+.pluginhub-skill-option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .hookhub-search-field,
@@ -1544,6 +1625,12 @@ label,
   border-color: color-mix(in srgb, var(--success) 28%, var(--border));
   background: var(--success-soft);
   color: var(--success);
+}
+
+.metric-pill.warning {
+  border-color: #ead3ad;
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
 .project-meta .session-only-pill {

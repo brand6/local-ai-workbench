@@ -15,6 +15,8 @@ import type {
   McpHubList,
   McpHubTargetToolId,
   ParserWarning,
+  PluginHubCustomPluginInput,
+  PluginHubList,
   Project,
   ProjectDetail,
   ProjectDetailGroup,
@@ -26,6 +28,8 @@ import type {
   ProjectLocalSkillsState,
   ProjectMcpApplyResult,
   ProjectMcpState,
+  ProjectPluginApplyResult,
+  ProjectPluginState,
   ProjectRepairCandidate,
   ProjectSkillTargetsState,
   ProjectSkillUpdateResult,
@@ -50,6 +54,7 @@ import { client } from "./api.js";
 import { CliHubPage } from "./clihubViews.js";
 import { HookHubPage, ProjectHooksPanel } from "./hookhubViews.js";
 import { McpHubPage, ProjectMcpPanel } from "./mcphubViews.js";
+import { PluginHubPage, ProjectPluginsPanel } from "./pluginhubViews.js";
 import { ProjectSkillsPanel, SkillHubPage } from "./skillhubViews.js";
 import "./styles.css";
 
@@ -88,7 +93,7 @@ function App() {
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshDialogOpen, setRefreshDialogOpen] = useState(false);
-  const [view, setView] = useState<"home" | "skillhub" | "mcphub" | "hookhub" | "clihub">("home");
+  const [view, setView] = useState<"home" | "skillhub" | "mcphub" | "hookhub" | "clihub" | "pluginhub">("home");
   const [skillHub, setSkillHub] = useState<SkillHubList | null>(null);
   const [skillHubQuery, setSkillHubQuery] = useState("");
   const [skillHubUpdates, setSkillHubUpdates] = useState<SkillHubUpdateCheckResult | null>(null);
@@ -98,6 +103,7 @@ function App() {
   const [lastMcpHubImport, setLastMcpHubImport] = useState<McpHubImportResult | null>(null);
   const [hookHub, setHookHub] = useState<HookHubList | null>(null);
   const [hookHubQuery, setHookHubQuery] = useState("");
+  const [pluginHub, setPluginHub] = useState<PluginHubList | null>(null);
   const [projectSkillPanelOpen, setProjectSkillPanelOpen] = useState(false);
   const [projectSkillState, setProjectSkillState] = useState<ProjectSkillTargetsState | null>(null);
   const [projectSkillTargetRoot, setProjectSkillTargetRoot] = useState<string | null>(null);
@@ -111,6 +117,10 @@ function App() {
   const [projectHooksPanelOpen, setProjectHooksPanelOpen] = useState(false);
   const [projectHookState, setProjectHookState] = useState<ProjectHookState | null>(null);
   const [projectHookTargetRoot, setProjectHookTargetRoot] = useState<string | null>(null);
+  const [projectPluginPanelOpen, setProjectPluginPanelOpen] = useState(false);
+  const [projectPluginState, setProjectPluginState] = useState<ProjectPluginState | null>(null);
+  const [projectPluginTargetRoot, setProjectPluginTargetRoot] = useState<string | null>(null);
+  const [lastProjectPluginResult, setLastProjectPluginResult] = useState<ProjectPluginApplyResult | null>(null);
   const [ruleSyncStatus, setRuleSyncStatus] = useState<RuleSyncStatus | null>(null);
   const [pendingRuleSyncDirection, setPendingRuleSyncDirection] = useState<RuleSyncDirection | null>(null);
   const [pendingRuleCreateFile, setPendingRuleCreateFile] = useState<RuleFileName | null>(null);
@@ -219,6 +229,11 @@ function App() {
     void loadHookHub(hookHubQuery);
   }, [view, hookHubQuery, bootstrap?.initialized]);
 
+  useEffect(() => {
+    if (view !== "pluginhub" || !bootstrap?.initialized) return;
+    void loadPluginHub();
+  }, [view, bootstrap?.initialized]);
+
   async function initialize() {
     const state = await client.bootstrap();
     setBootstrap(state);
@@ -254,6 +269,10 @@ function App() {
 
   async function loadHookHub(search = hookHubQuery) {
     setHookHub(await client.hookhub(search));
+  }
+
+  async function loadPluginHub() {
+    setPluginHub(await client.pluginhub());
   }
 
   async function loadDetail(projectId: string, search: string) {
@@ -349,6 +368,10 @@ function App() {
     setProjectHooksPanelOpen(false);
     setProjectHookState(null);
     setProjectHookTargetRoot(null);
+    setProjectPluginPanelOpen(false);
+    setProjectPluginState(null);
+    setProjectPluginTargetRoot(null);
+    setLastProjectPluginResult(null);
     setRuleSyncStatus(null);
     setPendingRuleSyncDirection(null);
     resetRuleCreateDialog();
@@ -397,13 +420,21 @@ function App() {
     setView("hookhub");
   }
 
+  function openPluginHub() {
+    setSelectedProjectId(null);
+    setMessage("");
+    clearProjectViewState();
+    setView("pluginhub");
+  }
+
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const totalSessions = projects.reduce((sum, project) => sum + project.sessionCount, 0);
   const showingSkillHub = view === "skillhub" && !selectedProject;
   const showingCliHub = view === "clihub" && !selectedProject;
   const showingMcpHub = view === "mcphub" && !selectedProject;
   const showingHookHub = view === "hookhub" && !selectedProject;
-  const showingHub = showingSkillHub || showingCliHub || showingMcpHub || showingHookHub;
+  const showingPluginHub = view === "pluginhub" && !selectedProject;
+  const showingHub = showingSkillHub || showingCliHub || showingMcpHub || showingHookHub || showingPluginHub;
   const cliHubOperationStatus = showingCliHub && cliHub?.operation ? cliHubOperationMessage(cliHub.operation) : "";
   const transientStatus = scanStatus || cliHubStatus || cliHubOperationStatus;
   const homeCommandBar = selectedProject || showingHub ? null : (
@@ -467,6 +498,9 @@ function App() {
           <button className={`topbar-link${view === "clihub" ? " active" : ""}`} type="button" onClick={openCliHub}>
             CliHub
           </button>
+          <button className={`topbar-link${view === "pluginhub" ? " active" : ""}`} type="button" onClick={openPluginHub}>
+            PluginHub
+          </button>
           <button className={`topbar-link${view === "skillhub" ? " active" : ""}`} type="button" onClick={openSkillHub}>
             SkillHub
           </button>
@@ -501,7 +535,7 @@ function App() {
                 返回
               </button>
               <div className="topbar-project-title">
-                <h1>{showingSkillHub ? "SkillHub" : showingCliHub ? "CliHub" : showingMcpHub ? "McpHub" : "HookHub"}</h1>
+                <h1>{showingSkillHub ? "SkillHub" : showingCliHub ? "CliHub" : showingMcpHub ? "McpHub" : showingPluginHub ? "PluginHub" : "HookHub"}</h1>
               </div>
             </div>
           ) : (
@@ -634,6 +668,18 @@ function App() {
         />
       ) : null}
 
+      {projectPluginPanelOpen ? (
+        <ProjectPluginsPanel
+          state={projectPluginState}
+          busy={busy}
+          lastResult={lastProjectPluginResult}
+          onClose={() => setProjectPluginPanelOpen(false)}
+          onInstall={(pluginId, toolId) => void runAction(() => installProjectPlugin(pluginId, toolId))}
+          onSync={(bindingId) => void runAction(() => syncProjectPlugin(bindingId))}
+          onUninstall={(bindingId) => void runAction(() => uninstallProjectPlugin(bindingId))}
+        />
+      ) : null}
+
       <GlobalNotice message={message} busyMessage={transientStatus} />
 
       {showingSkillHub ? (
@@ -662,6 +708,17 @@ function App() {
           onAddLocal={(input) => void runAction(() => addCliHubLocalPath(input), "clihub-custom")}
           onAddInstallCommand={(input) => void runAction(() => addCliHubInstallCommand(input), "clihub-custom")}
           onAddChannel={(cliId, installCommand) => void runAction(() => addCliHubChannel(cliId, installCommand), "clihub-channel")}
+        />
+      ) : showingPluginHub ? (
+        <PluginHubPage
+          pluginhub={pluginHub}
+          busy={busy}
+          onPickLocalPath={pickDirectory}
+          onImportLocal={(inputPath) => void runAction(() => importLocalPlugin(inputPath))}
+          onCreateCustom={(input) => void runAction(() => createCustomPlugin(input))}
+          onUpdateCustom={(pluginId, input) => void runAction(() => updateCustomPlugin(pluginId, input))}
+          onDeleteSource={(sourceId) => void runAction(() => deletePluginHubSource(sourceId))}
+          onDeletePlugin={(pluginId) => void runAction(() => deletePluginHubPlugin(pluginId))}
         />
       ) : showingMcpHub ? (
         <McpHubPage
@@ -709,6 +766,7 @@ function App() {
           onCreateRuleFile={(file) => void runAction(() => openRuleCreateDialog(file))}
           onOpenRuleFile={(file) => void runAction(() => openRuleFile(file))}
           onOpenProjectSkills={(targetRootPath) => void runAction(() => openProjectSkillPanel(selectedProject.id, targetRootPath))}
+          onOpenProjectPlugins={(targetRootPath) => void runAction(() => openProjectPluginPanel(selectedProject.id, targetRootPath))}
           onOpenProjectMcp={(targetRootPath) => void runAction(() => openProjectMcpPanel(selectedProject.id, targetRootPath))}
           onOpenProjectHooks={(targetRootPath) => void runAction(() => openProjectHooksPanel(selectedProject.id, targetRootPath))}
         />
@@ -984,6 +1042,54 @@ function App() {
     setMessage("GitHub source 更新已应用");
   }
 
+  async function importLocalPlugin(inputPath: string) {
+    const result = await client.importLocalPlugin(inputPath);
+    await loadPluginHub();
+    if (view === "skillhub") await loadSkillHub();
+    setMessage(`Plugin 导入完成：${result.plugins.length} 个 plugin，${result.importedSkills.length} 个 skills`);
+  }
+
+  async function createCustomPlugin(input: PluginHubCustomPluginInput) {
+    await client.createCustomPlugin(input);
+    await loadPluginHub();
+    setMessage("Custom Plugin 已创建");
+  }
+
+  async function updateCustomPlugin(pluginId: string, input: PluginHubCustomPluginInput) {
+    await client.updateCustomPlugin(pluginId, input);
+    await loadPluginHub();
+    setMessage("Custom Plugin 已更新");
+  }
+
+  async function deletePluginHubSource(sourceId: string) {
+    const preview = await client.previewDeletePluginHubSource(sourceId);
+    const mode = preview.customPlugins.length
+      ? window.confirm(`删除 source 会影响 ${preview.customPlugins.length} 个 custom plugin。确定同时移除这些引用？`)
+        ? "remove-custom-components"
+        : null
+      : "remove-custom-components";
+    if (!mode) {
+      setMessage("已取消删除 Plugin source");
+      return;
+    }
+    const result = await client.deletePluginHubSource(sourceId, mode);
+    await loadPluginHub();
+    setMessage(`Plugin source 已删除：移除 ${result.sourcePlugins.length} 个 plugin，${result.sourceComponents.length} 个组件`);
+  }
+
+  async function deletePluginHubPlugin(pluginId: string) {
+    const preview = await client.previewDeletePluginHubPlugin(pluginId);
+    const confirmed = window.confirm(`确定删除 Plugin「${preview.plugin.displayName}」？会卸载 ${preview.projectBindings.length} 个项目 binding。`);
+    if (!confirmed) {
+      setMessage("已取消删除 Plugin");
+      return;
+    }
+    const result = await client.deletePluginHubPlugin(pluginId);
+    await loadPluginHub();
+    if (projectPluginPanelOpen) await refreshProjectPluginPanel();
+    setMessage(`Plugin 已删除：清理 ${result.projectBindings.length} 个项目 binding`);
+  }
+
   async function refreshCliHubDiscovery(cliId?: string) {
     setCliHubStatus(cliId ? "CliHub 正在刷新单个 CLI 发现" : "CliHub 正在刷新发现");
     setCliHub(await client.refreshCliHubDiscovery(cliId));
@@ -1236,6 +1342,69 @@ function App() {
     setMessage(`项目 hooks 同步完成：更新 ${result.updated.length} 个，跳过 ${result.skipped.length} 个`);
   }
 
+  async function openProjectPluginPanel(projectId: string, targetRootPath: string) {
+    setProjectPluginPanelOpen(true);
+    setProjectPluginTargetRoot(targetRootPath);
+    setLastProjectPluginResult(null);
+    setProjectPluginState(await client.projectPlugins(projectId, targetRootPath));
+  }
+
+  async function refreshProjectPluginPanel() {
+    if (!selectedProjectId) return;
+    setProjectPluginState(await client.projectPlugins(selectedProjectId, projectPluginTargetRoot ?? undefined));
+  }
+
+  async function installProjectPlugin(pluginId: string, toolId: ToolId) {
+    if (!selectedProjectId) return;
+    const targetRootPath = projectPluginTargetRoot ?? undefined;
+    let result = await client.installProjectPlugin(selectedProjectId, pluginId, toolId, targetRootPath, null);
+    if (result.requiresConfirmation) {
+      const overwrite = window.confirm(`Plugin 安装需要覆盖 ${result.preflight.length} 个目标。确定覆盖？取消则跳过可选组件。`);
+      result = await client.installProjectPlugin(selectedProjectId, pluginId, toolId, targetRootPath, overwrite ? "overwrite" : "skip");
+    }
+    setLastProjectPluginResult(result);
+    await refreshProjectPluginPanel();
+    if (projectSkillPanelOpen) {
+      setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
+      setProjectLocalSkillState(await client.projectLocalSkills(selectedProjectId, projectLocalSkillTargetRoot ?? undefined));
+    }
+    setMessage(result.blocked ? result.message : result.binding ? "项目 Plugin 已安装" : result.message);
+  }
+
+  async function syncProjectPlugin(bindingId: string) {
+    if (!selectedProjectId) return;
+    const targetRootPath = projectPluginTargetRoot ?? undefined;
+    let result = await client.syncProjectPlugin(selectedProjectId, bindingId, targetRootPath, null);
+    if (result.requiresConfirmation) {
+      const overwrite = window.confirm(`Plugin 同步需要覆盖 ${result.preflight.length} 个目标。确定覆盖？取消则跳过可选组件。`);
+      result = await client.syncProjectPlugin(selectedProjectId, bindingId, targetRootPath, overwrite ? "overwrite" : "skip");
+    }
+    setLastProjectPluginResult(result);
+    await refreshProjectPluginPanel();
+    if (projectSkillPanelOpen) {
+      setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
+      setProjectLocalSkillState(await client.projectLocalSkills(selectedProjectId, projectLocalSkillTargetRoot ?? undefined));
+    }
+    setMessage(result.blocked ? result.message : "项目 Plugin 已同步");
+  }
+
+  async function uninstallProjectPlugin(bindingId: string) {
+    if (!selectedProjectId) return;
+    const confirmed = window.confirm("确定卸载这个项目 Plugin？不会恢复被覆盖的旧文件。");
+    if (!confirmed) {
+      setMessage("已取消卸载项目 Plugin");
+      return;
+    }
+    const result = await client.uninstallProjectPlugin(selectedProjectId, bindingId, projectPluginTargetRoot ?? undefined);
+    setLastProjectPluginResult(result);
+    await refreshProjectPluginPanel();
+    if (projectSkillPanelOpen) {
+      setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
+      setProjectLocalSkillState(await client.projectLocalSkills(selectedProjectId, projectLocalSkillTargetRoot ?? undefined));
+    }
+    setMessage("项目 Plugin 已卸载");
+  }
+
   async function saveProjectMcpServerTargets(serverId: string, toolIds: McpHubTargetToolId[]) {
     if (!selectedProjectId) return;
     const targetRootPath = projectMcpTargetRoot ?? undefined;
@@ -1392,6 +1561,9 @@ function App() {
     }
     if (projectHooksPanelOpen) {
       setProjectHookState(await client.projectHooks(selectedProjectId, projectHookTargetRoot ?? undefined));
+    }
+    if (projectPluginPanelOpen) {
+      setProjectPluginState(await client.projectPlugins(selectedProjectId, projectPluginTargetRoot ?? undefined));
     }
     setMessage("项目使用工具已更新");
   }
@@ -2317,6 +2489,7 @@ function ProjectDetailView({
   onCreateRuleFile = () => {},
   onOpenRuleFile = () => {},
   onOpenProjectSkills = () => {},
+  onOpenProjectPlugins = () => {},
   onOpenProjectMcp = () => {},
   onOpenProjectHooks = () => {}
 }: {
@@ -2342,6 +2515,7 @@ function ProjectDetailView({
   onCreateRuleFile?: (file: RuleFileName) => void;
   onOpenRuleFile?: (file: RuleFileName) => void;
   onOpenProjectSkills?: (targetRootPath: string) => void;
+  onOpenProjectPlugins?: (targetRootPath: string) => void;
   onOpenProjectMcp?: (targetRootPath: string) => void;
   onOpenProjectHooks?: (targetRootPath: string) => void;
 }) {
@@ -2421,6 +2595,7 @@ function ProjectDetailView({
           onResume={onResume}
           onDeleteSession={onDeleteSession}
           onOpenProjectSkills={onOpenProjectSkills}
+          onOpenProjectPlugins={onOpenProjectPlugins}
           onOpenProjectMcp={onOpenProjectMcp}
           onOpenProjectHooks={onOpenProjectHooks}
         />
@@ -2781,6 +2956,7 @@ function SessionGroup({
   onResume,
   onDeleteSession,
   onOpenProjectSkills,
+  onOpenProjectPlugins,
   onOpenProjectMcp,
   onOpenProjectHooks
 }: {
@@ -2792,6 +2968,7 @@ function SessionGroup({
   onResume: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onOpenProjectSkills: (targetRootPath: string) => void;
+  onOpenProjectPlugins: (targetRootPath: string) => void;
   onOpenProjectMcp: (targetRootPath: string) => void;
   onOpenProjectHooks: (targetRootPath: string) => void;
 }) {
@@ -2809,6 +2986,9 @@ function SessionGroup({
           <span className="metric-pill strong">{group.sessionCount} 个会话</span>
           <button className="secondary" type="button" disabled={busy} onClick={() => onOpenProjectSkills(group.fullPath)}>
             技能
+          </button>
+          <button className="secondary" type="button" disabled={busy} onClick={() => onOpenProjectPlugins(group.fullPath)}>
+            Plugin
           </button>
           <button className="secondary" type="button" disabled={busy} onClick={() => onOpenProjectMcp(group.fullPath)}>
             MCP

@@ -23,6 +23,13 @@ import type {
   McpHubList,
   McpHubTargetToolId,
   ParserWarning,
+  PluginHubCustomPluginInput,
+  PluginHubImportResult,
+  PluginHubList,
+  PluginHubPlugin,
+  PluginHubPluginDeletePreview,
+  PluginHubSourceDeleteMode,
+  PluginHubSourceDeletePreview,
   Project,
   ProjectHookBindingRemovalResult,
   ProjectDetail,
@@ -37,6 +44,8 @@ import type {
   ProjectMcpApplyResult,
   ProjectMcpDisableResult,
   ProjectMcpState,
+  ProjectPluginApplyResult,
+  ProjectPluginState,
   ProjectRepairCandidate,
   ProjectSkillTargetsState,
   ProjectSkillUpdateResult,
@@ -168,6 +177,18 @@ export const client = {
     apiPost<HookHubImportResult>("/api/hookhub/import/suite", { input, conflictMode, renameName }),
   importNativeHooks: (toolId: HookHubSupportedToolId, input: string, suite: HookHubSuiteInput) =>
     apiPost<HookHubImportResult>("/api/hookhub/import/native", { ...suite, toolId, input }),
+  pluginhub: () => apiGet<PluginHubList>("/api/pluginhub"),
+  importLocalPlugin: (path: string) => apiPost<PluginHubImportResult>("/api/pluginhub/import/local", { path }),
+  createCustomPlugin: (input: PluginHubCustomPluginInput) => apiPost<PluginHubPlugin>("/api/pluginhub/custom", input),
+  updateCustomPlugin: (pluginId: string, input: PluginHubCustomPluginInput) =>
+    apiPut<PluginHubPlugin>(`/api/pluginhub/custom/${encodeURIComponent(pluginId)}`, input),
+  previewDeletePluginHubSource: (sourceId: string) =>
+    apiGet<PluginHubSourceDeletePreview>(`/api/pluginhub/sources/${encodeURIComponent(sourceId)}/delete-preview`),
+  deletePluginHubSource: (sourceId: string, mode: PluginHubSourceDeleteMode) =>
+    apiDelete<PluginHubSourceDeletePreview>(`/api/pluginhub/sources/${encodeURIComponent(sourceId)}?mode=${encodeURIComponent(mode)}`),
+  previewDeletePluginHubPlugin: (pluginId: string) =>
+    apiGet<PluginHubPluginDeletePreview>(`/api/pluginhub/plugins/${encodeURIComponent(pluginId)}/delete-preview`),
+  deletePluginHubPlugin: (pluginId: string) => apiDelete<PluginHubPluginDeletePreview>(`/api/pluginhub/plugins/${encodeURIComponent(pluginId)}`),
   projects: () => apiGet<Project[]>("/api/projects"),
   drives: () => apiGet<ScanDrive[]>("/api/local-filesystem/drives"),
   pickDirectory: () => apiPost<DirectoryPickResponse>("/api/local-filesystem/pick-directory"),
@@ -211,6 +232,21 @@ export const client = {
       ...(targetRootPath ? { targetRootPath } : {}),
       ...(target ? { target } : {})
     }),
+  projectPlugins: (id: string, targetRootPath?: string) =>
+    apiGet<ProjectPluginState>(`/api/projects/${id}/plugins${projectTargetQuery(targetRootPath)}`),
+  installProjectPlugin: (id: string, pluginId: string, toolId: string, targetRootPath?: string, conflictMode?: "overwrite" | "skip" | null) =>
+    apiPut<ProjectPluginApplyResult>(`/api/projects/${id}/plugins/${encodeURIComponent(pluginId)}`, {
+      toolId,
+      conflictMode,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
+  syncProjectPlugin: (id: string, bindingId: string, targetRootPath?: string, conflictMode?: "overwrite" | "skip" | null) =>
+    apiPost<ProjectPluginApplyResult>(`/api/projects/${id}/plugin-bindings/${encodeURIComponent(bindingId)}/sync`, {
+      conflictMode,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
+  uninstallProjectPlugin: (id: string, bindingId: string, targetRootPath?: string) =>
+    apiDelete<ProjectPluginApplyResult>(`/api/projects/${id}/plugin-bindings/${encodeURIComponent(bindingId)}${projectTargetQuery(targetRootPath)}`),
   projectMcp: (id: string, targetRootPath?: string) =>
     apiGet<ProjectMcpState>(`/api/projects/${id}/mcp${projectTargetQuery(targetRootPath)}`),
   applyProjectMcp: (id: string, serverId: string, toolId: McpHubTargetToolId, targetRootPath?: string) =>

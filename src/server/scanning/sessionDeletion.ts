@@ -9,8 +9,8 @@ export function deleteSession(database: AppDatabase, sessionId: string): DeleteS
   const session = database.getSession(sessionId);
   if (!session) return null;
 
-  if (session.sourceFormat === "opencode-sqlite") {
-    const deletedNativeSession = deleteOpencodeSqliteSession(session);
+  if (session.sourceFormat === "opencode-sqlite" || session.sourceFormat === "kilo-sqlite") {
+    const deletedNativeSession = deleteOpencodeCompatibleSqliteSession(session);
     return {
       deleted: true,
       sessionId: session.id,
@@ -18,6 +18,24 @@ export function deleteSession(database: AppDatabase, sessionId: string): DeleteS
       sourceFormat: session.sourceFormat,
       deletedSourceFile: false,
       deletedNativeSession,
+      removedIndexCount: database.deleteSession(session.id)
+    };
+  }
+
+  if (
+    session.sourceFormat === "kimi-code-index" ||
+    session.sourceFormat === "cline-sqlite" ||
+    session.sourceFormat === "cursor-json" ||
+    session.sourceFormat === "cursor-sqlite" ||
+    session.sourceFormat === "antigravity-json"
+  ) {
+    return {
+      deleted: true,
+      sessionId: session.id,
+      sourceFile: session.sourceFile,
+      sourceFormat: session.sourceFormat,
+      deletedSourceFile: false,
+      deletedNativeSession: false,
       removedIndexCount: database.deleteSession(session.id)
     };
   }
@@ -46,7 +64,7 @@ function deleteSourceFile(sourceFile: string): boolean {
   return true;
 }
 
-function deleteOpencodeSqliteSession(session: SessionEntry): boolean {
+function deleteOpencodeCompatibleSqliteSession(session: SessionEntry): boolean {
   if (!session.nativeSessionId) {
     throw new Error("session-native-id-required");
   }
@@ -77,11 +95,11 @@ function deleteOpencodeSqliteSession(session: SessionEntry): boolean {
     }
 
     if (!tables.includes("session")) {
-      throw new Error("opencode-session-table-missing");
+      throw new Error("sqlite-session-table-missing");
     }
     const sessionColumns = sqliteColumns(db, "session");
     if (!sessionColumns.has("id")) {
-      throw new Error("opencode-session-id-column-missing");
+      throw new Error("sqlite-session-id-column-missing");
     }
     changedRows += Number(
       db

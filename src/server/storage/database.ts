@@ -8,9 +8,12 @@ import type {
   McpHubServer,
   McpHubTargetToolId,
   ParserWarning,
+  PluginHubPlugin,
+  PluginHubSource,
   Project,
   ProjectHookBinding,
   ProjectMcpBinding,
+  ProjectPluginBinding,
   ProjectSkillTarget,
   ProjectToolTarget,
   RelocationProjectMerge,
@@ -226,6 +229,47 @@ export class AppDatabase {
       CREATE INDEX IF NOT EXISTS idx_skillhub_skills_source ON skillhub_skills(source_id);
       CREATE INDEX IF NOT EXISTS idx_skillhub_skills_folder ON skillhub_skills(folder_name);
 
+      CREATE TABLE IF NOT EXISTS pluginhub_sources (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        label TEXT NOT NULL,
+        input_path TEXT NOT NULL,
+        resolved_path TEXT NOT NULL,
+        plugin_count INTEGER NOT NULL,
+        component_count INTEGER NOT NULL,
+        private_file_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pluginhub_sources_resolved_path
+        ON pluginhub_sources(resolved_path);
+
+      CREATE TABLE IF NOT EXISTS pluginhub_plugins (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        source_id TEXT REFERENCES pluginhub_sources(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        description TEXT,
+        component_refs_json TEXT NOT NULL,
+        private_files_json TEXT NOT NULL,
+        harness_support_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pluginhub_plugins_source
+        ON pluginhub_plugins(source_id);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pluginhub_source_plugin_name
+        ON pluginhub_plugins(source_id, name)
+        WHERE source_id IS NOT NULL;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pluginhub_custom_plugin_name
+        ON pluginhub_plugins(name)
+        WHERE source_id IS NULL;
+
       CREATE TABLE IF NOT EXISTS project_tool_targets (
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         tool_id TEXT NOT NULL,
@@ -245,6 +289,31 @@ export class AppDatabase {
         updated_at TEXT NOT NULL,
         PRIMARY KEY (project_id, tool_id, skill_id, link_path)
       );
+
+      CREATE TABLE IF NOT EXISTS project_plugin_bindings (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        target_root_path TEXT NOT NULL,
+        normalized_target_root_path TEXT NOT NULL,
+        tool_id TEXT NOT NULL,
+        plugin_id TEXT NOT NULL REFERENCES pluginhub_plugins(id) ON DELETE CASCADE,
+        managed_component_count INTEGER NOT NULL,
+        existing_component_count INTEGER NOT NULL,
+        private_file_count INTEGER NOT NULL,
+        topology_hash TEXT NOT NULL,
+        component_ownership_json TEXT NOT NULL,
+        private_file_ownership_json TEXT NOT NULL,
+        installed_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(project_id, normalized_target_root_path, tool_id, plugin_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_project_plugin_bindings_project
+        ON project_plugin_bindings(project_id, normalized_target_root_path, tool_id);
+
+      CREATE INDEX IF NOT EXISTS idx_project_plugin_bindings_plugin
+        ON project_plugin_bindings(plugin_id);
 
       CREATE TABLE IF NOT EXISTS mcphub_servers (
         server_id TEXT PRIMARY KEY,
@@ -392,6 +461,15 @@ export class AppDatabase {
   getCliHubCli(cliId: string): CliHubCli | null {
     const row = this.db.prepare("SELECT * FROM clihub_clis WHERE cli_id = ?").get(cliId);
     return row ? this.cliHubCliFromRow(row) : null;
+  }
+
+  deleteStaleBuiltInCliHubClis(activeCliIds: string[]): number {
+    if (activeCliIds.length === 0) return 0;
+    const placeholders = activeCliIds.map(() => "?").join(", ");
+    const result = this.db
+      .prepare(`DELETE FROM clihub_clis WHERE source_type = 'builtin' AND cli_id NOT IN (${placeholders})`)
+      .run(...activeCliIds);
+    return Number(result.changes);
   }
 
   upsertCliHubCli(input: Omit<CliHubCli, "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string }): CliHubCli {
@@ -631,6 +709,240 @@ export class AppDatabase {
   deleteSkillHubSkill(skillId: string): boolean {
     const result = this.db.prepare("DELETE FROM skillhub_skills WHERE id = ?").run(skillId);
     return Number(result.changes) > 0;
+  }
+
+  deleteSkillHubSource(sourceId: string): boolean {
+    const result = this.db.prepare("DELETE FROM skillhub_sources WHERE id = ?").run(sourceId);
+    return Number(result.changes) > 0;
+  }
+
+  listPluginHubSources(): PluginHubSource[] {
+    return this.db
+      .prepare("SELECT * FROM pluginhub_sources ORDER BY label ASC")
+      .all()
+      .map((row) => this.pluginHubSourceFromRow(row));
+  }
+
+  getPluginHubSource(sourceId: string): PluginHubSource | null {
+    const row = this.db.prepare("SELECT * FROM pluginhub_sources WHERE id = ?").get(sourceId);
+    return row ? this.pluginHubSourceFromRow(row) : null;
+  }
+
+  getPluginHubSourceByResolvedPath(resolvedPath: string): PluginHubSource | null {
+    const row = this.db.prepare("SELECT * FROM pluginhub_sources WHERE resolved_path = ?").get(normalizeFsPath(resolvedPath));
+    return row ? this.pluginHubSourceFromRow(row) : null;
+  }
+
+  upsertPluginHubSource(input: Omit<PluginHubSource, "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string }): PluginHubSource {
+    const existing = this.getPluginHubSource(input.id);
+    const timestamp = nowIso();
+    const createdAt = input.createdAt ?? existing?.createdAt ?? timestamp;
+    const updatedAt = input.updatedAt ?? timestamp;
+    this.db
+      .prepare(
+        `INSERT INTO pluginhub_sources (
+          id, kind, label, input_path, resolved_path, plugin_count, component_count,
+          private_file_count, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          kind = excluded.kind,
+          label = excluded.label,
+          input_path = excluded.input_path,
+          resolved_path = excluded.resolved_path,
+          plugin_count = excluded.plugin_count,
+          component_count = excluded.component_count,
+          private_file_count = excluded.private_file_count,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        input.id,
+        input.kind,
+        input.label,
+        input.inputPath,
+        normalizeFsPath(input.resolvedPath),
+        input.pluginCount,
+        input.componentCount,
+        input.privateFileCount,
+        createdAt,
+        updatedAt
+      );
+    const source = this.getPluginHubSource(input.id);
+    if (!source) throw new Error("Failed to upsert PluginHub source");
+    return source;
+  }
+
+  deletePluginHubSource(sourceId: string): boolean {
+    const result = this.db.prepare("DELETE FROM pluginhub_sources WHERE id = ?").run(sourceId);
+    return Number(result.changes) > 0;
+  }
+
+  listPluginHubPlugins(): PluginHubPlugin[] {
+    const sources = new Map(this.listPluginHubSources().map((source) => [source.id, source]));
+    return this.db
+      .prepare("SELECT * FROM pluginhub_plugins ORDER BY kind DESC, display_name ASC")
+      .all()
+      .map((row) => this.pluginHubPluginFromRow(row, sources));
+  }
+
+  listPluginHubPluginsForSource(sourceId: string): PluginHubPlugin[] {
+    const sources = new Map(this.listPluginHubSources().map((source) => [source.id, source]));
+    return this.db
+      .prepare("SELECT * FROM pluginhub_plugins WHERE source_id = ? ORDER BY display_name ASC")
+      .all(sourceId)
+      .map((row) => this.pluginHubPluginFromRow(row, sources));
+  }
+
+  listCustomPluginHubPlugins(): PluginHubPlugin[] {
+    const sources = new Map(this.listPluginHubSources().map((source) => [source.id, source]));
+    return this.db
+      .prepare("SELECT * FROM pluginhub_plugins WHERE kind = 'custom' ORDER BY display_name ASC")
+      .all()
+      .map((row) => this.pluginHubPluginFromRow(row, sources));
+  }
+
+  getPluginHubPlugin(pluginId: string): PluginHubPlugin | null {
+    const sources = new Map(this.listPluginHubSources().map((source) => [source.id, source]));
+    const row = this.db.prepare("SELECT * FROM pluginhub_plugins WHERE id = ?").get(pluginId);
+    return row ? this.pluginHubPluginFromRow(row, sources) : null;
+  }
+
+  upsertPluginHubPlugin(input: Omit<PluginHubPlugin, "source" | "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string }): PluginHubPlugin {
+    const existing = this.getPluginHubPlugin(input.id);
+    const timestamp = nowIso();
+    const createdAt = input.createdAt ?? existing?.createdAt ?? timestamp;
+    const updatedAt = input.updatedAt ?? timestamp;
+    this.db
+      .prepare(
+        `INSERT INTO pluginhub_plugins (
+          id, kind, source_id, name, display_name, description, component_refs_json,
+          private_files_json, harness_support_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          kind = excluded.kind,
+          source_id = excluded.source_id,
+          name = excluded.name,
+          display_name = excluded.display_name,
+          description = excluded.description,
+          component_refs_json = excluded.component_refs_json,
+          private_files_json = excluded.private_files_json,
+          harness_support_json = excluded.harness_support_json,
+          updated_at = excluded.updated_at`
+      )
+      .run(
+        input.id,
+        input.kind,
+        input.sourceId,
+        input.name,
+        input.displayName,
+        input.description,
+        json(input.componentRefs),
+        json(input.privateFiles),
+        json(input.harnessSupport),
+        createdAt,
+        updatedAt
+      );
+    const plugin = this.getPluginHubPlugin(input.id);
+    if (!plugin) throw new Error("Failed to upsert PluginHub plugin");
+    return plugin;
+  }
+
+  deletePluginHubPlugin(pluginId: string): boolean {
+    const result = this.db.prepare("DELETE FROM pluginhub_plugins WHERE id = ?").run(pluginId);
+    return Number(result.changes) > 0;
+  }
+
+  deletePluginHubPluginsForSource(sourceId: string): PluginHubPlugin[] {
+    const plugins = this.listPluginHubPluginsForSource(sourceId);
+    this.db.prepare("DELETE FROM pluginhub_plugins WHERE source_id = ?").run(sourceId);
+    return plugins;
+  }
+
+  listProjectPluginBindings(projectId?: string): ProjectPluginBinding[] {
+    const plugins = new Map(this.listPluginHubPlugins().map((plugin) => [plugin.id, plugin]));
+    const rows = projectId
+      ? this.db.prepare("SELECT * FROM project_plugin_bindings WHERE project_id = ? ORDER BY updated_at DESC").all(projectId)
+      : this.db.prepare("SELECT * FROM project_plugin_bindings ORDER BY project_id ASC, updated_at DESC").all();
+    return rows.map((row) => this.projectPluginBindingFromRow(row, plugins));
+  }
+
+  listProjectPluginBindingsForPlugin(pluginId: string): ProjectPluginBinding[] {
+    const plugins = new Map(this.listPluginHubPlugins().map((plugin) => [plugin.id, plugin]));
+    return this.db
+      .prepare("SELECT * FROM project_plugin_bindings WHERE plugin_id = ? ORDER BY project_id ASC, tool_id ASC")
+      .all(pluginId)
+      .map((row) => this.projectPluginBindingFromRow(row, plugins));
+  }
+
+  getProjectPluginBinding(projectId: string, targetRootPath: string, toolId: ToolId, pluginId: string): ProjectPluginBinding | null {
+    const plugins = new Map(this.listPluginHubPlugins().map((plugin) => [plugin.id, plugin]));
+    const row = this.db
+      .prepare(
+        `SELECT * FROM project_plugin_bindings
+         WHERE project_id = ? AND normalized_target_root_path = ? AND tool_id = ? AND plugin_id = ?`
+      )
+      .get(projectId, normalizeFsPath(targetRootPath), toolId, pluginId);
+    return row ? this.projectPluginBindingFromRow(row, plugins) : null;
+  }
+
+  upsertProjectPluginBinding(
+    input: Omit<ProjectPluginBinding, "id" | "plugin" | "createdAt" | "updatedAt"> & { id?: string; createdAt?: string; updatedAt?: string }
+  ): ProjectPluginBinding {
+    const normalizedTargetRootPath = normalizeFsPath(input.targetRootPath);
+    const existing = input.id
+      ? this.db.prepare("SELECT id, created_at FROM project_plugin_bindings WHERE id = ?").get(input.id)
+      : this.db
+          .prepare(
+            `SELECT id, created_at FROM project_plugin_bindings
+             WHERE project_id = ? AND normalized_target_root_path = ? AND tool_id = ? AND plugin_id = ?`
+          )
+          .get(input.projectId, normalizedTargetRootPath, input.toolId, input.pluginId);
+    const timestamp = nowIso();
+    const id = String(existing?.id ?? input.id ?? crypto.randomUUID());
+    const createdAt = String(input.createdAt ?? existing?.created_at ?? timestamp);
+    const updatedAt = input.updatedAt ?? timestamp;
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO project_plugin_bindings (
+          id, project_id, target_root_path, normalized_target_root_path, tool_id, plugin_id,
+          managed_component_count, existing_component_count, private_file_count, topology_hash,
+          component_ownership_json, private_file_ownership_json, installed_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        input.projectId,
+        input.targetRootPath,
+        normalizedTargetRootPath,
+        input.toolId,
+        input.pluginId,
+        input.managedComponentCount,
+        input.existingComponentCount,
+        input.privateFileCount,
+        input.topologyHash,
+        json(input.componentOwnership),
+        json(input.privateFileOwnership),
+        input.installedAt,
+        createdAt,
+        updatedAt
+      );
+    const binding = this.db.prepare("SELECT * FROM project_plugin_bindings WHERE id = ?").get(id);
+    if (!binding) throw new Error("Failed to upsert project PluginHub binding");
+    const plugins = new Map(this.listPluginHubPlugins().map((plugin) => [plugin.id, plugin]));
+    return this.projectPluginBindingFromRow(binding, plugins);
+  }
+
+  deleteProjectPluginBinding(bindingId: string): ProjectPluginBinding | null {
+    const plugins = new Map(this.listPluginHubPlugins().map((plugin) => [plugin.id, plugin]));
+    const row = this.db.prepare("SELECT * FROM project_plugin_bindings WHERE id = ?").get(bindingId);
+    if (!row) return null;
+    this.db.prepare("DELETE FROM project_plugin_bindings WHERE id = ?").run(bindingId);
+    return this.projectPluginBindingFromRow(row, plugins);
+  }
+
+  deleteProjectPluginBindingsForPlugin(pluginId: string): ProjectPluginBinding[] {
+    const bindings = this.listProjectPluginBindingsForPlugin(pluginId);
+    this.db.prepare("DELETE FROM project_plugin_bindings WHERE plugin_id = ?").run(pluginId);
+    return bindings;
   }
 
   listMcpHubServers(): McpHubServer[] {
@@ -1519,6 +1831,60 @@ export class AppDatabase {
       message: String(row.message),
       line: row.line === null ? null : Number(row.line),
       createdAt: String(row.created_at)
+    };
+  }
+
+  private pluginHubSourceFromRow(row: Row): PluginHubSource {
+    return {
+      id: String(row.id),
+      kind: String(row.kind) as PluginHubSource["kind"],
+      label: String(row.label),
+      inputPath: String(row.input_path),
+      resolvedPath: String(row.resolved_path),
+      pluginCount: Number(row.plugin_count),
+      componentCount: Number(row.component_count),
+      privateFileCount: Number(row.private_file_count),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    };
+  }
+
+  private pluginHubPluginFromRow(row: Row, sources: Map<string, PluginHubSource>): PluginHubPlugin {
+    const sourceId = row.source_id === null ? null : String(row.source_id);
+    return {
+      id: String(row.id),
+      kind: String(row.kind) as PluginHubPlugin["kind"],
+      sourceId,
+      name: String(row.name),
+      displayName: String(row.display_name),
+      description: row.description === null ? null : String(row.description),
+      componentRefs: parseJson<PluginHubPlugin["componentRefs"]>(String(row.component_refs_json), []),
+      privateFiles: parseJson<PluginHubPlugin["privateFiles"]>(String(row.private_files_json), []),
+      harnessSupport: parseJson<PluginHubPlugin["harnessSupport"]>(String(row.harness_support_json), {}),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+      source: sourceId ? sources.get(sourceId) ?? null : null
+    };
+  }
+
+  private projectPluginBindingFromRow(row: Row, plugins: Map<string, PluginHubPlugin>): ProjectPluginBinding {
+    const pluginId = String(row.plugin_id);
+    return {
+      id: String(row.id),
+      projectId: String(row.project_id),
+      targetRootPath: String(row.target_root_path),
+      toolId: String(row.tool_id) as ToolId,
+      pluginId,
+      managedComponentCount: Number(row.managed_component_count),
+      existingComponentCount: Number(row.existing_component_count),
+      privateFileCount: Number(row.private_file_count),
+      topologyHash: String(row.topology_hash),
+      componentOwnership: parseJson<ProjectPluginBinding["componentOwnership"]>(String(row.component_ownership_json), []),
+      privateFileOwnership: parseJson<ProjectPluginBinding["privateFileOwnership"]>(String(row.private_file_ownership_json), []),
+      installedAt: String(row.installed_at),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+      plugin: plugins.get(pluginId) ?? null
     };
   }
 

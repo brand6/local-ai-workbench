@@ -4,13 +4,18 @@ import type { Project, RefreshResult, ToolId } from "../../shared/types.js";
 import { AppDatabase } from "../storage/database.js";
 import { existingSources, sessionSourcesForAdapter, toolAdapters } from "../tools/adapters.js";
 import type { ToolAdapter } from "../tools/toolAdapter.js";
+import { parseClineDatabaseFile } from "./clineDatabase.js";
+import { parseCursorDatabaseFile } from "./cursorDatabase.js";
 import { parseOpencodeDatabaseFile } from "./opencodeDatabase.js";
-import { parseSessionFile } from "./sessionParser.js";
+import { parseSessionFile, parseSessionIndexFile } from "./sessionParser.js";
 import type { AppConfig } from "../../shared/types.js";
 import { isStrictChildPath } from "../core/pathUtils.js";
 
 const SESSION_EXTENSIONS = new Set([".jsonl", ".json"]);
+const CLINE_DATABASE_EXTENSIONS = new Set([".db", ".sqlite", ".sqlite3"]);
 const OPENCODE_DATABASE_FILE = "opencode.db";
+const KILO_DATABASE_FILE = "kilo.db";
+const CURSOR_DATABASE_FILE = "store.db";
 
 export interface RefreshAllSessionsOptions {
   toolIds?: ToolId[];
@@ -244,7 +249,38 @@ function parseSourceFile(adapter: ToolAdapter, sourceFile: string, scanRunId: st
       scanRunId
     });
   }
-
+  if (adapter.id === "kilo" && isKiloDatabase(sourceFile)) {
+    return parseOpencodeDatabaseFile({
+      toolId: adapter.id,
+      parserVersion: adapter.parserVersion,
+      sourceFormat: "kilo-sqlite",
+      sourceFile,
+      scanRunId
+    });
+  }
+  if (adapter.id === "cursor" && isCursorDatabase(sourceFile)) {
+    return parseCursorDatabaseFile({
+      parserVersion: adapter.parserVersion,
+      sourceFile,
+      scanRunId
+    });
+  }
+  if (adapter.id === "cline" && isClineDatabase(sourceFile)) {
+    return parseClineDatabaseFile({
+      parserVersion: adapter.parserVersion,
+      sourceFile,
+      scanRunId
+    });
+  }
+  if (adapter.id === "kimi" && isKimiSessionIndex(sourceFile)) {
+    return parseSessionIndexFile({
+      toolId: adapter.id,
+      parserVersion: adapter.parserVersion,
+      sourceFormat: "kimi-code-index",
+      sourceFile,
+      scanRunId
+    });
+  }
   const parsed = parseSessionFile({
     toolId: adapter.id,
     parserVersion: adapter.parserVersion,
@@ -312,12 +348,57 @@ function sessionFiles(adapter: ToolAdapter, source: string): string[] {
 }
 
 function isSessionFile(adapter: ToolAdapter, file: string): boolean {
+  if (adapter.id === "cursor") return isCursorSessionFile(file);
+  if (adapter.id === "antigravity") return isAntigravitySessionFile(file);
+  if (adapter.id === "kilo") return isKiloDatabase(file);
   if (SESSION_EXTENSIONS.has(path.extname(file).toLowerCase())) return true;
+  if (adapter.id === "cline" && isClineDatabase(file)) return true;
   return adapter.id === "opencode" && isOpencodeDatabase(file);
+}
+
+function isCursorSessionFile(file: string): boolean {
+  if (isCursorDatabase(file)) return true;
+  if (!SESSION_EXTENSIONS.has(path.extname(file).toLowerCase())) return false;
+  const parts = normalizedParts(file);
+  return (
+    parts.includes("agent-transcripts") ||
+    parts.includes("chats") ||
+    (parts.includes(".cursor") && parts.includes("projects")) ||
+    parts.includes("workspacestorage")
+  );
+}
+
+function isAntigravitySessionFile(file: string): boolean {
+  if (!SESSION_EXTENSIONS.has(path.extname(file).toLowerCase())) return false;
+  const basename = path.basename(file).toLowerCase();
+  if (basename === "settings.json" || basename === "config.json") return false;
+  const parts = normalizedParts(file);
+  return parts.includes("brain") || parts.includes("conversations") || (parts.includes(".system_generated") && parts.includes("logs"));
+}
+
+function normalizedParts(file: string): string[] {
+  return path.normalize(file).split(/[\\/]+/).map((part) => part.toLowerCase());
 }
 
 function isOpencodeDatabase(file: string): boolean {
   return path.basename(file).toLowerCase() === OPENCODE_DATABASE_FILE;
+}
+
+function isKiloDatabase(file: string): boolean {
+  const basename = path.basename(file).toLowerCase();
+  return basename === KILO_DATABASE_FILE || (basename !== OPENCODE_DATABASE_FILE && CLINE_DATABASE_EXTENSIONS.has(path.extname(file).toLowerCase()));
+}
+
+function isCursorDatabase(file: string): boolean {
+  return path.basename(file).toLowerCase() === CURSOR_DATABASE_FILE;
+}
+
+function isClineDatabase(file: string): boolean {
+  return CLINE_DATABASE_EXTENSIONS.has(path.extname(file).toLowerCase());
+}
+
+function isKimiSessionIndex(file: string): boolean {
+  return path.basename(file).toLowerCase() === "session_index.jsonl";
 }
 
 function safeReadDir(directory: string): fs.Dirent[] {

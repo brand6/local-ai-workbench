@@ -13,7 +13,7 @@ function commandAvailable(command: string): boolean {
 }
 
 function status(adapter: ToolAdapter, config: AppConfig): ToolStatus {
-  const command = config.tools[adapter.id].command;
+  const command = configuredCommand(config, adapter.id);
   const available = commandAvailable(command);
   return {
     toolId: adapter.id,
@@ -39,13 +39,24 @@ function unsupportedSkillDirectory(reason: string) {
   return { supported: false, directory: null, reason };
 }
 
-function launchOnlyCapabilities(): ToolStatus["capabilities"] {
-  return { launchNew: true, scanHistory: false, resume: false };
+function configuredCommand(config: AppConfig, toolId: ToolId): string {
+  return config.tools[toolId]?.command ?? defaultCommands[toolId];
 }
 
-function unsupportedResume(toolName: string): LaunchCommand {
-  throw new Error(`${toolName} 暂不支持从本系统恢复会话`);
-}
+const defaultCommands: Record<ToolId, string> = {
+  codex: "codex",
+  claude: "claude",
+  cline: "cline",
+  opencode: "opencode",
+  kilo: "kilo",
+  qwen: "qwen",
+  kimi: "kimi",
+  qoder: "qodercli",
+  codebuddy: "codebuddy",
+  copilot: "copilot",
+  cursor: "cursor-agent",
+  antigravity: "agy"
+};
 
 export const codexAdapter: ToolAdapter = {
   id: "codex",
@@ -101,6 +112,33 @@ export const claudeAdapter: ToolAdapter = {
   }
 };
 
+export const clineAdapter: ToolAdapter = {
+  id: "cline",
+  parserVersion: "cline-session-v1",
+  sourceFormat: "cline-session",
+  capabilities: { launchNew: true, scanHistory: true, resume: true },
+  visibleInProjectUi: true,
+  defaultSessionSources(env = process.env): string[] {
+    const home = os.homedir();
+    const clineHome = env.CLINE_HOME ?? path.join(home, ".cline");
+    return [existing(clineHome, "data", "sessions"), existing(clineHome, "data", "tasks")];
+  },
+  skillTarget() {
+    return unsupportedSkillDirectory("Cline 暂无项目级 skill link 目录映射");
+  },
+  detect(config: AppConfig): ToolStatus {
+    return status(this, config);
+  },
+  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
+    return { command: configuredCommand(config, "cline"), args: [], cwd };
+  },
+  buildResumeCommand(config: AppConfig, session: SessionEntry): LaunchCommand {
+    if (!session.nativeSessionId) throw new Error("Cline session is missing native session id");
+    if (!session.originalCwd) throw new Error("Cline session is missing cwd");
+    return { command: configuredCommand(config, "cline"), args: ["--id", session.nativeSessionId], cwd: session.originalCwd };
+  }
+};
+
 export const opencodeAdapter: ToolAdapter = {
   id: "opencode",
   parserVersion: "opencode-json-v1",
@@ -125,6 +163,38 @@ export const opencodeAdapter: ToolAdapter = {
     if (!session.nativeSessionId) throw new Error("OpenCode session is missing native session id");
     if (!session.originalCwd) throw new Error("OpenCode session is missing cwd");
     return { command: config.tools.opencode.command, args: ["--session", session.nativeSessionId], cwd: session.originalCwd };
+  }
+};
+
+export const kiloAdapter: ToolAdapter = {
+  id: "kilo",
+  parserVersion: "kilo-sqlite-v1",
+  sourceFormat: "kilo-sqlite",
+  capabilities: { launchNew: true, scanHistory: true, resume: true },
+  visibleInProjectUi: true,
+  defaultSessionSources(env = process.env): string[] {
+    const home = os.homedir();
+    const dataDir =
+      env.KILO_DATA_DIR ??
+      (process.platform === "win32"
+        ? path.join(env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "kilo")
+        : path.join(home, ".local", "share", "kilo"));
+    if (env.KILO_DB) return [path.isAbsolute(env.KILO_DB) || env.KILO_DB === ":memory:" ? env.KILO_DB : existing(dataDir, env.KILO_DB)];
+    return [existing(dataDir, "kilo.db")];
+  },
+  skillTarget(projectRoot: string) {
+    return projectSkillDirectory(projectRoot, ".kilo", "skills");
+  },
+  detect(config: AppConfig): ToolStatus {
+    return status(this, config);
+  },
+  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
+    return { command: configuredCommand(config, "kilo"), args: [], cwd };
+  },
+  buildResumeCommand(config: AppConfig, session: SessionEntry): LaunchCommand {
+    if (!session.nativeSessionId) throw new Error("Kilo session is missing native session id");
+    if (!session.originalCwd) throw new Error("Kilo session is missing cwd");
+    return { command: configuredCommand(config, "kilo"), args: ["run", "--interactive", "--session", session.nativeSessionId], cwd: session.originalCwd };
   }
 };
 
@@ -155,6 +225,33 @@ export const qwenAdapter: ToolAdapter = {
   }
 };
 
+export const kimiAdapter: ToolAdapter = {
+  id: "kimi",
+  parserVersion: "kimi-code-json-v1",
+  sourceFormat: "kimi-code-json",
+  capabilities: { launchNew: true, scanHistory: true, resume: true },
+  visibleInProjectUi: true,
+  defaultSessionSources(env = process.env): string[] {
+    const home = os.homedir();
+    const kimiHome = env.KIMI_CODE_HOME ?? path.join(home, ".kimi-code");
+    return [existing(kimiHome, "sessions"), existing(kimiHome, "session_index.jsonl")];
+  },
+  skillTarget() {
+    return unsupportedSkillDirectory("Kimi Code 暂无项目级 skill link 目录映射");
+  },
+  detect(config: AppConfig): ToolStatus {
+    return status(this, config);
+  },
+  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
+    return { command: configuredCommand(config, "kimi"), args: [], cwd };
+  },
+  buildResumeCommand(config: AppConfig, session: SessionEntry): LaunchCommand {
+    if (!session.nativeSessionId) throw new Error("Kimi Code session is missing native session id");
+    if (!session.originalCwd) throw new Error("Kimi Code session is missing cwd");
+    return { command: configuredCommand(config, "kimi"), args: ["--session", session.nativeSessionId], cwd: session.originalCwd };
+  }
+};
+
 export const qoderAdapter: ToolAdapter = {
   id: "qoder",
   parserVersion: "qoder-json-v1",
@@ -179,6 +276,33 @@ export const qoderAdapter: ToolAdapter = {
     if (!session.nativeSessionId) throw new Error("Qoder session is missing native session id");
     if (!session.originalCwd) throw new Error("Qoder session is missing cwd");
     return { command: config.tools.qoder.command, args: ["-r", session.nativeSessionId], cwd: session.originalCwd };
+  }
+};
+
+export const codeBuddyAdapter: ToolAdapter = {
+  id: "codebuddy",
+  parserVersion: "codebuddy-code-json-v1",
+  sourceFormat: "codebuddy-code-json",
+  capabilities: { launchNew: true, scanHistory: true, resume: true },
+  visibleInProjectUi: true,
+  defaultSessionSources(env = process.env): string[] {
+    const home = os.homedir();
+    const codebuddyHome = env.CODEBUDDY_HOME ?? path.join(home, ".codebuddy");
+    return [existing(codebuddyHome, "sessions"), existing(codebuddyHome, "projects")];
+  },
+  skillTarget() {
+    return unsupportedSkillDirectory("CodeBuddy Code 暂无项目级 skill link 目录映射");
+  },
+  detect(config: AppConfig): ToolStatus {
+    return status(this, config);
+  },
+  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
+    return { command: configuredCommand(config, "codebuddy"), args: [], cwd };
+  },
+  buildResumeCommand(config: AppConfig, session: SessionEntry): LaunchCommand {
+    if (!session.nativeSessionId) throw new Error("CodeBuddy Code session is missing native session id");
+    if (!session.originalCwd) throw new Error("CodeBuddy Code session is missing cwd");
+    return { command: configuredCommand(config, "codebuddy"), args: ["--resume", session.nativeSessionId], cwd: session.originalCwd };
   }
 };
 
@@ -209,37 +333,16 @@ export const copilotAdapter: ToolAdapter = {
   }
 };
 
-export const geminiAdapter: ToolAdapter = {
-  id: "gemini",
-  parserVersion: "gemini-unsupported-v1",
-  sourceFormat: "unsupported",
-  capabilities: launchOnlyCapabilities(),
-  visibleInProjectUi: true,
-  defaultSessionSources(): string[] {
-    return [];
-  },
-  skillTarget(projectRoot: string) {
-    return projectSkillDirectory(projectRoot, ".gemini", "skills");
-  },
-  detect(config: AppConfig): ToolStatus {
-    return status(this, config);
-  },
-  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
-    return { command: config.tools.gemini.command, args: [], cwd };
-  },
-  buildResumeCommand(): LaunchCommand {
-    return unsupportedResume("Gemini CLI");
-  }
-};
-
 export const cursorAdapter: ToolAdapter = {
   id: "cursor",
-  parserVersion: "cursor-unsupported-v1",
-  sourceFormat: "unsupported",
-  capabilities: launchOnlyCapabilities(),
+  parserVersion: "cursor-json-v1",
+  sourceFormat: "cursor-json",
+  capabilities: { launchNew: true, scanHistory: true, resume: true },
   visibleInProjectUi: true,
-  defaultSessionSources(): string[] {
-    return [];
+  defaultSessionSources(env = process.env): string[] {
+    const home = os.homedir();
+    const cursorHome = env.CURSOR_HOME ?? path.join(home, ".cursor");
+    return [existing(cursorHome, "projects"), existing(cursorHome, "chats")];
   },
   skillTarget(projectRoot: string) {
     return projectSkillDirectory(projectRoot, ".cursor", "skills");
@@ -250,19 +353,30 @@ export const cursorAdapter: ToolAdapter = {
   buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
     return { command: config.tools.cursor.command, args: [], cwd };
   },
-  buildResumeCommand(): LaunchCommand {
-    return unsupportedResume("Cursor Agent");
+  buildResumeCommand(config: AppConfig, session: SessionEntry): LaunchCommand {
+    if (!session.nativeSessionId) throw new Error("Cursor Agent session is missing native session id");
+    if (!session.originalCwd) throw new Error("Cursor Agent session is missing cwd");
+    return { command: config.tools.cursor.command, args: ["--resume", session.nativeSessionId], cwd: session.originalCwd };
   }
 };
 
 export const antigravityAdapter: ToolAdapter = {
   id: "antigravity",
-  parserVersion: "antigravity-unsupported-v1",
-  sourceFormat: "unsupported",
-  capabilities: launchOnlyCapabilities(),
+  parserVersion: "antigravity-json-v1",
+  sourceFormat: "antigravity-json",
+  capabilities: { launchNew: true, scanHistory: true, resume: true },
   visibleInProjectUi: true,
-  defaultSessionSources(): string[] {
-    return [];
+  defaultSessionSources(env = process.env): string[] {
+    const home = os.homedir();
+    const geminiHome = env.GEMINI_HOME ?? path.join(home, ".gemini");
+    const antigravityHome = env.ANTIGRAVITY_HOME ?? path.join(geminiHome, "antigravity");
+    const antigravityCliHome = env.ANTIGRAVITY_CLI_HOME ?? path.join(geminiHome, "antigravity-cli");
+    return [
+      existing(antigravityHome, "brain"),
+      existing(antigravityHome, "conversations"),
+      existing(antigravityCliHome, "conversations"),
+      existing(geminiHome, "conversations")
+    ];
   },
   skillTarget(projectRoot: string) {
     return projectSkillDirectory(projectRoot, ".agents", "skills");
@@ -273,93 +387,26 @@ export const antigravityAdapter: ToolAdapter = {
   buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
     return { command: config.tools.antigravity.command, args: [], cwd };
   },
-  buildResumeCommand(): LaunchCommand {
-    return unsupportedResume("Antigravity");
-  }
-};
-
-export const windsurfAdapter: ToolAdapter = {
-  id: "windsurf",
-  parserVersion: "windsurf-unsupported-v1",
-  sourceFormat: "unsupported",
-  capabilities: launchOnlyCapabilities(),
-  visibleInProjectUi: true,
-  defaultSessionSources(): string[] {
-    return [];
-  },
-  skillTarget(projectRoot: string) {
-    return projectSkillDirectory(projectRoot, ".windsurf", "skills");
-  },
-  detect(config: AppConfig): ToolStatus {
-    return status(this, config);
-  },
-  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
-    return { command: config.tools.windsurf.command, args: [], cwd };
-  },
-  buildResumeCommand(): LaunchCommand {
-    return unsupportedResume("Windsurf");
-  }
-};
-
-export const junieAdapter: ToolAdapter = {
-  id: "junie",
-  parserVersion: "junie-unsupported-v1",
-  sourceFormat: "unsupported",
-  capabilities: launchOnlyCapabilities(),
-  visibleInProjectUi: true,
-  defaultSessionSources(): string[] {
-    return [];
-  },
-  skillTarget(projectRoot: string) {
-    return projectSkillDirectory(projectRoot, ".junie", "skills");
-  },
-  detect(config: AppConfig): ToolStatus {
-    return status(this, config);
-  },
-  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
-    return { command: config.tools.junie.command, args: [], cwd };
-  },
-  buildResumeCommand(): LaunchCommand {
-    return unsupportedResume("Junie");
-  }
-};
-
-export const copilotVscodeAdapter: ToolAdapter = {
-  id: "copilot_vscode",
-  parserVersion: "copilot-vscode-unsupported-v1",
-  sourceFormat: "unsupported",
-  capabilities: { launchNew: false, scanHistory: false, resume: false },
-  visibleInProjectUi: false,
-  defaultSessionSources(): string[] {
-    return [];
-  },
-  skillTarget() {
-    return unsupportedSkillDirectory("Copilot VS Code 暂无项目级 skill link 目录映射");
-  },
-  detect(config: AppConfig): ToolStatus {
-    return status(this, config);
-  },
-  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
-    return { command: config.tools.copilot_vscode.command, args: [], cwd };
-  },
-  buildResumeCommand(): LaunchCommand {
-    return unsupportedResume("Copilot VS Code");
+  buildResumeCommand(config: AppConfig, session: SessionEntry): LaunchCommand {
+    if (!session.nativeSessionId) throw new Error("Antigravity session is missing native session id");
+    if (!session.originalCwd) throw new Error("Antigravity session is missing cwd");
+    return { command: config.tools.antigravity.command, args: ["--conversation", session.nativeSessionId], cwd: session.originalCwd };
   }
 };
 
 export const toolAdapters: Record<ToolId, ToolAdapter> = {
   codex: codexAdapter,
   claude: claudeAdapter,
+  cline: clineAdapter,
   opencode: opencodeAdapter,
+  kilo: kiloAdapter,
   qwen: qwenAdapter,
+  kimi: kimiAdapter,
   qoder: qoderAdapter,
+  codebuddy: codeBuddyAdapter,
   copilot: copilotAdapter,
-  gemini: geminiAdapter,
   cursor: cursorAdapter,
-  antigravity: antigravityAdapter,
-  windsurf: windsurfAdapter,
-  junie: junieAdapter,
-  copilot_vscode: copilotVscodeAdapter
+  antigravity: antigravityAdapter
 };
 
 export function listToolStatuses(config: AppConfig): ToolStatus[] {
@@ -383,6 +430,6 @@ export function existingSources(sources: string[]): string[] {
 }
 
 export function sessionSourcesForAdapter(adapter: ToolAdapter, config: AppConfig): string[] {
-  const configuredSources = config.tools[adapter.id].sessionSources;
+  const configuredSources = config.tools[adapter.id]?.sessionSources;
   return configuredSources?.length ? configuredSources : adapter.defaultSessionSources();
 }

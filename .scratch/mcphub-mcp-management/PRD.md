@@ -145,7 +145,7 @@ MVP 不保存真实 secret，不写系统或用户级环境变量。用户自行
 - Byte-for-byte formatting preservation of JSON, JSON5, or TOML files.
 - Full diff preview before applying.
 - `sse` transport.
-- Copilot CLI, VS Code Copilot, Qwen, Qoder, Cursor, Gemini, Claude Desktop, Windsurf, or other targets in MVP.
+- Copilot CLI, VS Code Copilot, Qwen, Qoder, Cursor, Gemini, Claude Desktop, or other targets in MVP.
 - `filesystem` and `fetch` built-in MCP servers.
 - Editing or deleting unmanaged local MCP entries from the `本地 MCP` tab.
 - Renaming existing `serverId` values.

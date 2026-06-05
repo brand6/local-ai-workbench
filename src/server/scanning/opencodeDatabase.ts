@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type { ParserWarning, SessionEntry } from "../../shared/types.js";
+import type { ParserWarning, SessionEntry, ToolId } from "../../shared/types.js";
 import { normalizeFsPath } from "../core/pathUtils.js";
 import { nowIso, toIso } from "../core/time.js";
 
 interface ParseContext {
+  toolId?: ToolId;
   parserVersion: string;
+  sourceFormat?: string;
   sourceFile: string;
   scanRunId: string | null;
 }
@@ -21,6 +23,8 @@ type Row = Record<string, unknown>;
 export function parseOpencodeDatabaseFile(context: ParseContext): ParsedSessionSource {
   const warnings: Array<Omit<ParserWarning, "id" | "createdAt">> = [];
   const stat = fs.statSync(context.sourceFile);
+  const toolId = context.toolId ?? "opencode";
+  const toolName = toolId === "kilo" ? "Kilo" : "OpenCode";
   let db: DatabaseSync | null = null;
 
   try {
@@ -46,10 +50,10 @@ export function parseOpencodeDatabaseFile(context: ParseContext): ParsedSessionS
     if (sessions.length === 0) {
       warnings.push({
         scanRunId: context.scanRunId,
-        toolId: "opencode",
+        toolId,
         sourceFile: context.sourceFile,
         errorType: "empty-session",
-        message: "No readable OpenCode sessions were found",
+        message: `No readable ${toolName} sessions were found`,
         line: null
       });
     }
@@ -58,10 +62,10 @@ export function parseOpencodeDatabaseFile(context: ParseContext): ParsedSessionS
   } catch (error) {
     warnings.push({
       scanRunId: context.scanRunId,
-      toolId: "opencode",
+      toolId,
       sourceFile: context.sourceFile,
-      errorType: "opencode-sqlite-error",
-      message: error instanceof Error ? error.message : "Failed to read OpenCode SQLite database",
+      errorType: toolId === "kilo" ? "kilo-sqlite-error" : "opencode-sqlite-error",
+      message: error instanceof Error ? error.message : `Failed to read ${toolName} SQLite database`,
       line: null
     });
     return { sessions: [], warnings, skipped: true };
@@ -77,6 +81,8 @@ function rowToSession(
   fallbackUpdatedAt: string,
   warnings: Array<Omit<ParserWarning, "id" | "createdAt">>
 ): SessionEntry {
+  const toolId = context.toolId ?? "opencode";
+  const toolName = toolId === "kilo" ? "Kilo" : "OpenCode";
   const nativeSessionId = stringValue(row.session_id);
   const cwd = usablePath(stringValue(row.directory)) ?? usablePath(stringValue(row.project_worktree));
   const title =
@@ -88,10 +94,10 @@ function rowToSession(
   if (!nativeSessionId) {
     warnings.push({
       scanRunId: context.scanRunId,
-      toolId: "opencode",
+      toolId,
       sourceFile: context.sourceFile,
       errorType: "missing-session-id",
-      message: "OpenCode session id was missing; resume is disabled",
+      message: `${toolName} session id was missing; resume is disabled`,
       line: null
     });
   }
@@ -99,10 +105,10 @@ function rowToSession(
   if (!cwd) {
     warnings.push({
       scanRunId: context.scanRunId,
-      toolId: "opencode",
+      toolId,
       sourceFile: context.sourceFile,
       errorType: "missing-cwd",
-      message: "OpenCode session directory was missing; resume is disabled",
+      message: `${toolName} session directory was missing; resume is disabled`,
       line: null
     });
   }
@@ -115,8 +121,8 @@ function rowToSession(
   const stableId = nativeSessionId ?? `${normalizeFsPath(context.sourceFile)}:${index}`;
 
   return {
-    id: `opencode:${stableId}`,
-    toolId: "opencode",
+    id: `${toolId}:${stableId}`,
+    toolId,
     nativeSessionId,
     title: title.slice(0, 180),
     summary: null,
@@ -124,7 +130,7 @@ function rowToSession(
     normalizedCwd: cwd ? normalizeFsPath(cwd) : null,
     updatedAt,
     sourceFile: context.sourceFile,
-    sourceFormat: "opencode-sqlite",
+    sourceFormat: context.sourceFormat ?? "opencode-sqlite",
     parserVersion: context.parserVersion,
     resumeStatus,
     indexedAt: nowIso()
