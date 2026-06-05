@@ -1,0 +1,12 @@
+{
+  "serverId": "playwright",
+  "name": "playwright",
+  "description": "Playwright browser automation MCP server.",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@playwright/mcp@latest"],
+  "url": null,
+  "headers": {},
+  "env": {},
+  "requiredEnv": []
+}

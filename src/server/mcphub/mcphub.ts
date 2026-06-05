@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   McpHubCleanupReport,
   McpHubImportFailure,
@@ -50,44 +51,7 @@ type PersistableMcpHubServer = Omit<McpHubServer, "createdAt" | "updatedAt" | "b
 
 const supportedTargets: McpHubTargetToolId[] = ["claude", "codex", "opencode"];
 
-const builtInMcpServers: PersistableMcpHubServer[] = [
-  {
-    serverId: "context7",
-    name: "context7",
-    description: "Context7 documentation lookup MCP server. 可选配置 CONTEXT7_API_KEY。",
-    transport: "stdio",
-    command: "npx",
-    args: ["-y", "@upstash/context7-mcp"],
-    url: null,
-    headers: {},
-    env: {},
-    requiredEnv: []
-  },
-  {
-    serverId: "playwright",
-    name: "playwright",
-    description: "Playwright browser automation MCP server.",
-    transport: "stdio",
-    command: "npx",
-    args: ["-y", "@playwright/mcp@latest"],
-    url: null,
-    headers: {},
-    env: {},
-    requiredEnv: []
-  },
-  {
-    serverId: "unityMCP",
-    name: "unityMCP",
-    description: "Local Unity MCP bridge. 需要用户自行启动本机 bridge。",
-    transport: "http",
-    command: null,
-    args: [],
-    url: "http://127.0.0.1:8082/mcp",
-    headers: {},
-    env: {},
-    requiredEnv: []
-  }
-];
+const builtInMcpServers: PersistableMcpHubServer[] = loadBuiltInMcpServers();
 
 export function listMcpHub(database: AppDatabase): McpHubList {
   ensureBuiltInMcpHubServers(database);
@@ -969,4 +933,64 @@ function isRecord(value: unknown): value is JsonRecord {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.trim()).map((value) => value.trim()))];
+}
+
+function loadBuiltInMcpServers(): PersistableMcpHubServer[] {
+  const root = resolveBundledPath("builtin-mcps");
+  if (!fs.existsSync(root)) return [];
+  return fs
+    .readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .flatMap((entry) => {
+      const server = readBuiltInMcpServer(path.join(root, entry.name));
+      return server ? [server] : [];
+    });
+}
+
+function readBuiltInMcpServer(filePath: string): PersistableMcpHubServer | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    if (!isRecord(parsed)) return null;
+    const serverId = stringField(parsed, "serverId");
+    const transport = transportFromValue(stringField(parsed, "transport"));
+    const command = stringField(parsed, "command");
+    const url = stringField(parsed, "url");
+    if (!serverId || !transport) return null;
+    if (transport === "stdio" && !command) return null;
+    if (transport === "http" && !url) return null;
+    return {
+      serverId: normalizeServerId(serverId),
+      name: stringField(parsed, "name") ?? serverId,
+      description: stringField(parsed, "description") ?? "",
+      transport,
+      command,
+      args: stringArrayField(parsed, "args") ?? [],
+      url,
+      headers: stringRecordField(parsed, "headers") ?? {},
+      env: stringRecordField(parsed, "env") ?? {},
+      requiredEnv: stringArrayField(parsed, "requiredEnv") ?? []
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveBundledPath(...segments: string[]): string {
+  const roots = bundledRootCandidates();
+  const existing = roots.map((root) => path.join(root, ...segments)).find((candidate) => fs.existsSync(candidate));
+  return existing ?? path.join(roots[0] ?? process.cwd(), ...segments);
+}
+
+function bundledRootCandidates(): string[] {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return uniquePaths([
+    process.cwd(),
+    path.resolve(moduleDir, "../../.."),
+    path.resolve(moduleDir, "../../../..")
+  ]);
+}
+
+function uniquePaths(values: string[]): string[] {
+  return [...new Set(values.map((value) => path.resolve(value)))];
 }

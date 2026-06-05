@@ -1,0 +1,12 @@
+{
+  "serverId": "unityMCP",
+  "name": "unityMCP",
+  "description": "Local Unity MCP bridge. 需要用户自行启动本机 bridge。",
+  "transport": "http",
+  "command": null,
+  "args": [],
+  "url": "http://127.0.0.1:8082/mcp",
+  "headers": {},
+  "env": {},
+  "requiredEnv": []
+}

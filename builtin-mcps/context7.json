@@ -1,0 +1,12 @@
+{
+  "serverId": "context7",
+  "name": "context7",
+  "description": "Context7 documentation lookup MCP server. 可选配置 CONTEXT7_API_KEY。",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@upstash/context7-mcp"],
+  "url": null,
+  "headers": {},
+  "env": {},
+  "requiredEnv": []
+}

@@ -49,6 +49,7 @@
       "dist/server/**/*",
       "dist/client/**/*",
       "builtin-skills/**/*",
+      "builtin-mcps/**/*",
       "skills-lock.json",
       "package.json"
     ],
