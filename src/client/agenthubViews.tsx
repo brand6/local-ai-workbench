@@ -15,8 +15,15 @@ import { agentHubToolIds } from "../shared/types.js";
 type AgentHubSource = AgentHubList["sources"][number];
 type ProjectAgentsTab = "agenthub" | "local";
 
-interface AgentHubSourceGroup {
-  source: AgentHubSource;
+export interface AgentHubSourceSummary {
+  id: string;
+  type: AgentHubSource["type"];
+  label: string;
+  sourceTruthTool: AgentHubSource["sourceTruthTool"];
+}
+
+export interface AgentHubSourceGroup {
+  source: AgentHubSourceSummary;
   agents: AgentHubAgent[];
 }
 
@@ -29,7 +36,7 @@ export function AgentHubPage({
   onImportLocal,
   onReimportBuiltin,
   onOpenAgent,
-  onReparseAgent,
+  onDeleteAgent,
   onDeleteSource
 }: {
   agentHub: AgentHubList | null;
@@ -40,7 +47,7 @@ export function AgentHubPage({
   onImportLocal: (path: string, truthTool: AgentHubToolId) => void;
   onReimportBuiltin: () => void;
   onOpenAgent: (agentId: string, target: SkillHubOpenTarget) => void;
-  onReparseAgent: (agentId: string) => void;
+  onDeleteAgent: (agentId: string) => void;
   onDeleteSource: (sourceId: string) => void;
 }) {
   const [localPath, setLocalPath] = useState("");
@@ -133,7 +140,7 @@ export function AgentHubPage({
               </summary>
               <div className="skillhub-skill-list">
                 {group.agents.map((agent) => (
-                  <AgentHubAgentRow key={agent.id} agent={agent} busy={busy} onOpenAgent={onOpenAgent} onReparseAgent={onReparseAgent} />
+                  <AgentHubAgentRow key={agent.id} agent={agent} busy={busy} onOpenAgent={onOpenAgent} onDeleteAgent={onDeleteAgent} />
                 ))}
               </div>
             </details>
@@ -144,25 +151,34 @@ export function AgentHubPage({
   );
 }
 
-function AgentHubAgentRow({
+export function AgentHubAgentRow({
   agent,
   busy,
   onOpenAgent,
-  onReparseAgent
+  onDeleteAgent,
+  summaryPrefix,
+  summaryExtra,
+  className
 }: {
   agent: AgentHubAgent;
   busy: boolean;
-  onOpenAgent: (agentId: string, target: SkillHubOpenTarget) => void;
-  onReparseAgent: (agentId: string) => void;
+  onOpenAgent?: (agentId: string, target: SkillHubOpenTarget) => void;
+  onDeleteAgent?: (agentId: string) => void;
+  summaryPrefix?: React.ReactNode;
+  summaryExtra?: React.ReactNode;
+  className?: string;
 }) {
+  const hasActions = Boolean(onOpenAgent) || Boolean(onDeleteAgent);
   return (
-    <details className="skillhub-skill-row agenthub-agent-row">
+    <details className={["skillhub-skill-row agenthub-agent-row", className].filter(Boolean).join(" ")}>
       <summary>
+        {summaryPrefix}
         <span className="skillhub-skill-title">{agent.name}</span>
         <small>{agent.slug}</small>
         <span className="metric-pill">{agent.sourceTruthTool}</span>
         <span className="metric-pill">{agent.truthRole}</span>
         {agent.category ? <span className="metric-pill">{agent.category}</span> : null}
+        {summaryExtra}
       </summary>
       <div className="skillhub-skill-body">
         <p>{agent.description ?? "无描述"}</p>
@@ -170,17 +186,25 @@ function AgentHubAgentRow({
           <span>{agent.nativePath}</span>
           {agent.sourceRelativePath ? <span>{agent.sourceRelativePath}</span> : null}
         </div>
-        <div className="card-actions">
-          <button className="secondary" type="button" disabled={busy} onClick={() => onOpenAgent(agent.id, "document")}>
-            打开文件
-          </button>
-          <button className="secondary" type="button" disabled={busy} onClick={() => onOpenAgent(agent.id, "folder")}>
-            打开目录
-          </button>
-          <button className="secondary" type="button" disabled={busy} onClick={() => onReparseAgent(agent.id)}>
-            重新解析
-          </button>
-        </div>
+        {hasActions ? (
+          <div className="card-actions">
+            {onOpenAgent ? (
+              <>
+                <button className="secondary" type="button" disabled={busy} onClick={() => onOpenAgent(agent.id, "document")}>
+                  打开
+                </button>
+                <button className="secondary" type="button" disabled={busy} onClick={() => onOpenAgent(agent.id, "folder")}>
+                  目录
+                </button>
+              </>
+            ) : null}
+            {onDeleteAgent ? (
+              <button className="danger" type="button" disabled={busy} onClick={() => onDeleteAgent(agent.id)}>
+                删除
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </details>
   );
@@ -474,19 +498,32 @@ function migrationTarget(value: string): ProjectLocalAgentMigrationTarget {
   return { type: "existing-source", sourceId: value };
 }
 
-function groupAgentHubAgents(agentHub: Pick<AgentHubList, "sources" | "agents"> | null): AgentHubSourceGroup[] {
+export function groupAgentHubAgents(agentHub: Pick<AgentHubList, "sources" | "agents"> | AgentHubAgent[] | null): AgentHubSourceGroup[] {
   if (!agentHub) return [];
-  const sourceMap = new Map(agentHub.sources.map((source) => [source.id, source]));
+  const agents = Array.isArray(agentHub) ? agentHub : agentHub.agents;
+  const sourceList = Array.isArray(agentHub) ? agents.map((agent) => agent.source).filter((source): source is AgentHubSource => Boolean(source)) : agentHub.sources;
+  const sourceMap = new Map(sourceList.map((source) => [source.id, source]));
   const groups = new Map<string, AgentHubSourceGroup>();
-  for (const source of agentHub.sources) groups.set(source.id, { source, agents: [] });
-  for (const agent of agentHub.agents) {
+  for (const source of sourceList) groups.set(source.id, { source: agentHubSourceSummary(source), agents: [] });
+  for (const agent of agents) {
     const source = agent.source ?? sourceMap.get(agent.sourceId);
-    if (!source) continue;
-    const group = groups.get(source.id) ?? { source, agents: [] };
+    const summary = source
+      ? agentHubSourceSummary(source)
+      : { id: agent.sourceId, type: agent.sourceType, label: agent.source?.label ?? agent.sourceId, sourceTruthTool: agent.sourceTruthTool };
+    const group = groups.get(summary.id) ?? { source: summary, agents: [] };
     group.agents.push(agent);
-    groups.set(source.id, group);
+    groups.set(summary.id, group);
   }
   return [...groups.values()].filter((group) => group.agents.length > 0);
+}
+
+function agentHubSourceSummary(source: AgentHubSource): AgentHubSourceSummary {
+  return {
+    id: source.id,
+    type: source.type,
+    label: source.label,
+    sourceTruthTool: source.sourceTruthTool
+  };
 }
 
 function statusClass(status: string): string {

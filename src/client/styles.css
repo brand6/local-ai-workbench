@@ -866,6 +866,12 @@ label,
   justify-content: flex-start;
 }
 
+.pluginhub-custom-dialog {
+  width: min(860px, 100%);
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+}
+
 .pluginhub-section,
 .project-plugin-install,
 .project-plugin-bindings {
@@ -875,10 +881,20 @@ label,
 }
 
 .pluginhub-list,
-.pluginhub-skill-picker-list {
+.pluginhub-component-picker-list,
+.pluginhub-component-group-body,
+.pluginhub-picker-nested-list,
+.pluginhub-content-groups,
+.pluginhub-content-group-body {
   display: grid;
   gap: 10px;
   min-width: 0;
+}
+
+.pluginhub-component-picker-list {
+  max-height: min(420px, 44vh);
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .pluginhub-row {
@@ -888,7 +904,10 @@ label,
   overflow: hidden;
 }
 
-.pluginhub-row summary {
+.pluginhub-row summary,
+.pluginhub-component-group summary,
+.pluginhub-content-group summary,
+.pluginhub-private-file-row summary {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -925,20 +944,79 @@ label,
   align-items: end;
 }
 
-.pluginhub-skill-option {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+.pluginhub-component-group {
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--surface-muted);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
 }
 
-.pluginhub-skill-option span {
+.pluginhub-content-group,
+.pluginhub-private-file-row,
+.pluginhub-missing-component-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  overflow: hidden;
+}
+
+.pluginhub-component-group-body {
+  padding: 0 10px 10px;
+}
+
+.pluginhub-content-group-body,
+.pluginhub-private-file-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 10px 10px;
+  min-width: 0;
+}
+
+.pluginhub-missing-component-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  min-width: 0;
+}
+
+.pluginhub-missing-component-row strong {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.pluginhub-component-select-control,
+.pluginhub-required-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pluginhub-component-select-control {
+  min-height: 24px;
+  cursor: pointer;
+}
+
+.pluginhub-component-select-control input,
+.pluginhub-required-toggle input {
+  margin: 0;
+}
+
+.pluginhub-required-toggle {
+  margin-left: auto;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.pluginhub-required-toggle small {
+  color: var(--text-muted);
+}
+
+.pluginhub-selectable-hub-row {
+  min-width: 0;
 }
 
 .hookhub-search-field,

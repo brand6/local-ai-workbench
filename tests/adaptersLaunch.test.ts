@@ -7,9 +7,11 @@ import {
   adapterFor,
   claudeAdapter,
   codexAdapter,
+  deepcodeAdapter,
   kiloAdapter,
   opencodeAdapter,
-  projectVisibleToolStatuses
+  projectVisibleToolStatuses,
+  reasonixAdapter
 } from "../src/server/tools/adapters.js";
 import { toolIds, type SessionEntry, type ToolId } from "../src/shared/types.js";
 import { cleanup, testDir } from "./helpers.js";
@@ -64,7 +66,9 @@ describe("tool adapters and terminal launcher", () => {
       "codebuddy",
       "copilot",
       "cursor",
-      "antigravity"
+      "antigravity",
+      "deepcode",
+      "reasonix"
     ];
     const session: SessionEntry = {
       id: "tool:s1",
@@ -96,6 +100,9 @@ describe("tool adapters and terminal launcher", () => {
     expect(adapterFor("cline").buildResumeCommand(config, { ...session, toolId: "cline" }).args).toEqual(["--id", "s1"]);
     expect(adapterFor("cursor").buildResumeCommand(config, { ...session, toolId: "cursor" }).args).toEqual(["--resume", "s1"]);
     expect(adapterFor("antigravity").buildResumeCommand(config, { ...session, toolId: "antigravity" }).args).toEqual(["--conversation", "s1"]);
+    expect(adapterFor("deepcode").buildResumeCommand(config, { ...session, toolId: "deepcode" }).args).toEqual(["-p", "/resume s1"]);
+    expect(adapterFor("reasonix").buildResumeCommand(config, { ...session, toolId: "reasonix" }).args).toEqual(["code", "--session", "s1"]);
+    expect(adapterFor("reasonix").buildNewSessionCommand(config, "E:\\repo").args).toEqual(["code"]);
   });
 
   it("exposes project-visible tools from adapter capabilities instead of hard-coded ids", () => {
@@ -112,7 +119,9 @@ describe("tool adapters and terminal launcher", () => {
       "codebuddy",
       "copilot",
       "cursor",
-      "antigravity"
+      "antigravity",
+      "deepcode",
+      "reasonix"
     ]);
     expect(statuses.every((status) => status.capabilities.launchNew)).toBe(true);
     expect(statuses.filter((status) => status.capabilities.scanHistory).map((status) => status.toolId)).toEqual([
@@ -127,7 +136,9 @@ describe("tool adapters and terminal launcher", () => {
       "codebuddy",
       "copilot",
       "cursor",
-      "antigravity"
+      "antigravity",
+      "deepcode",
+      "reasonix"
     ]);
   });
 
@@ -146,6 +157,14 @@ describe("tool adapters and terminal launcher", () => {
     expect(kiloAdapter.defaultSessionSources({ KILO_DATA_DIR: kiloHome })).toEqual([path.join(kiloHome, "kilo.db")]);
     expect(kiloAdapter.defaultSessionSources({ KILO_DATA_DIR: kiloHome, KILO_DB: "sessions.db" })).toEqual([path.join(kiloHome, "sessions.db")]);
     expect(kiloAdapter.defaultSessionSources({ KILO_DB: explicitDb })).toEqual([explicitDb]);
+  });
+
+  it("points DeepCode and Reasonix history scanning at their local session roots", () => {
+    const deepcodeHome = path.join("E:\\", "tools", "deepcode");
+    const reasonixHome = path.join("E:\\", "tools", "reasonix");
+
+    expect(deepcodeAdapter.defaultSessionSources({ DEEPCODE_HOME: deepcodeHome })).toEqual([path.join(deepcodeHome, "projects")]);
+    expect(reasonixAdapter.defaultSessionSources({ REASONIX_HOME: reasonixHome })).toEqual([path.join(reasonixHome, "sessions")]);
   });
 
   it("validates cwd before launch and supports dry-run terminal construction", () => {

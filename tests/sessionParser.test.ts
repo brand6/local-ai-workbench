@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseSessionFile } from "../src/server/scanning/sessionParser.js";
+import { parseDeepcodeSessionIndexFile, parseSessionFile } from "../src/server/scanning/sessionParser.js";
 import { cleanup, testDir } from "./helpers.js";
 
 let directory: string | null = null;
@@ -385,6 +385,91 @@ describe("session parser", () => {
         scanRunId: "scan-cursor-antigravity"
       }).session
     ).toMatchObject({ nativeSessionId: "antigravity-chat-1", title: "Antigravity 会话恢复", originalCwd: cwd, resumeStatus: "ready" });
+  });
+
+  it("uses Reasonix session filenames as resumable session names", () => {
+    directory = testDir("parser-reasonix-filename");
+    const cwd = path.join(directory, "repo");
+    fs.mkdirSync(cwd);
+    const sourceFile = path.join(directory, ".reasonix", "sessions", "main.jsonl");
+    fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+    fs.writeFileSync(
+      sourceFile,
+      JSON.stringify({
+        type: "user",
+        cwd,
+        content: "Reasonix 会话检索",
+        timestamp: "2026-06-05T13:00:00Z"
+      })
+    );
+
+    const result = parseSessionFile({
+      toolId: "reasonix",
+      parserVersion: "test",
+      sourceFormat: "reasonix-jsonl",
+      sourceFile,
+      scanRunId: "scan-reasonix"
+    });
+
+    expect(result.session).toMatchObject({
+      id: "reasonix:main",
+      nativeSessionId: "main",
+      title: "Reasonix 会话检索",
+      originalCwd: cwd,
+      resumeStatus: "ready"
+    });
+    expect(result.warnings.map((warning) => warning.errorType)).not.toContain("missing-session-id");
+  });
+
+  it("extracts Deep Code sessions from the project sessions index", () => {
+    directory = testDir("parser-deepcode-index");
+    const cwd = path.join(directory, "repo");
+    fs.mkdirSync(cwd);
+    const sourceFile = path.join(directory, ".deepcode", "projects", "repo", "sessions-index.json");
+    fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+    fs.writeFileSync(
+      sourceFile,
+      JSON.stringify(
+        {
+          version: 1,
+          originalPath: cwd,
+          entries: [
+            {
+              id: "deepcode-session-1",
+              summary: "Deep Code 会话检索",
+              assistantReply: "已完成",
+              status: "completed",
+              createTime: "2026-06-05T09:00:00Z",
+              updateTime: "2026-06-05T10:00:00Z"
+            }
+          ]
+        },
+        null,
+        2
+      )
+    );
+
+    const result = parseDeepcodeSessionIndexFile({
+      toolId: "deepcode",
+      parserVersion: "test",
+      sourceFormat: "deepcode-index",
+      sourceFile,
+      scanRunId: "scan-deepcode"
+    });
+
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0]).toMatchObject({
+      id: "deepcode:deepcode-session-1",
+      toolId: "deepcode",
+      nativeSessionId: "deepcode-session-1",
+      title: "Deep Code 会话检索",
+      summary: "Deep Code 会话检索",
+      originalCwd: cwd,
+      updatedAt: "2026-06-05T10:00:00.000Z",
+      sourceFormat: "deepcode-index",
+      resumeStatus: "ready"
+    });
+    expect(result.warnings).toHaveLength(0);
   });
 
   it("marks Qwen chat files from a mismatched project bucket as non-resumable", () => {

@@ -10,7 +10,9 @@ export const toolIds = [
   "codebuddy",
   "copilot",
   "cursor",
-  "antigravity"
+  "antigravity",
+  "deepcode",
+  "reasonix"
 ] as const;
 export type ToolId = (typeof toolIds)[number];
 
@@ -183,7 +185,7 @@ export interface CliHubCustomInstallCommandInput {
   installCommand: string;
 }
 
-export type SkillHubSourceType = "local" | "github";
+export type SkillHubSourceType = "local" | "github" | "plugin";
 
 export interface SkillHubConfig {
   rootDir: string;
@@ -451,6 +453,7 @@ export interface ProjectLocalAgentMigrationResult {
   action: "migrated" | "overwritten" | "renamed" | "needs-confirmation" | "cancelled";
 }
 
+export type PluginHubSourceType = "local" | "github";
 export type PluginHubSourceKind = "library" | "single-plugin";
 export type PluginHubPluginKind = "source" | "custom";
 export type PluginHubComponentType = "skill" | "agent" | "mcp" | "hook";
@@ -459,10 +462,19 @@ export type PluginHubSourceDeleteMode = "delete-custom-plugins" | "remove-custom
 
 export interface PluginHubSource {
   id: string;
+  type: PluginHubSourceType;
   kind: PluginHubSourceKind;
   label: string;
+  repoKey: string | null;
+  owner: string | null;
+  repo: string | null;
+  branch: string | null;
+  input: string;
   inputPath: string;
+  sourcePath: string | null;
   resolvedPath: string;
+  currentRevision: string | null;
+  checkoutPath: string | null;
   pluginCount: number;
   componentCount: number;
   privateFileCount: number;
@@ -507,6 +519,9 @@ export interface PluginHubList {
   sourcePlugins: PluginHubPlugin[];
   customPlugins: PluginHubPlugin[];
   skills: SkillHubSkill[];
+  agents: AgentHubAgent[];
+  mcpServers: McpHubServer[];
+  hookSuites: HookHubSuite[];
 }
 
 export interface PluginHubImportSkipped {

@@ -223,7 +223,9 @@ const projectTraceMap: Record<ToolId, string[]> = {
   codebuddy: [],
   copilot: [".github/copilot-instructions.md"],
   cursor: [".cursor", ".cursorrules"],
-  antigravity: [".agents/mcp_config.json"]
+  antigravity: [".agents/mcp_config.json"],
+  deepcode: [],
+  reasonix: []
 };
 
 function uniqueToolIds(toolIds: ToolId[]): ToolId[] {

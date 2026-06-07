@@ -46,7 +46,9 @@ export function defaultAppConfig(): AppConfig {
     codebuddy: { command: "codebuddy" },
     copilot: { command: "copilot" },
     cursor: { command: "cursor-agent" },
-    antigravity: { command: "agy" }
+    antigravity: { command: "agy" },
+    deepcode: { command: "deepcode" },
+    reasonix: { command: "reasonix" }
   };
   return { version: 1, tools, terminal: { mode: "new-window" }, skillhub: { rootDir: "" } };
 }

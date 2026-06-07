@@ -159,15 +159,17 @@ export const client = {
   openSkillHubSkill: (skillId: string, target: SkillHubOpenTarget) =>
     apiPost<LocalOpenResponse>(`/api/skillhub/skills/${encodeURIComponent(skillId)}/open`, { target }),
   agenthub: (query = "") => apiGet<AgentHubList>(`/api/agenthub${query ? `?query=${encodeURIComponent(query)}` : ""}`),
+  refreshAgentHubDiscovery: (query = "") => apiPost<AgentHubList>("/api/agenthub/discovery/refresh", { query }),
   importBuiltInAgencyAgents: () => apiPost<AgentHubImportResult>("/api/agenthub/import/builtin/agency-agents"),
   importLocalAgents: (path: string, sourceTruthTool: AgentHubToolId, conflictResolutions: AgentHubImportConflictResolution[] = []) =>
     apiPost<AgentHubImportResult>("/api/agenthub/import/local", { path, sourceTruthTool, conflictResolutions }),
   openAgentHubAgent: (agentId: string, target: SkillHubOpenTarget) =>
     apiPost<LocalOpenResponse>(`/api/agenthub/agents/${encodeURIComponent(agentId)}/open`, { target }),
   reparseAgentHubAgent: (agentId: string) => apiPost(`/api/agenthub/agents/${encodeURIComponent(agentId)}/reparse`),
+  deleteAgentHubAgent: (agentId: string) => apiDelete(`/api/agenthub/agents/${encodeURIComponent(agentId)}`),
   deleteAgentHubSource: (sourceId: string) => apiDelete(`/api/agenthub/sources/${encodeURIComponent(sourceId)}`),
   clihub: () => apiGet<CliHubList>("/api/clihub"),
-  refreshCliHubDiscovery: (cliId?: string) => apiPost<CliHubList>("/api/clihub/discovery/refresh", { ...(cliId ? { cliId } : {}) }),
+  refreshCliHubDiscovery: (cliId?: string, includeDetails = true) => apiPost<CliHubList>("/api/clihub/discovery/refresh", { ...(cliId ? { cliId } : {}), includeDetails }),
   addCliHubLocalPath: (executablePath: string, displayName?: string, commandName?: string) =>
     apiPost<CliHubCli>("/api/clihub/custom/local-path", { executablePath, displayName, commandName }),
   addCliHubInstallCommand: (installCommand: string, displayName?: string, commandName?: string) =>
@@ -198,7 +200,10 @@ export const client = {
   importNativeHooks: (toolId: HookHubSupportedToolId, input: string, suite: HookHubSuiteInput) =>
     apiPost<HookHubImportResult>("/api/hookhub/import/native", { ...suite, toolId, input }),
   pluginhub: () => apiGet<PluginHubList>("/api/pluginhub"),
+  refreshPluginHubDiscovery: () => apiPost<PluginHubList>("/api/pluginhub/discovery/refresh", {}),
   importLocalPlugin: (path: string) => apiPost<PluginHubImportResult>("/api/pluginhub/import/local", { path }),
+  importGitHubPlugin: (input: string) => apiPost<PluginHubImportResult>("/api/pluginhub/import/github", { input }),
+  updatePluginHubSource: (sourceId: string) => apiPost<PluginHubImportResult>(`/api/pluginhub/sources/${encodeURIComponent(sourceId)}/update`, {}),
   createCustomPlugin: (input: PluginHubCustomPluginInput) => apiPost<PluginHubPlugin>("/api/pluginhub/custom", input),
   updateCustomPlugin: (pluginId: string, input: PluginHubCustomPluginInput) =>
     apiPut<PluginHubPlugin>(`/api/pluginhub/custom/${encodeURIComponent(pluginId)}`, input),
@@ -208,6 +213,8 @@ export const client = {
     apiDelete<PluginHubSourceDeletePreview>(`/api/pluginhub/sources/${encodeURIComponent(sourceId)}?mode=${encodeURIComponent(mode)}`),
   previewDeletePluginHubPlugin: (pluginId: string) =>
     apiGet<PluginHubPluginDeletePreview>(`/api/pluginhub/plugins/${encodeURIComponent(pluginId)}/delete-preview`),
+  openPluginHubPrivateFile: (pluginId: string, fileId: string, target: SkillHubOpenTarget) =>
+    apiPost<LocalOpenResponse>(`/api/pluginhub/plugins/${encodeURIComponent(pluginId)}/private-files/${encodeURIComponent(fileId)}/open`, { target }),
   deletePluginHubPlugin: (pluginId: string) => apiDelete<PluginHubPluginDeletePreview>(`/api/pluginhub/plugins/${encodeURIComponent(pluginId)}`),
   projects: () => apiGet<Project[]>("/api/projects"),
   drives: () => apiGet<ScanDrive[]>("/api/local-filesystem/drives"),

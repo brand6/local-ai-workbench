@@ -24,6 +24,7 @@ export function deleteSession(database: AppDatabase, sessionId: string): DeleteS
 
   if (
     session.sourceFormat === "kimi-code-index" ||
+    session.sourceFormat === "deepcode-index" ||
     session.sourceFormat === "cline-sqlite" ||
     session.sourceFormat === "cursor-json" ||
     session.sourceFormat === "cursor-sqlite" ||

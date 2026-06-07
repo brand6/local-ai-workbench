@@ -51,6 +51,7 @@
       "builtin-skills/**/*",
       "builtin-mcps/**/*",
       "builtin-agents/**/*",
+      "builtin-plugins/**/*",
       "skills-lock.json",
       "package.json"
     ],

@@ -37,7 +37,6 @@ import { backupProjectLocalTarget } from "../core/projectBackups.js";
 import { displayPath, isPathInsideOrEqual, normalizeFsPath } from "../core/pathUtils.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";
-import { listProjectToolTargets } from "../skillhub/projectSkills.js";
 
 interface AgentHubAdapter {
   toolId: AgentHubToolId;
@@ -72,6 +71,11 @@ interface DiscoveredAgent {
 
 interface ImportOptions {
   conflictResolutions?: AgentHubImportConflictResolution[];
+  overwriteConflicts?: boolean;
+}
+
+interface AgentHubListOptions {
+  seedDefaultSources?: boolean;
 }
 
 interface ApplyOptions {
@@ -89,6 +93,14 @@ interface MigrationOptions {
 const BUILTIN_AGENCY_SOURCE_ID = "agency-agents";
 const BUILTIN_AGENCY_SEEDED_SETTING = "agenthub.builtin.agency-agents.seeded.v1";
 const DIRECT_MIGRATION_SOURCE_ID = "project-local-agents";
+
+interface BuiltInAgencySnapshot {
+  sourcePath: string;
+  agentCount: number;
+  contentHash: string;
+}
+
+let builtInAgencySnapshotCache: BuiltInAgencySnapshot | null = null;
 
 const adapters: Record<AgentHubToolId, AgentHubAdapter> = {
   claude: markdownAdapter({
@@ -130,9 +142,9 @@ export function ensureAgentHub(dataDir: string): AgentHubConfig {
   return config;
 }
 
-export function listAgentHub(database: AppDatabase, dataDir: string, query = "") {
+export function listAgentHub(database: AppDatabase, dataDir: string, query = "", options: AgentHubListOptions = {}) {
   const config = ensureAgentHub(dataDir);
-  seedDefaultAgentHubSources(database, dataDir);
+  if (options.seedDefaultSources ?? true) seedDefaultAgentHubSources(database, dataDir);
   return {
     config,
     sources: database.listAgentHubSources(),
@@ -140,8 +152,21 @@ export function listAgentHub(database: AppDatabase, dataDir: string, query = "")
   };
 }
 
+export function refreshAgentHubDiscovery(database: AppDatabase, dataDir: string, query = "") {
+  seedDefaultAgentHubSources(database, dataDir);
+  return listAgentHub(database, dataDir, query, { seedDefaultSources: false });
+}
+
 export function seedDefaultAgentHubSources(database: AppDatabase, dataDir: string): void {
-  if (database.getSetting(BUILTIN_AGENCY_SEEDED_SETTING, false)) return;
+  const sourcePath = resolveBundledPath("builtin-agents", "agency-agents");
+  const source = database.getAgentHubSource(BUILTIN_AGENCY_SOURCE_ID);
+  if (source) {
+    const snapshot = readBuiltInAgencySnapshot(sourcePath);
+    if (snapshot && isBuiltInAgencySourceCurrent(source, snapshot)) {
+      if (!database.getSetting(BUILTIN_AGENCY_SEEDED_SETTING, false)) database.setSetting(BUILTIN_AGENCY_SEEDED_SETTING, true);
+      return;
+    }
+  }
   const result = importBuiltInAgencyAgents(database, dataDir);
   if (result.imported.length || result.updated.length || database.getAgentHubSource(BUILTIN_AGENCY_SOURCE_ID)) {
     database.setSetting(BUILTIN_AGENCY_SEEDED_SETTING, true);
@@ -151,6 +176,7 @@ export function seedDefaultAgentHubSources(database: AppDatabase, dataDir: strin
 export function importBuiltInAgencyAgents(database: AppDatabase, dataDir: string): AgentHubImportResult {
   const config = ensureAgentHub(dataDir);
   const sourcePath = resolveBundledPath("builtin-agents", "agency-agents");
+  const snapshot = readBuiltInAgencySnapshot(sourcePath);
   if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isDirectory()) {
     const source = database.upsertAgentHubSource({
       id: BUILTIN_AGENCY_SOURCE_ID,
@@ -173,10 +199,16 @@ export function importBuiltInAgencyAgents(database: AppDatabase, dataDir: string
     resolvedPath: sourcePath,
     sourceTruthTool: "claude",
     importedAt: nowIso(),
-    metadata: { packaged: true }
+    metadata: {
+      packaged: true,
+      packagedAgentCount: snapshot?.agentCount ?? null,
+      packagedSnapshotHash: snapshot?.contentHash ?? null
+    }
   });
   const { discoveries, skipped } = discoverAgentFiles(sourcePath, "claude", { builtinAgency: true });
-  return commitDiscoveredAgents(database, config.libraryDir, source, discoveries, skipped, {});
+  const result = commitDiscoveredAgents(database, config.libraryDir, source, discoveries, skipped, { overwriteConflicts: true });
+  pruneStaleSourceAgents(database, source.id, new Set(discoveries.map((discovery) => discovery.sourceRelativePath).filter(isString)));
+  return result;
 }
 
 export function deleteAgentHubSource(database: AppDatabase, dataDir: string, sourceId: string): { source: AgentHubSource; agentsDeleted: AgentHubAgent[]; targetsDeleted: ProjectAgentTarget[] } {
@@ -189,6 +221,19 @@ export function deleteAgentHubSource(database: AppDatabase, dataDir: string, sou
   database.deleteAgentHubSource(sourceId);
   fs.rmSync(librarySourceRoot, { recursive: true, force: true });
   return { source, agentsDeleted, targetsDeleted };
+}
+
+export function deleteAgentHubAgent(database: AppDatabase, dataDir: string, agentId: string): { agent: AgentHubAgent; targetsDeleted: ProjectAgentTarget[] } {
+  const config = ensureAgentHub(dataDir);
+  const agent = requireAgent(database, agentId);
+  if (!isPathInsideOrEqual(config.libraryDir, agent.nativePath)) {
+    throw new Error("AgentHub agent 文件不在 library 中，拒绝删除");
+  }
+  const targetsDeleted = database.listProjectAgentTargetsForAgent(agent.id);
+  fs.rmSync(agent.nativePath, { force: true });
+  database.deleteProjectAgentTargetsForAgent(agent.id);
+  database.deleteAgentHubAgent(agent.id);
+  return { agent, targetsDeleted };
 }
 
 export function importLocalAgentFolder(
@@ -726,7 +771,7 @@ function commitDiscoveredAgents(
       skipped.push({ path: discovery.sourcePath, reason: "同 slug 且内容未变化，已跳过" });
       continue;
     }
-    if (existing && !resolution) {
+    if (existing && !resolution && !options.overwriteConflicts) {
       conflicts.push({ slug: baseSlug, incomingPath: discovery.sourcePath, existingAgent: existing, incomingHash: discovery.contentHash });
       continue;
     }
@@ -769,6 +814,14 @@ function commitDiscoveredAgents(
   return { source, imported, updated, skipped, conflicts, requiresConfirmation: conflicts.length > 0 };
 }
 
+function pruneStaleSourceAgents(database: AppDatabase, sourceId: string, keepRelativePaths: Set<string>): void {
+  for (const agent of database.listAgentHubAgentsForSource(sourceId)) {
+    if (agent.sourceRelativePath && keepRelativePaths.has(agent.sourceRelativePath)) continue;
+    database.deleteAgentHubAgent(agent.id);
+    fs.rmSync(agent.nativePath, { force: true });
+  }
+}
+
 function discoverAgentFiles(root: string, sourceTruthTool: AgentHubToolId, options: { builtinAgency?: boolean } = {}): { discoveries: DiscoveredAgent[]; skipped: AgentHubImportSkipped[] } {
   const adapter = adapters[sourceTruthTool];
   const rootPath = displayPath(root);
@@ -780,6 +833,7 @@ function discoverAgentFiles(root: string, sourceTruthTool: AgentHubToolId, optio
       if (entry.name === ".git" || entry.name === "node_modules") continue;
       const fullPath = path.join(directory, entry.name);
       if (entry.isDirectory()) {
+        if (options.builtinAgency && entry.name.startsWith(".")) continue;
         if (options.builtinAgency && ["examples", "integrations", "scripts", "docs"].includes(entry.name.toLowerCase())) continue;
         visit(fullPath);
         continue;
@@ -813,6 +867,53 @@ function discoverAgentFiles(root: string, sourceTruthTool: AgentHubToolId, optio
   return { discoveries, skipped };
 }
 
+function readBuiltInAgencySnapshot(sourcePath: string): BuiltInAgencySnapshot | null {
+  const rootPath = displayPath(sourcePath);
+  if (!fs.existsSync(rootPath) || !fs.statSync(rootPath).isDirectory()) return null;
+  if (builtInAgencySnapshotCache?.sourcePath === rootPath) return builtInAgencySnapshotCache;
+  const hash = crypto.createHash("sha256");
+  const paths = listBuiltInAgencyAgentPaths(rootPath);
+  for (const relativePath of paths) {
+    hash.update(relativePath);
+    hash.update("\0");
+    hash.update(fs.readFileSync(path.join(rootPath, relativePath)));
+    hash.update("\0");
+  }
+  builtInAgencySnapshotCache = {
+    sourcePath: rootPath,
+    agentCount: paths.length,
+    contentHash: hash.digest("hex")
+  };
+  return builtInAgencySnapshotCache;
+}
+
+function listBuiltInAgencyAgentPaths(rootPath: string): string[] {
+  const output: string[] = [];
+
+  function visit(directory: string): void {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+      if (entry.name === ".git" || entry.name === "node_modules") continue;
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith(".") || ["examples", "integrations", "scripts", "docs"].includes(entry.name.toLowerCase())) continue;
+        visit(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const relativePath = normalizeRelativePath(path.relative(rootPath, fullPath));
+      if (shouldSkipBuiltInAgencyFile(relativePath)) continue;
+      output.push(relativePath);
+    }
+  }
+
+  visit(rootPath);
+  return output.sort();
+}
+
+function isBuiltInAgencySourceCurrent(source: AgentHubSource, snapshot: BuiltInAgencySnapshot): boolean {
+  return source.metadata.packagedAgentCount === snapshot.agentCount && source.metadata.packagedSnapshotHash === snapshot.contentHash;
+}
+
 function shouldSkipBuiltInAgencyFile(relativePath: string): boolean {
   const lower = relativePath.toLowerCase();
   if (!lower.endsWith(".md")) return true;
@@ -822,7 +923,22 @@ function shouldSkipBuiltInAgencyFile(relativePath: string): boolean {
 }
 
 function listAgentToolTargets(database: AppDatabase, project: Project): ProjectToolTarget[] {
-  return listProjectToolTargets(database, project).filter((target) => target.enabled && isAgentHubToolId(target.toolId));
+  const stored = new Map(database.listStoredProjectToolTargets(project.id).map((target) => [target.toolId, target]));
+  return agentHubToolIds
+    .map((toolId) => {
+      const row = stored.get(toolId);
+      return {
+        projectId: project.id,
+        toolId,
+        enabled: row?.enabled ?? false,
+        inferred: row?.inferred ?? false,
+        supported: true,
+        skillDirectory: path.dirname(adapters[toolId].targetPath(project.rootPath, "_agenthub")),
+        reason: null,
+        updatedAt: row?.updatedAt ?? new Date(0).toISOString()
+      };
+    })
+    .filter((target) => target.enabled);
 }
 
 function ensureAgentToolEnabled(database: AppDatabase, project: Project, toolId: AgentHubToolId): void {
@@ -1195,6 +1311,10 @@ function hashText(text: string): string {
 
 function normalizeRelativePath(input: string): string {
   return input.split(/[\\/]+/).filter(Boolean).join("/");
+}
+
+function isString(value: string | null): value is string {
+  return typeof value === "string";
 }
 
 function resolveBundledPath(...segments: string[]): string {

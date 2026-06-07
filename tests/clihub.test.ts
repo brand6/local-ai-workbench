@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   CliHubOperationRunner,
   addCustomInstallCommandCli,
@@ -22,8 +22,15 @@ import { cleanup, testDir } from "./helpers.js";
 
 let directory: string | null = null;
 const itWindows = process.platform === "win32" ? it : it.skip;
+const originalLocalAppData = process.env.LOCALAPPDATA;
+
+beforeEach(() => {
+  process.env.LOCALAPPDATA = path.join(process.cwd(), ".tmp", "clihub-test-localappdata");
+});
 
 afterEach(() => {
+  if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = originalLocalAppData;
   if (directory) cleanup(directory);
   directory = null;
 });
@@ -40,6 +47,7 @@ describe("CliHub", () => {
       if (!cli) throw new Error(`missing ${cliId}`);
       return cli.channels;
     };
+    const allChannels = clihub.clis.flatMap((cli) => cli.channels);
 
     expect(clihub.clis.filter((cli) => cli.kind === "project-tool").map((cli) => cli.cliId)).toEqual([
       "antigravity",
@@ -59,6 +67,13 @@ describe("CliHub", () => {
     expect(clihub.clis.map((cli) => cli.cliId)).not.toEqual(expect.arrayContaining(["aider"]));
     expect(clihub.clis.filter((cli) => cli.kind === "function").map((cli) => cli.cliId)).toEqual(["gh", "playwright", "lark-cli"]);
     expect(clihub.clis.filter((cli) => cli.kind === "dependency").map((cli) => cli.cliId)).toEqual(["git", "node", "npm"]);
+    expect(allChannels.map((channel) => channel.channelId)).not.toEqual(
+      expect.arrayContaining(["kimi:official-posix", "cursor:official-posix", "antigravity:official-posix"])
+    );
+    for (const channel of allChannels) {
+      expect(channel.label).not.toMatch(/macOS|Linux|WSL/i);
+      expect(channel.installCommand?.join(" ") ?? "").not.toMatch(/\bbash\b|install\.sh/);
+    }
     expect(channels("codex").some((channel) => channel.provider === "npm")).toBe(true);
     expect(channels("playwright")).toEqual(
       expect.arrayContaining([
@@ -109,11 +124,6 @@ describe("CliHub", () => {
           installCommand: ["npm", "install", "-g", "@moonshot-ai/kimi-code"]
         }),
         expect.objectContaining({
-          channelId: "kimi:official-posix",
-          provider: "installer-command",
-          installCommand: ["bash", "-lc", "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"]
-        }),
-        expect.objectContaining({
           channelId: "kimi:official-windows",
           provider: "installer-command",
           installCommand: ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://code.kimi.com/kimi-code/install.ps1 | iex"]
@@ -133,11 +143,6 @@ describe("CliHub", () => {
     expect(channels("cursor")).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          channelId: "cursor:official-posix",
-          provider: "installer-command",
-          installCommand: ["bash", "-lc", "curl https://cursor.com/install -fsS | bash"]
-        }),
-        expect.objectContaining({
           channelId: "cursor:official-windows",
           provider: "installer-command",
           installCommand: ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "iex (irm 'https://cursor.com/install?win32=true')"]
@@ -146,11 +151,6 @@ describe("CliHub", () => {
     );
     expect(channels("antigravity")).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          channelId: "antigravity:official-posix",
-          provider: "installer-command",
-          installCommand: ["bash", "-lc", "curl -fsSL https://antigravity.google/cli/install.sh | bash"]
-        }),
         expect.objectContaining({
           channelId: "antigravity:official-windows",
           provider: "installer-command",
@@ -161,24 +161,76 @@ describe("CliHub", () => {
     db.close();
   });
 
-  it("prunes stale built-in CLI rows that were removed from the inventory", () => {
+  it("prunes stale built-in install channels while keeping custom channels", () => {
+    directory = testDir("clihub-stale-channels");
+    const db = new AppDatabase(directory);
+    listCliHub(db);
+    const antigravity = db.getCliHubCli("antigravity");
+    if (!antigravity) throw new Error("missing antigravity fixture");
+    db.upsertCliHubCli({
+      ...antigravity,
+      channels: [
+        ...antigravity.channels,
+        {
+          channelId: "antigravity:official-posix",
+          provider: "installer-command",
+          label: "official install script: macOS/Linux",
+          packageId: "agy",
+          installCommand: ["bash", "-lc", "curl -fsSL https://antigravity.google/cli/install.sh | bash"],
+          updateCommand: null,
+          checkCommand: null,
+          appManaged: false,
+          metadata: {},
+          builtin: true
+        },
+        {
+          channelId: "custom:winget:test",
+          provider: "winget",
+          label: "winget: Test.Agy",
+          packageId: "Test.Agy",
+          installCommand: ["winget", "install", "--id", "Test.Agy"],
+          updateCommand: null,
+          checkCommand: null,
+          appManaged: false,
+          metadata: {},
+          builtin: false
+        }
+      ]
+    });
+
+    const refreshed = listCliHub(db);
+    const channels = refreshed.clis.find((cli) => cli.cliId === "antigravity")?.channels ?? [];
+
+    expect(channels.map((channel) => channel.channelId)).not.toContain("antigravity:official-posix");
+    expect(channels.map((channel) => channel.channelId)).toContain("custom:winget:test");
+
+    db.close();
+  });
+
+  it("demotes local-only experimental built-in CLI rows to custom local CLIs", () => {
     directory = testDir("clihub-stale-builtins");
     const db = new AppDatabase(directory);
-    const staleBuiltInIds = ["copilot_vscode", "deepcode", "gemini", "junie", "reasonix", "windsurf"];
+    const deepcodePath = path.join(directory, "deepcode.cmd");
+    const reasonixPath = path.join(directory, "reasonix.cmd");
+    const staleBuiltInIds = ["copilot_vscode", "gemini", "junie", "windsurf"];
     for (const cliId of staleBuiltInIds) {
       db.upsertCliHubCli(staleCliHubCli(cliId, "builtin"));
     }
+    db.upsertCliHubCli({ ...staleCliHubCli("deepcode", "builtin"), availabilityState: "available", resolvedPaths: [deepcodePath] });
+    db.upsertCliHubCli({ ...staleCliHubCli("reasonix", "builtin"), availabilityState: "available", resolvedPaths: [reasonixPath] });
     db.upsertCliHubCli(staleCliHubCli("custom-local-gemini", "custom"));
     db.upsertCliHubCli(staleCliHubCli("custom-local-deepcode", "custom"));
 
     const clihub = listCliHub(db);
     const cliIds = clihub.clis.map((cli) => cli.cliId);
+    const cliById = new Map(clihub.clis.map((cli) => [cli.cliId, cli]));
+    db.close();
 
     expect(cliIds.filter((cliId) => staleBuiltInIds.includes(cliId))).toEqual([]);
+    expect(cliById.get("deepcode")).toMatchObject({ kind: "custom", sourceType: "custom", sourceState: "local-path", localPath: deepcodePath, channels: [] });
+    expect(cliById.get("reasonix")).toMatchObject({ kind: "custom", sourceType: "custom", sourceState: "local-path", localPath: reasonixPath, channels: [] });
     expect(cliIds).toContain("custom-local-gemini");
     expect(cliIds).toContain("custom-local-deepcode");
-
-    db.close();
   });
 
   it("parses supported install providers and rejects unsafe or bare commands", () => {
@@ -243,6 +295,42 @@ describe("CliHub", () => {
     });
 
     db.close();
+  });
+
+  it("refreshes all CLI discovery without serializing version reads", async () => {
+    directory = testDir("clihub-discovery-concurrent");
+    const db = new AppDatabase(directory);
+    listCliHub(db);
+    const codexPath = "C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd";
+    const claudePath = "C:\\tools\\claude.exe";
+    const started: string[] = [];
+    let releaseVersionReads = false;
+    const waiters: Array<() => void> = [];
+    const runner: CliHubCommandRunner = {
+      async lookup(commandName: string) {
+        if (commandName === "codex") return [codexPath];
+        if (commandName === "claude") return [claudePath];
+        return [];
+      },
+      async run(command: string): Promise<CliHubCommandResult> {
+        started.push(command);
+        if (!releaseVersionReads) {
+          await new Promise<void>((resolve) => waiters.push(resolve));
+        }
+        return { exitCode: 0, stdout: `${path.basename(command)} 1.0.0`, stderr: "" };
+      }
+    };
+
+    const refresh = refreshCliHubDiscovery(db, null, { commandRunner: runner });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(started).toEqual(expect.arrayContaining([codexPath, claudePath]));
+    } finally {
+      releaseVersionReads = true;
+      for (const resolve of waiters.splice(0)) resolve();
+      await refresh;
+      db.close();
+    }
   });
 
   itWindows("runs Windows command shims during discovery and update checks", async () => {
@@ -348,6 +436,206 @@ describe("CliHub", () => {
     expect(runner.runOptions.get("npm update -g @openai/codex")?.timeoutMs).toBeGreaterThan(30000);
 
     db.close();
+  });
+
+  it("refreshes shell PATH before discovering CLIs installed by external installers", async () => {
+    directory = testDir("clihub-installer-refresh-path");
+    const previousLocalAppData = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = directory;
+    const db = new AppDatabase(directory);
+    try {
+      listCliHub(db);
+      const cursorPath = "C:\\Users\\tester\\.cursor\\bin\\cursor-agent.exe";
+      const runner = new FakeCliRunner({
+        lookups: {
+          "cursor-agent": []
+        },
+        runs: {
+          "powershell -NoProfile -ExecutionPolicy Bypass -Command iex (irm 'https://cursor.com/install?win32=true')": {
+            exitCode: 0,
+            stdout: "installed",
+            stderr: ""
+          },
+          [`${cursorPath} --version`]: { exitCode: 0, stdout: "cursor-agent 1.0.0", stderr: "" }
+        }
+      });
+      const ensuredPaths: string[] = [];
+      const pathManager = {
+        async ensureUserPath(directoryPath: string) {
+          ensuredPaths.push(directoryPath);
+        },
+        async refreshProcessPath() {
+          runner.lookups["cursor-agent"] = [cursorPath];
+        }
+      };
+
+      const installed = await installCliHubCli(db, directory, "cursor", "cursor:official-windows", { commandRunner: runner, pathManager });
+
+      expect(installed).toMatchObject({
+        availabilityState: "available",
+        resolvedPaths: [cursorPath],
+        version: "cursor-agent 1.0.0"
+      });
+      expect(ensuredPaths).toEqual([]);
+    } finally {
+      if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previousLocalAppData;
+      db.close();
+    }
+  });
+
+  itWindows("adds Cursor's known installer directory to PATH after official install", async () => {
+    directory = testDir("clihub-cursor-install-path");
+    const previousLocalAppData = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = directory;
+    const db = new AppDatabase(directory);
+    try {
+      listCliHub(db);
+      const cursorPath = path.join(directory, "cursor-agent", "cursor-agent.cmd");
+      const installCommand = "powershell -NoProfile -ExecutionPolicy Bypass -Command iex (irm 'https://cursor.com/install?win32=true')";
+      const runner = new FakeCliRunner({
+        lookups: { "cursor-agent": [] },
+        runs: {
+          [installCommand]: { exitCode: 0, stdout: "installed", stderr: "" },
+          [`${cursorPath} --version`]: { exitCode: 0, stdout: "cursor-agent 1.0.0", stderr: "" }
+        },
+        afterRun(command, args) {
+          if ([command, ...args].join(" ") === installCommand) {
+            fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
+            fs.writeFileSync(cursorPath, "binary", "utf8");
+          }
+        }
+      });
+      const ensuredPaths: string[] = [];
+      const pathManager = {
+        async ensureUserPath(directoryPath: string) {
+          ensuredPaths.push(directoryPath);
+        },
+        async refreshProcessPath() {}
+      };
+
+      const installed = await installCliHubCli(db, directory, "cursor", "cursor:official-windows", { commandRunner: runner, pathManager });
+
+      expect(ensuredPaths).toContain(path.dirname(cursorPath));
+      expect(installed).toMatchObject({
+        availabilityState: "available",
+        resolvedPaths: [cursorPath],
+        version: "cursor-agent 1.0.0"
+      });
+    } finally {
+      if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previousLocalAppData;
+      db.close();
+    }
+  });
+
+  itWindows("discovers Cursor from its official installer directory when PATH is missing it", async () => {
+    directory = testDir("clihub-cursor-known-path");
+    const previousLocalAppData = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = directory;
+    const db = new AppDatabase(directory);
+    try {
+      listCliHub(db);
+      const cursorPath = path.join(directory, "cursor-agent", "cursor-agent.cmd");
+      fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
+      fs.writeFileSync(cursorPath, "binary", "utf8");
+      const runner = new FakeCliRunner({
+        lookups: { "cursor-agent": [] },
+        runs: {
+          [`${cursorPath} --version`]: { exitCode: 0, stdout: "cursor-agent 1.0.0", stderr: "" }
+        }
+      });
+
+      const refreshed = await refreshCliHubDiscovery(db, "cursor", { commandRunner: runner });
+
+      expect(refreshed.clis.find((cli) => cli.cliId === "cursor")).toMatchObject({
+        availabilityState: "available",
+        resolvedPaths: [cursorPath],
+        version: "cursor-agent 1.0.0",
+        currentProvider: { provider: "installer-command", packageId: "cursor-agent", confidence: "high" }
+      });
+    } finally {
+      if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previousLocalAppData;
+      db.close();
+    }
+  });
+
+  itWindows("adds Antigravity's known installer bin directory to PATH after official install", async () => {
+    directory = testDir("clihub-antigravity-install-path");
+    const previousLocalAppData = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = directory;
+    const db = new AppDatabase(directory);
+    try {
+      listCliHub(db);
+      const agyPath = path.join(directory, "agy", "bin", "agy.exe");
+      const installCommand = "powershell -NoProfile -ExecutionPolicy Bypass -Command iex (irm 'https://antigravity.google/cli/install.ps1')";
+      const runner = new FakeCliRunner({
+        lookups: { agy: [] },
+        runs: {
+          [installCommand]: { exitCode: 0, stdout: "installed", stderr: "" },
+          [`${agyPath} --version`]: { exitCode: 0, stdout: "1.0.6", stderr: "" }
+        },
+        afterRun(command, args) {
+          if ([command, ...args].join(" ") === installCommand) {
+            fs.mkdirSync(path.dirname(agyPath), { recursive: true });
+            fs.writeFileSync(agyPath, "binary", "utf8");
+          }
+        }
+      });
+      const ensuredPaths: string[] = [];
+      const pathManager = {
+        async ensureUserPath(directoryPath: string) {
+          ensuredPaths.push(directoryPath);
+        },
+        async refreshProcessPath() {}
+      };
+
+      const installed = await installCliHubCli(db, directory, "antigravity", "antigravity:official-windows", { commandRunner: runner, pathManager });
+
+      expect(ensuredPaths).toContain(path.dirname(agyPath));
+      expect(installed).toMatchObject({
+        availabilityState: "available",
+        resolvedPaths: [agyPath],
+        version: "1.0.6"
+      });
+    } finally {
+      if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previousLocalAppData;
+      db.close();
+    }
+  });
+
+  itWindows("discovers Antigravity from its official installer directory when PATH is missing it", async () => {
+    directory = testDir("clihub-antigravity-known-path");
+    const previousLocalAppData = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = directory;
+    const db = new AppDatabase(directory);
+    try {
+      listCliHub(db);
+      const agyPath = path.join(directory, "agy", "bin", "agy.exe");
+      fs.mkdirSync(path.dirname(agyPath), { recursive: true });
+      fs.writeFileSync(agyPath, "binary", "utf8");
+      const runner = new FakeCliRunner({
+        lookups: { agy: [] },
+        runs: {
+          [`${agyPath} --version`]: { exitCode: 0, stdout: "1.0.6", stderr: "" }
+        }
+      });
+
+      const refreshed = await refreshCliHubDiscovery(db, "antigravity", { commandRunner: runner });
+
+      expect(refreshed.clis.find((cli) => cli.cliId === "antigravity")).toMatchObject({
+        availabilityState: "available",
+        resolvedPaths: [agyPath],
+        version: "1.0.6",
+        currentProvider: { provider: "installer-command", packageId: "agy", confidence: "high" }
+      });
+    } finally {
+      if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previousLocalAppData;
+      db.close();
+    }
   });
 
   it("keeps failed update stderr in the operation message", async () => {

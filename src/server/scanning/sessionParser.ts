@@ -106,6 +106,120 @@ export function parseSessionIndexFile(context: ParseContext): { sessions: Sessio
   return { sessions, warnings, skipped: sessions.length === 0 };
 }
 
+export function parseDeepcodeSessionIndexFile(
+  context: ParseContext
+): { sessions: SessionEntry[]; warnings: Array<Omit<ParserWarning, "id" | "createdAt">>; skipped: boolean } {
+  const warnings: Array<Omit<ParserWarning, "id" | "createdAt">> = [];
+  const stat = fs.statSync(context.sourceFile);
+  const content = fs.readFileSync(context.sourceFile, "utf8");
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    warnings.push({
+      scanRunId: context.scanRunId,
+      toolId: context.toolId,
+      sourceFile: context.sourceFile,
+      errorType: "malformed-json",
+      message: error instanceof Error ? error.message : "Malformed JSON file",
+      line: null
+    });
+    return { sessions: [], warnings, skipped: true };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    warnings.push({
+      scanRunId: context.scanRunId,
+      toolId: context.toolId,
+      sourceFile: context.sourceFile,
+      errorType: "empty-session-index",
+      message: "No readable indexed sessions were found",
+      line: null
+    });
+    return { sessions: [], warnings, skipped: true };
+  }
+
+  const index = parsed as Record<string, unknown>;
+  const entries = Array.isArray(index.entries) ? index.entries : [];
+  const sessions: SessionEntry[] = [];
+
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const nativeSessionId = directString(record, "id") ?? directString(record, "sessionId") ?? directString(record, "session_id");
+    if (!nativeSessionId) {
+      warnings.push({
+        scanRunId: context.scanRunId,
+        toolId: context.toolId,
+        sourceFile: context.sourceFile,
+        errorType: "missing-session-id",
+        message: "Indexed Deep Code session id was missing; the entry was skipped",
+        line: null
+      });
+      continue;
+    }
+
+    const cwd =
+      directString(record, "cwd") ??
+      directString(record, "originalPath") ??
+      directString(record, "workspaceRoot") ??
+      directString(index, "originalPath") ??
+      directString(index, "workspaceRoot");
+    const summary = usefulSummary(directString(record, "summary") ?? directString(record, "assistantReply"));
+    const title = directString(record, "title") ?? titleFromSummary(summary) ?? directString(record, "assistantReply") ?? `未命名会话 ${nativeSessionId}`;
+    const updatedAt =
+      toIso(record.updateTime) ??
+      toIso(record.updatedAt) ??
+      toIso(record.lastUpdatedAt) ??
+      toIso(record.createTime) ??
+      toIso(record.createdAt) ??
+      stat.mtime.toISOString();
+    const normalizedCwd = cwd ? normalizeFsPath(cwd) : null;
+    const resumeStatus: ResumeStatus = !cwd ? "missing_cwd" : fs.existsSync(cwd) ? "ready" : "cwd_missing";
+
+    if (!cwd) {
+      warnings.push({
+        scanRunId: context.scanRunId,
+        toolId: context.toolId,
+        sourceFile: context.sourceFile,
+        errorType: "missing-cwd",
+        message: "Indexed Deep Code session cwd was missing; resume is disabled",
+        line: null
+      });
+    }
+
+    sessions.push({
+      id: stableSessionId(context.toolId, nativeSessionId, context.sourceFile),
+      toolId: context.toolId,
+      nativeSessionId,
+      title: title.slice(0, 180),
+      summary: summary?.slice(0, 2000) ?? null,
+      originalCwd: cwd,
+      normalizedCwd,
+      updatedAt,
+      sourceFile: context.sourceFile,
+      sourceFormat: context.sourceFormat,
+      parserVersion: context.parserVersion,
+      resumeStatus,
+      indexedAt: nowIso()
+    });
+  }
+
+  if (sessions.length === 0) {
+    warnings.push({
+      scanRunId: context.scanRunId,
+      toolId: context.toolId,
+      sourceFile: context.sourceFile,
+      errorType: "empty-session-index",
+      message: "No readable indexed sessions were found",
+      line: null
+    });
+  }
+
+  return { sessions, warnings, skipped: sessions.length === 0 };
+}
+
 function buildSessionEntry(
   context: ParseContext,
   events: unknown[],
@@ -276,6 +390,7 @@ function extractSessionId(events: unknown[], sourceFile: string, toolId: ToolId)
   const keys = sessionIdKeys(toolId);
   const explicitId = findFirstString(events, keys);
   if (explicitId) return explicitId;
+  if (toolId === "reasonix") return path.basename(sourceFile, path.extname(sourceFile));
   return inferIdFromFilename(sourceFile);
 }
 
@@ -290,6 +405,7 @@ function sessionIdKeys(toolId: ToolId): string[] {
   if (toolId === "copilot") return ["sessionId", "session_id", "conversationId", "id"];
   if (toolId === "cursor") return ["chatId", "chat_id", "composerId", "composer_id", "agentId", "agent_id", "sessionId", "session_id", "conversationId", "id"];
   if (toolId === "antigravity") return ["conversationId", "conversation_id", "sessionId", "session_id", "uuid", "id"];
+  if (toolId === "reasonix") return ["sessionName", "session_name", "sessionId", "session_id", "conversationId", "id"];
   return ["session_id", "sessionId", "conversation_id", "conversationId"];
 }
 

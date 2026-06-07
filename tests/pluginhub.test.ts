@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultAppConfig } from "../src/server/core/bootstrap.js";
 import {
   createCustomPlugin,
   deletePluginHubPlugin,
   deletePluginHubSource,
+  importPluginHubGitHubSource,
   importPluginHubLocalSource,
   installProjectPlugin,
   listPluginHub,
@@ -13,9 +15,10 @@ import {
   previewDeletePluginHubSource,
   syncProjectPluginBinding,
   uninstallProjectPluginBinding,
+  updatePluginHubGitHubSource,
   updateCustomPlugin
 } from "../src/server/pluginhub/pluginhub.js";
-import { importLocalSkills, listProjectLocalSkillsState } from "../src/server/skillhub/skillhub.js";
+import { deleteSkillHubSkill, importLocalSkills, listProjectLocalSkillsState, previewDeleteSkillHubSkill } from "../src/server/skillhub/skillhub.js";
 import { setProjectSkillTargets, updateProjectToolTargets } from "../src/server/skillhub/projectSkills.js";
 import { AppDatabase } from "../src/server/storage/database.js";
 import type { AppConfig } from "../src/shared/types.js";
@@ -29,6 +32,35 @@ afterEach(() => {
 });
 
 describe("PluginHub", () => {
+  it("seeds Superpowers as a deletable built-in source on first catalog access", () => {
+    directory = testDir("pluginhub-builtin-superpowers");
+    const db = new AppDatabase(directory);
+    const config = configFixture(directory);
+
+    const listed = listPluginHub(db, config, directory);
+    const source = listed.sources.find((item) => item.id === "pluginhub-source-superpowers");
+    const plugin = listed.plugins.find((item) => item.sourceId === source?.id && item.name === "superpowers");
+
+    expect(source).toMatchObject({
+      id: "pluginhub-source-superpowers",
+      kind: "single-plugin",
+      label: "obra/superpowers",
+      inputPath: "builtin-plugins/superpowers",
+      pluginCount: 1
+    });
+    expect(source?.componentCount).toBeGreaterThan(0);
+    expect(plugin).toMatchObject({ displayName: "Superpowers", sourceId: "pluginhub-source-superpowers" });
+    expect(plugin?.componentRefs.length).toBeGreaterThan(0);
+    expect(listed.skills.some((skill) => skill.folderName === "using-superpowers")).toBe(true);
+
+    deletePluginHubSource(db, source?.id ?? "", "remove-custom-components");
+    const afterDelete = listPluginHub(db, config, directory);
+
+    expect(afterDelete.sources.some((item) => item.id === "pluginhub-source-superpowers")).toBe(false);
+    expect(afterDelete.plugins.some((item) => item.name === "superpowers")).toBe(false);
+    db.close();
+  });
+
   it("lists an empty catalog and distinguishes source plugins from custom plugins", () => {
     directory = testDir("pluginhub-empty");
     const db = new AppDatabase(directory);
@@ -49,6 +81,69 @@ describe("PluginHub", () => {
     db.close();
   });
 
+  it("lists custom plugin component candidates from every component hub", () => {
+    directory = testDir("pluginhub-component-candidates");
+    const db = new AppDatabase(directory);
+    const config = configFixture(directory);
+    const skill = seedSkillHubSkill(db, config, "team-source", "review", "Review skill");
+    const agentSource = db.upsertAgentHubSource({
+      id: "team-agents",
+      type: "local-import",
+      label: "Team Agents",
+      inputPath: null,
+      resolvedPath: path.join(directory, "agents"),
+      sourceTruthTool: "claude",
+      importedAt: "2026-06-01T00:00:00Z",
+      metadata: {}
+    });
+    const agent = db.upsertAgentHubAgent({
+      id: "agent-1",
+      sourceId: agentSource.id,
+      sourceType: agentSource.type,
+      sourceTruthTool: "claude",
+      truthRole: "subagent",
+      sourceFormat: "markdown",
+      slug: "code-reviewer",
+      name: "Code Reviewer",
+      description: "Review changes",
+      nativePath: path.join(directory, "agents", "code-reviewer.md"),
+      libraryRelativePath: "team-agents/code-reviewer.md",
+      sourceRelativePath: "code-reviewer.md",
+      category: "engineering",
+      projection: { name: "Code Reviewer", description: "Review changes", body: "Review changes.", slugCandidate: "code-reviewer", parseWarnings: [] },
+      nativeMetadata: {},
+      contentHash: "agent-hash"
+    });
+    const mcp = db.upsertMcpHubServer({
+      serverId: "docs",
+      name: "docs",
+      description: "Docs MCP",
+      transport: "stdio",
+      command: "node",
+      args: ["server.js"],
+      url: null,
+      headers: {},
+      env: {},
+      requiredEnv: []
+    });
+    const hook = db.upsertHookHubSuite({
+      suiteId: "suite-1",
+      name: "提交前检查",
+      description: "Run checks",
+      riskNotes: null,
+      requiredEnv: [],
+      payloads: { claude: { PreToolUse: [] } }
+    });
+
+    const listed = listPluginHub(db);
+
+    expect(listed.skills).toContainEqual(expect.objectContaining({ id: skill.id }));
+    expect(listed.agents).toContainEqual(expect.objectContaining({ id: agent.id }));
+    expect(listed.mcpServers).toContainEqual(expect.objectContaining({ serverId: mcp.serverId }));
+    expect(listed.hookSuites).toContainEqual(expect.objectContaining({ suiteId: hook.suiteId }));
+    db.close();
+  });
+
   it("imports plugin libraries and single plugin packages with source-level SkillHub identities", () => {
     directory = testDir("pluginhub-import");
     const db = new AppDatabase(directory);
@@ -64,10 +159,14 @@ describe("PluginHub", () => {
     expect(imported.source).toMatchObject({ kind: "library", label: "wshobson-agents", pluginCount: 2 });
     expect(imported.plugins.map((plugin) => plugin.name)).toEqual(["frontend", "python-development"]);
     expect(imported.importedSkills.map((skill) => skill.sourceId)).toEqual([imported.source.id, imported.source.id]);
+    expect(imported.importedSkills.map((skill) => skill.sourceType)).toEqual(["plugin", "plugin"]);
     expect(imported.importedSkills.map((skill) => skill.libraryRelativePath)).toEqual([
       `pluginhub/${imported.source.id}/plugins/frontend/skills/lint`,
       `pluginhub/${imported.source.id}/plugins/python-development/skills/review`
     ]);
+    expect(db.getSkillHubSource(imported.source.id)).toMatchObject({ type: "plugin", label: "wshobson-agents" });
+    expect(() => previewDeleteSkillHubSkill(db, imported.importedSkills[0].id)).toThrow("Plugin 技能不能在 SkillHub 删除");
+    expect(() => deleteSkillHubSkill(db, imported.importedSkills[0].id)).toThrow("Plugin 技能不能在 SkillHub 删除");
     expect(imported.plugins.find((plugin) => plugin.name === "python-development")?.privateFiles.map((file) => file.sourceRelativePath)).toEqual(
       expect.arrayContaining(["plugins/python-development/.codex-plugin/plugin.json", "plugins/python-development/commands/test.md"])
     );
@@ -87,6 +186,47 @@ describe("PluginHub", () => {
     expect(() => importPluginHubLocalSource(db, config, directory, invalid)).toThrow("未找到可导入的 plugin");
     db.close();
   });
+
+  (gitAvailable() ? it : it.skip)(
+    "imports and updates GitHub plugin sources from a local git fixture",
+    () => {
+      directory = testDir("pluginhub-github-update");
+      const db = new AppDatabase(directory);
+      const config = configFixture(directory);
+      const repo = path.join(directory, "remote-repo");
+      gitInit(repo);
+      writePlugin(path.join(repo, "plugins", "python-development"), "python-development", [["review", "Initial GitHub review"]], {
+        "commands/test.md": "run pytest"
+      });
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "initial"]);
+
+      const imported = importPluginHubGitHubSource(db, config, directory, "owner/repo", { fixturePath: repo });
+      const privateFile = imported.plugins[0]?.privateFiles.find((file) => file.sourceRelativePath.endsWith("commands/test.md"));
+      expect(imported.source).toMatchObject({ type: "github", label: "owner/repo", repoKey: "owner-repo", pluginCount: 1 });
+      expect(imported.plugins[0]).toMatchObject({ name: "python-development", sourceId: imported.source.id });
+      expect(imported.importedSkills[0]).toMatchObject({ description: "Initial GitHub review", sourceId: imported.source.id });
+      expect(privateFile).toBeTruthy();
+
+      fs.writeFileSync(
+        path.join(repo, "plugins", "python-development", "skills", "review", "SKILL.md"),
+        skillText("review", "Changed GitHub review"),
+        "utf8"
+      );
+      fs.writeFileSync(path.join(repo, "plugins", "python-development", "commands", "test.md"), "run vitest", "utf8");
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "change plugin"]);
+
+      const updated = updatePluginHubGitHubSource(db, config, directory, imported.source.id);
+      const updatedPrivateFile = updated.plugins[0]?.privateFiles.find((file) => file.sourceRelativePath.endsWith("commands/test.md"));
+
+      expect(updated.source.currentRevision).not.toBe(imported.source.currentRevision);
+      expect(db.getSkillHubSkill(imported.importedSkills[0]?.id ?? "")?.description).toBe("Changed GitHub review");
+      expect(updatedPrivateFile?.contentHash).not.toBe(privateFile?.contentHash);
+      db.close();
+    },
+    15000
+  );
 
   it("installs a project plugin, materializes private files, and marks plugin-owned skills readonly", () => {
     directory = testDir("pluginhub-install");
@@ -357,5 +497,28 @@ function writePlugin(pluginRoot: string, name: string, skills: Array<[string, st
 
 function writeSkill(directory: string, name: string, description: string): void {
   fs.mkdirSync(directory, { recursive: true });
-  fs.writeFileSync(path.join(directory, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`, "utf8");
+  fs.writeFileSync(path.join(directory, "SKILL.md"), skillText(name, description), "utf8");
+}
+
+function skillText(name: string, description: string): string {
+  return `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`;
+}
+
+function gitAvailable(): boolean {
+  return spawnSync("git", ["--version"], { stdio: "ignore" }).status === 0;
+}
+
+function gitInit(repo: string): void {
+  fs.mkdirSync(repo, { recursive: true });
+  git(repo, ["init", "-b", "main"]);
+  git(repo, ["config", "user.email", "pluginhub@example.test"]);
+  git(repo, ["config", "user.name", "PluginHub Test"]);
+}
+
+function git(repo: string, args: string[]): string {
+  const result = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.stdout || "git failed");
+  }
+  return result.stdout.trim();
 }

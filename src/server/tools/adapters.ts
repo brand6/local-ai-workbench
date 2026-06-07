@@ -55,7 +55,9 @@ const defaultCommands: Record<ToolId, string> = {
   codebuddy: "codebuddy",
   copilot: "copilot",
   cursor: "cursor-agent",
-  antigravity: "agy"
+  antigravity: "agy",
+  deepcode: "deepcode",
+  reasonix: "reasonix"
 };
 
 export const codexAdapter: ToolAdapter = {
@@ -394,6 +396,60 @@ export const antigravityAdapter: ToolAdapter = {
   }
 };
 
+export const deepcodeAdapter: ToolAdapter = {
+  id: "deepcode",
+  parserVersion: "deepcode-index-v1",
+  sourceFormat: "deepcode-index",
+  capabilities: { launchNew: true, scanHistory: true, resume: true },
+  visibleInProjectUi: true,
+  defaultSessionSources(env = process.env): string[] {
+    const home = os.homedir();
+    const deepcodeHome = env.DEEPCODE_HOME ?? path.join(home, ".deepcode");
+    return [existing(deepcodeHome, "projects")];
+  },
+  skillTarget(projectRoot: string) {
+    return projectSkillDirectory(projectRoot, ".deepcode", "skills");
+  },
+  detect(config: AppConfig): ToolStatus {
+    return status(this, config);
+  },
+  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
+    return { command: configuredCommand(config, "deepcode"), args: [], cwd };
+  },
+  buildResumeCommand(config: AppConfig, session: SessionEntry): LaunchCommand {
+    if (!session.nativeSessionId) throw new Error("Deep Code session is missing native session id");
+    if (!session.originalCwd) throw new Error("Deep Code session is missing cwd");
+    return { command: configuredCommand(config, "deepcode"), args: ["-p", `/resume ${session.nativeSessionId}`], cwd: session.originalCwd };
+  }
+};
+
+export const reasonixAdapter: ToolAdapter = {
+  id: "reasonix",
+  parserVersion: "reasonix-jsonl-v1",
+  sourceFormat: "reasonix-jsonl",
+  capabilities: { launchNew: true, scanHistory: true, resume: true },
+  visibleInProjectUi: true,
+  defaultSessionSources(env = process.env): string[] {
+    const home = os.homedir();
+    const reasonixHome = env.REASONIX_HOME ?? path.join(home, ".reasonix");
+    return [existing(reasonixHome, "sessions")];
+  },
+  skillTarget() {
+    return unsupportedSkillDirectory("Reasonix 暂无项目级 skill link 目录映射");
+  },
+  detect(config: AppConfig): ToolStatus {
+    return status(this, config);
+  },
+  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
+    return { command: configuredCommand(config, "reasonix"), args: ["code"], cwd };
+  },
+  buildResumeCommand(config: AppConfig, session: SessionEntry): LaunchCommand {
+    if (!session.nativeSessionId) throw new Error("Reasonix session is missing native session id");
+    if (!session.originalCwd) throw new Error("Reasonix session is missing cwd");
+    return { command: configuredCommand(config, "reasonix"), args: ["code", "--session", session.nativeSessionId], cwd: session.originalCwd };
+  }
+};
+
 export const toolAdapters: Record<ToolId, ToolAdapter> = {
   codex: codexAdapter,
   claude: claudeAdapter,
@@ -406,7 +462,9 @@ export const toolAdapters: Record<ToolId, ToolAdapter> = {
   codebuddy: codeBuddyAdapter,
   copilot: copilotAdapter,
   cursor: cursorAdapter,
-  antigravity: antigravityAdapter
+  antigravity: antigravityAdapter,
+  deepcode: deepcodeAdapter,
+  reasonix: reasonixAdapter
 };
 
 export function listToolStatuses(config: AppConfig): ToolStatus[] {

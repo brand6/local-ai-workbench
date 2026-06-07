@@ -169,12 +169,14 @@ function configWithCodexSource(codexSessions: string, directory: string): AppCon
       opencode: { command: "opencode", sessionSources: [path.join(directory, "missing-opencode-sessions")] },
       kilo: { command: "kilo", sessionSources: [path.join(directory, "missing-kilo-sessions")] },
       qwen: { command: "qwen", sessionSources: [path.join(directory, "missing-qwen-sessions")] },
+      deepcode: { command: "deepcode", sessionSources: [path.join(directory, "missing-deepcode-sessions")] },
       kimi: { command: "kimi", sessionSources: [path.join(directory, "missing-kimi-sessions")] },
       qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
       codebuddy: { command: "codebuddy", sessionSources: [path.join(directory, "missing-codebuddy-sessions")] },
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
-      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] }
+      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
     skillhub: { rootDir: path.join(directory, "skillhub") }

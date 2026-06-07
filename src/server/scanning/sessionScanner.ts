@@ -7,7 +7,7 @@ import type { ToolAdapter } from "../tools/toolAdapter.js";
 import { parseClineDatabaseFile } from "./clineDatabase.js";
 import { parseCursorDatabaseFile } from "./cursorDatabase.js";
 import { parseOpencodeDatabaseFile } from "./opencodeDatabase.js";
-import { parseSessionFile, parseSessionIndexFile } from "./sessionParser.js";
+import { parseDeepcodeSessionIndexFile, parseSessionFile, parseSessionIndexFile } from "./sessionParser.js";
 import type { AppConfig } from "../../shared/types.js";
 import { isStrictChildPath } from "../core/pathUtils.js";
 
@@ -281,6 +281,15 @@ function parseSourceFile(adapter: ToolAdapter, sourceFile: string, scanRunId: st
       scanRunId
     });
   }
+  if (adapter.id === "deepcode" && isDeepcodeSessionIndex(sourceFile)) {
+    return parseDeepcodeSessionIndexFile({
+      toolId: adapter.id,
+      parserVersion: adapter.parserVersion,
+      sourceFormat: "deepcode-index",
+      sourceFile,
+      scanRunId
+    });
+  }
   const parsed = parseSessionFile({
     toolId: adapter.id,
     parserVersion: adapter.parserVersion,
@@ -348,6 +357,8 @@ function sessionFiles(adapter: ToolAdapter, source: string): string[] {
 }
 
 function isSessionFile(adapter: ToolAdapter, file: string): boolean {
+  if (adapter.id === "deepcode") return isDeepcodeSessionIndex(file);
+  if (adapter.id === "reasonix") return isReasonixSessionFile(file);
   if (adapter.id === "cursor") return isCursorSessionFile(file);
   if (adapter.id === "antigravity") return isAntigravitySessionFile(file);
   if (adapter.id === "kilo") return isKiloDatabase(file);
@@ -399,6 +410,15 @@ function isClineDatabase(file: string): boolean {
 
 function isKimiSessionIndex(file: string): boolean {
   return path.basename(file).toLowerCase() === "session_index.jsonl";
+}
+
+function isDeepcodeSessionIndex(file: string): boolean {
+  return path.basename(file).toLowerCase() === "sessions-index.json";
+}
+
+function isReasonixSessionFile(file: string): boolean {
+  const basename = path.basename(file).toLowerCase();
+  return basename.endsWith(".jsonl") && !basename.endsWith(".events.jsonl");
 }
 
 function safeReadDir(directory: string): fs.Dirent[] {

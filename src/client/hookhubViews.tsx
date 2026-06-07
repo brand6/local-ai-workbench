@@ -365,20 +365,26 @@ export function ProjectHooksPanel({
   );
 }
 
-function HookHubSuiteCard({
+export function HookHubSuiteCard({
   suite,
   busy,
   onUpdate,
   onDelete,
   onExport,
-  onSync
+  onSync,
+  summaryPrefix,
+  summaryExtra,
+  className
 }: {
   suite: HookHubSuite;
   busy: boolean;
-  onUpdate: (suiteId: string, input: HookHubSuiteInput) => void;
-  onDelete: (suiteId: string) => void;
-  onExport: () => Promise<HookHubExportDocument>;
-  onSync: (suiteId: string) => void;
+  onUpdate?: (suiteId: string, input: HookHubSuiteInput) => void;
+  onDelete?: (suiteId: string) => void;
+  onExport?: () => Promise<HookHubExportDocument>;
+  onSync?: (suiteId: string) => void;
+  summaryPrefix?: React.ReactNode;
+  summaryExtra?: React.ReactNode;
+  className?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<SuiteDraft>(() => suiteDraftFromSuite(suite));
@@ -392,7 +398,7 @@ function HookHubSuiteCard({
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const parsed = suiteDraftInput(draft, setError);
-    if (parsed) {
+    if (parsed && onUpdate) {
       onUpdate(suite.suiteId, parsed);
       setEditing(false);
     }
@@ -401,31 +407,35 @@ function HookHubSuiteCard({
   return (
     <>
       {exportText ? <HookHubExportDialog suiteName={suite.name} exportText={exportText} onClose={() => setExportText("")} /> : null}
-      <details className="hookhub-suite-card">
+      <details className={["hookhub-suite-card", className].filter(Boolean).join(" ")}>
         <summary>
           <span className="skillhub-source-main">
+            {summaryPrefix}
             <span className="skillhub-source-title">{suite.name}</span>
             <span className="metric-pill">{suite.toolIds.length} tools</span>
             {suite.requiredEnv.length ? <span className="metric-pill">env {suite.requiredEnv.length}</span> : null}
           </span>
           <span className="skillhub-source-actions hookhub-suite-summary-actions">
             <span className="metric-pill strong">{formatTime(suite.updatedAt)}</span>
-            <button
-              className="secondary"
-              type="button"
-              disabled={busy}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                void onExport().then((document) => setExportText(JSON.stringify(document, null, 2)));
-              }}
-            >
-              导出
-            </button>
+            {summaryExtra}
+            {onExport ? (
+              <button
+                className="secondary"
+                type="button"
+                disabled={busy}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void onExport().then((document) => setExportText(JSON.stringify(document, null, 2)));
+                }}
+              >
+                导出
+              </button>
+            ) : null}
           </span>
         </summary>
         <div className="skillhub-skill-body hookhub-suite-body">
-          {editing ? (
+          {editing && onUpdate ? (
             <SuiteDraftForm draft={draft} busy={busy} submitLabel="保存 suite" onChange={setDraft} onSubmit={submit} />
           ) : (
             <>
@@ -439,17 +449,25 @@ function HookHubSuiteCard({
             </>
           )}
           {error ? <div className="field-error">{error}</div> : null}
-          <div className="card-actions">
-            <button className="secondary" type="button" disabled={busy} onClick={() => setEditing((value) => !value)}>
-              {editing ? "取消编辑" : "编辑"}
-            </button>
-            <button className="secondary" type="button" disabled={busy} onClick={() => onSync(suite.suiteId)}>
-              同步到所有已启用项目
-            </button>
-            <button className="danger" type="button" disabled={busy} onClick={() => onDelete(suite.suiteId)}>
-              删除
-            </button>
-          </div>
+          {onUpdate || onSync || onDelete ? (
+            <div className="card-actions">
+              {onUpdate ? (
+                <button className="secondary" type="button" disabled={busy} onClick={() => setEditing((value) => !value)}>
+                  {editing ? "取消编辑" : "编辑"}
+                </button>
+              ) : null}
+              {onSync ? (
+                <button className="secondary" type="button" disabled={busy} onClick={() => onSync(suite.suiteId)}>
+                  同步到所有已启用项目
+                </button>
+              ) : null}
+              {onDelete ? (
+                <button className="danger" type="button" disabled={busy} onClick={() => onDelete(suite.suiteId)}>
+                  删除
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </details>
     </>

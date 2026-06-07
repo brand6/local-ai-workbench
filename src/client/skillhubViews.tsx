@@ -19,13 +19,13 @@ type SkillHubSource = SkillHubList["sources"][number];
 const DIRECT_SKILLS_SOURCE_ID = "skills";
 const NEW_LOCAL_SOURCE_VALUE = "__new-local-source__";
 
-interface SkillHubSourceSummary {
+export interface SkillHubSourceSummary {
   id: string;
   type: SkillHubSource["type"];
   label: string;
 }
 
-interface SkillHubSourceGroup {
+export interface SkillHubSourceGroup {
   source: SkillHubSourceSummary;
   skills: SkillHubSkill[];
 }
@@ -178,26 +178,7 @@ export function SkillHubPage({
                 </summary>
                 <div className="skillhub-skill-list">
                   {group.skills.map((skill) => (
-                    <details className="skillhub-skill-row" key={skill.id}>
-                      <summary>
-                        <span className="skillhub-skill-title">{skill.folderName}</span>
-                        {skill.skillName && skill.skillName !== skill.folderName ? <small>{skill.skillName}</small> : null}
-                      </summary>
-                      <div className="skillhub-skill-body">
-                        <p>{skill.description ?? "无描述"}</p>
-                        <div className="card-actions">
-                          <button className="secondary" type="button" disabled={busy} onClick={() => onOpenSkill(skill.id, "document")}>
-                            阅读
-                          </button>
-                          <button className="secondary" type="button" disabled={busy} onClick={() => onOpenSkill(skill.id, "folder")}>
-                            管理
-                          </button>
-                          <button className="danger" type="button" disabled={busy} onClick={() => onDeleteSkill(skill.id)}>
-                            删除
-                          </button>
-                        </div>
-                      </div>
-                    </details>
+                    <SkillHubSkillRow key={skill.id} skill={skill} busy={busy} onOpenSkill={onOpenSkill} onDeleteSkill={onDeleteSkill} />
                   ))}
                 </div>
               </details>
@@ -209,9 +190,62 @@ export function SkillHubPage({
   );
 }
 
-function groupSkillHubSkills(skillHub: SkillHubList | null): SkillHubSourceGroup[];
-function groupSkillHubSkills(skills: SkillHubSkill[], sources?: SkillHubSource[]): SkillHubSourceGroup[];
-function groupSkillHubSkills(skillHubOrSkills: SkillHubList | SkillHubSkill[] | null, sourceList: SkillHubSource[] = []): SkillHubSourceGroup[] {
+export function SkillHubSkillRow({
+  skill,
+  busy,
+  onOpenSkill,
+  onDeleteSkill,
+  summaryPrefix,
+  summaryExtra,
+  className
+}: {
+  skill: SkillHubSkill;
+  busy: boolean;
+  onOpenSkill?: (skillId: string, target: SkillHubOpenTarget) => void;
+  onDeleteSkill?: (skillId: string) => void;
+  summaryPrefix?: React.ReactNode;
+  summaryExtra?: React.ReactNode;
+  className?: string;
+}) {
+  const canDelete = Boolean(onDeleteSkill) && canDeleteSkillHubSkill(skill);
+  const hasActions = Boolean(onOpenSkill) || canDelete;
+  return (
+    <details className={["skillhub-skill-row", className].filter(Boolean).join(" ")}>
+      <summary>
+        {summaryPrefix}
+        <span className="skillhub-skill-title">{skill.folderName}</span>
+        {skill.skillName && skill.skillName !== skill.folderName ? <small>{skill.skillName}</small> : null}
+        {summaryExtra}
+      </summary>
+      <div className="skillhub-skill-body">
+        <p>{skill.description ?? "无描述"}</p>
+        {hasActions ? (
+          <div className="card-actions">
+            {onOpenSkill ? (
+              <>
+                <button className="secondary" type="button" disabled={busy} onClick={() => onOpenSkill(skill.id, "document")}>
+                  打开
+                </button>
+                <button className="secondary" type="button" disabled={busy} onClick={() => onOpenSkill(skill.id, "folder")}>
+                  目录
+                </button>
+              </>
+            ) : null}
+            {canDelete && onDeleteSkill ? (
+              <button className="danger" type="button" disabled={busy} onClick={() => onDeleteSkill(skill.id)}>
+                删除
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+export function groupSkillHubSkills(skillHub: SkillHubList | null): SkillHubSourceGroup[];
+export function groupSkillHubSkills(skills: SkillHubSkill[], sources?: SkillHubSource[]): SkillHubSourceGroup[];
+export function groupSkillHubSkills(skillHubOrSkills: SkillHubList | SkillHubSkill[] | null, sourceList: SkillHubSource[] = []): SkillHubSourceGroup[] {
   if (!skillHubOrSkills) return [];
   const skills = Array.isArray(skillHubOrSkills) ? skillHubOrSkills : skillHubOrSkills.skills;
   const skillHubSources = Array.isArray(skillHubOrSkills) ? sourceList : skillHubOrSkills.sources;
@@ -241,6 +275,10 @@ function skillHubSourceSummary(source: SkillHubSource): SkillHubSourceSummary {
     type: source.type,
     label: source.label
   };
+}
+
+function canDeleteSkillHubSkill(skill: SkillHubSkill): boolean {
+  return skill.sourceType !== "plugin" && skill.source?.type !== "plugin" && !skill.libraryRelativePath.startsWith("pluginhub/");
 }
 
 export function ProjectSkillsPanel({

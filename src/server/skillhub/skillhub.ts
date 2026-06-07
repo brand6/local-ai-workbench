@@ -70,6 +70,8 @@ interface LocalSkillMigrationTargetPlan {
 }
 
 const DIRECT_SKILLS_SOURCE_ID = "skills";
+const PLUGINHUB_LIBRARY_PREFIX = "pluginhub";
+const PLUGIN_SKILL_DELETE_ERROR = "Plugin 技能不能在 SkillHub 删除，请从 PluginHub 删除对应 Plugin 或 source";
 const DEFAULT_SKILLHUB_SEEDED_SETTING = "skillhub.default-sources.seeded.v1";
 const MATT_POCOCK_REPO_KEY = "mattpocock-skills";
 const UNITY_MCP_SKILL_FOLDER = "unity-mcp-skill";
@@ -89,6 +91,7 @@ export function listSkillHub(database: AppDatabase, config: AppConfig, dataDir: 
   const resolved = ensureSkillHub(config, dataDir);
   seedDefaultSkillHubSources(database, config, dataDir);
   assignDirectLibrarySkillsSource(database, resolved.libraryDir);
+  assignPluginHubSkillsSourceType(database);
   return {
     config: resolved,
     sources: database.listSkillHubSources(),
@@ -259,6 +262,7 @@ export function applyGitHubSourceUpdate(
 export function previewDeleteSkillHubSkill(database: AppDatabase, skillId: string): SkillHubDeletePreview {
   const skill = database.getSkillHubSkill(skillId);
   if (!skill) throw new Error("SkillHub skill not found");
+  assertSkillHubSkillDeletable(skill);
   const affectedTargets = database.listProjectSkillTargetsForSkill(skillId);
   const brokenTargets = affectedTargets.filter((target) => !fs.existsSync(target.linkPath));
   return { skill, affectedTargets, brokenTargets, failures: [] };
@@ -1177,6 +1181,19 @@ function isDirectSkillsLibraryPath(libraryRelativePath: string): boolean {
   return normalized === DIRECT_SKILLS_SOURCE_ID || normalized.startsWith(`${DIRECT_SKILLS_SOURCE_ID}/`);
 }
 
+function isPluginHubLibraryPath(libraryRelativePath: string): boolean {
+  const normalized = normalizeRelativePath(libraryRelativePath);
+  return normalized === PLUGINHUB_LIBRARY_PREFIX || normalized.startsWith(`${PLUGINHUB_LIBRARY_PREFIX}/`);
+}
+
+function isPluginHubSkill(skill: SkillHubSkill): boolean {
+  return skill.sourceType === "plugin" || skill.source?.type === "plugin" || isPluginHubLibraryPath(skill.libraryRelativePath);
+}
+
+function assertSkillHubSkillDeletable(skill: SkillHubSkill): void {
+  if (isPluginHubSkill(skill)) throw new Error(PLUGIN_SKILL_DELETE_ERROR);
+}
+
 function upsertDirectSkillsSource(database: AppDatabase, libraryDir: string): SkillHubSource {
   const skillsPath = path.join(libraryDir, DIRECT_SKILLS_SOURCE_ID);
   return database.upsertSkillHubSource({
@@ -1206,6 +1223,36 @@ function assignDirectLibrarySkillsSource(database: AppDatabase, libraryDir: stri
       id: skill.id,
       sourceId: source.id,
       sourceType: source.type,
+      folderName: skill.folderName,
+      skillName: skill.skillName,
+      description: skill.description,
+      libraryRelativePath: skill.libraryRelativePath,
+      libraryPath: skill.libraryPath,
+      sourceRelativePath: skill.sourceRelativePath,
+      contentHash: skill.contentHash,
+      createdAt: skill.createdAt,
+      updatedAt: skill.updatedAt
+    });
+  }
+}
+
+function assignPluginHubSkillsSourceType(database: AppDatabase): void {
+  const pluginSkills = database.listSkillHubSkills().filter((skill) => isPluginHubLibraryPath(skill.libraryRelativePath));
+  if (pluginSkills.length === 0) return;
+
+  const sourceIds = new Set(pluginSkills.map((skill) => skill.sourceId));
+  for (const sourceId of sourceIds) {
+    const source = database.getSkillHubSource(sourceId);
+    if (source && source.type !== "plugin") {
+      database.upsertSkillHubSource({ ...source, type: "plugin" });
+    }
+  }
+
+  for (const skill of pluginSkills.filter((item) => item.sourceType !== "plugin")) {
+    database.upsertSkillHubSkill({
+      id: skill.id,
+      sourceId: skill.sourceId,
+      sourceType: "plugin",
       folderName: skill.folderName,
       skillName: skill.skillName,
       description: skill.description,

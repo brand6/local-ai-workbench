@@ -96,6 +96,7 @@ import {
 } from "../hookhub/hookhub.js";
 import {
   applyProjectAgentTarget,
+  deleteAgentHubAgent,
   deleteAgentHubSource,
   disableProjectAgentTarget,
   importBuiltInAgencyAgents,
@@ -104,6 +105,7 @@ import {
   listProjectAgentState,
   migrateProjectLocalAgent,
   openAgentHubAgent,
+  refreshAgentHubDiscovery,
   reparseAgentHubAgent,
   syncProjectAgents,
   syncProjectAgentTarget
@@ -112,14 +114,19 @@ import {
   createCustomPlugin,
   deletePluginHubPlugin,
   deletePluginHubSource,
+  importPluginHubGitHubSource,
   importPluginHubLocalSource,
   installProjectPlugin,
   listPluginHub,
   listProjectPluginState,
+  openPluginHubPrivateFile,
   previewDeletePluginHubPlugin,
   previewDeletePluginHubSource,
+  refreshPluginHubDiscovery,
+  seedDefaultPluginHubSources,
   syncProjectPluginBinding,
   uninstallProjectPluginBinding,
+  updatePluginHubGitHubSource,
   updateCustomPlugin
 } from "../pluginhub/pluginhub.js";
 import { applyRuleSync, commitRuleSyncTarget, createRuleFile, createRuleTemplateFile, getRuleSyncStatus, openRuleFile, prepareRuleFileCreate } from "../skillhub/ruleSync.js";
@@ -306,7 +313,13 @@ export function installApi(app: Express, context: AppContext): void {
   app.get("/api/agenthub", (request, response) => {
     const dataDir = requireDataDir(context, response);
     if (!dataDir) return;
-    response.json(listAgentHub(context.database(), dataDir, String(request.query.query ?? "")));
+    response.json(listAgentHub(context.database(), dataDir, String(request.query.query ?? ""), { seedDefaultSources: false }));
+  });
+
+  app.post("/api/agenthub/discovery/refresh", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    response.json(refreshAgentHubDiscovery(context.database(), dataDir, String(request.body?.query ?? "")));
   });
 
   app.post("/api/agenthub/import/builtin/agency-agents", (_request, response) => {
@@ -360,6 +373,16 @@ export function installApi(app: Express, context: AppContext): void {
     }
   });
 
+  app.delete("/api/agenthub/agents/:id", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    try {
+      response.json(deleteAgentHubAgent(context.database(), dataDir, request.params.id));
+    } catch (error) {
+      response.status(404).json({ error: "agenthub-agent-delete-failed", reason: error instanceof Error ? error.message : "agenthub-agent-delete-failed" });
+    }
+  });
+
   app.delete("/api/agenthub/sources/:id", (request, response) => {
     const dataDir = requireDataDir(context, response);
     if (!dataDir) return;
@@ -377,7 +400,11 @@ export function installApi(app: Express, context: AppContext): void {
   app.post(
     "/api/clihub/discovery/refresh",
     asyncHandler(async (request, response) => {
-      response.json(await refreshCliHubDiscovery(context.database(), stringBody(request, "cliId"), context.cliHubRuntimeOptions()));
+      response.json(
+        await refreshCliHubDiscovery(context.database(), stringBody(request, "cliId"), context.cliHubRuntimeOptions(), {
+          includeDetails: request.body?.includeDetails !== false
+        })
+      );
     })
   );
 
@@ -665,7 +692,15 @@ export function installApi(app: Express, context: AppContext): void {
   });
 
   app.get("/api/pluginhub", (_request, response) => {
-    response.json(listPluginHub(context.database()));
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    response.json(listPluginHub(context.database(), context.config(), dataDir, { seedDefaultSources: false }));
+  });
+
+  app.post("/api/pluginhub/discovery/refresh", (_request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    response.json(refreshPluginHubDiscovery(context.database(), context.config(), dataDir));
   });
 
   app.post("/api/pluginhub/import/local", (request, response) => {
@@ -680,6 +715,35 @@ export function installApi(app: Express, context: AppContext): void {
       response.json(importPluginHubLocalSource(context.database(), context.config(), dataDir, inputPath));
     } catch (error) {
       response.status(400).json({ error: "pluginhub-local-import-failed", reason: error instanceof Error ? error.message : "pluginhub-local-import-failed" });
+    }
+  });
+
+  app.post("/api/pluginhub/import/github", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    const input = stringBody(request, "input");
+    if (!dataDir) return;
+    if (!input) {
+      response.status(400).json({ error: "input is required" });
+      return;
+    }
+    try {
+      response.json(
+        importPluginHubGitHubSource(context.database(), context.config(), dataDir, input, {
+          fixturePath: typeof request.body?.fixturePath === "string" ? request.body.fixturePath : undefined
+        })
+      );
+    } catch (error) {
+      response.status(400).json({ error: "pluginhub-github-import-failed", reason: error instanceof Error ? error.message : "pluginhub-github-import-failed" });
+    }
+  });
+
+  app.post("/api/pluginhub/sources/:sourceId/update", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    try {
+      response.json(updatePluginHubGitHubSource(context.database(), context.config(), dataDir, request.params.sourceId));
+    } catch (error) {
+      response.status(400).json({ error: "pluginhub-source-update-failed", reason: error instanceof Error ? error.message : "pluginhub-source-update-failed" });
     }
   });
 
@@ -739,6 +803,19 @@ export function installApi(app: Express, context: AppContext): void {
       response.json(previewDeletePluginHubPlugin(context.database(), request.params.pluginId));
     } catch (error) {
       response.status(404).json({ error: "pluginhub-plugin-delete-preview-failed", reason: error instanceof Error ? error.message : "pluginhub-plugin-delete-preview-failed" });
+    }
+  });
+
+  app.post("/api/pluginhub/plugins/:pluginId/private-files/:fileId/open", (request, response) => {
+    const target = skillHubOpenTargetBody(request);
+    if (!target) {
+      response.status(400).json({ error: "target must be document or folder" });
+      return;
+    }
+    try {
+      response.json(openPluginHubPrivateFile(context.database(), request.params.pluginId, request.params.fileId, target));
+    } catch (error) {
+      response.status(404).json({ error: "pluginhub-private-file-open-failed", reason: error instanceof Error ? error.message : "pluginhub-private-file-open-failed" });
     }
   });
 
@@ -884,20 +961,25 @@ export function installApi(app: Express, context: AppContext): void {
   });
 
   app.get("/api/projects/:id/plugins", (request, response) => {
+    const dataDir = requireDataDir(context, response);
     const project = projectSkillScopeFromRequest(context, request, response);
+    if (!dataDir) return;
     if (!project) return;
-    response.json(listProjectPluginState(context.database(), project));
+    response.json(listProjectPluginState(context.database(), project, context.config(), dataDir));
   });
 
   app.put("/api/projects/:id/plugins/:pluginId", (request, response) => {
+    const dataDir = requireDataDir(context, response);
     const project = projectSkillScopeFromRequest(context, request, response);
     const toolId = toolIdBody(request);
+    if (!dataDir) return;
     if (!project) return;
     if (!toolId) {
       response.status(400).json({ error: "toolId is required" });
       return;
     }
     try {
+      seedDefaultPluginHubSources(context.database(), context.config(), dataDir);
       response.json(installProjectPlugin(context.database(), project, request.params.pluginId, toolId, { conflictMode: pluginHubConflictModeBody(request) }));
     } catch (error) {
       response.status(400).json({ error: "project-plugin-install-failed", reason: error instanceof Error ? error.message : "project-plugin-install-failed" });
@@ -905,9 +987,12 @@ export function installApi(app: Express, context: AppContext): void {
   });
 
   app.post("/api/projects/:id/plugin-bindings/:bindingId/sync", (request, response) => {
+    const dataDir = requireDataDir(context, response);
     const project = projectSkillScopeFromRequest(context, request, response);
+    if (!dataDir) return;
     if (!project) return;
     try {
+      seedDefaultPluginHubSources(context.database(), context.config(), dataDir);
       response.json(syncProjectPluginBinding(context.database(), project, request.params.bindingId, { conflictMode: pluginHubConflictModeBody(request) }));
     } catch (error) {
       response.status(400).json({ error: "project-plugin-sync-failed", reason: error instanceof Error ? error.message : "project-plugin-sync-failed" });

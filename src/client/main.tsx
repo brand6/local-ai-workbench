@@ -82,6 +82,20 @@ interface RepairSignal {
   message: string;
 }
 
+type AppView = "home" | "skillhub" | "mcphub" | "hookhub" | "clihub" | "pluginhub" | "agenthub";
+type HubLoadKey = Exclude<AppView, "home">;
+
+interface HubLoadOptions<T> {
+  key: HubLoadKey;
+  load: () => Promise<T>;
+  setData: (value: T) => void;
+  refresh?: (() => Promise<T>) | undefined;
+  loadingStatus?: string;
+  setStatus?: (value: string) => void;
+  errorMessage: string;
+  isCurrent?: (() => boolean) | undefined;
+}
+
 function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapState | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -102,7 +116,7 @@ function App() {
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshDialogOpen, setRefreshDialogOpen] = useState(false);
-  const [view, setView] = useState<"home" | "skillhub" | "mcphub" | "hookhub" | "clihub" | "pluginhub" | "agenthub">("home");
+  const [view, setView] = useState<AppView>("home");
   const [skillHub, setSkillHub] = useState<SkillHubList | null>(null);
   const [skillHubQuery, setSkillHubQuery] = useState("");
   const [skillHubUpdates, setSkillHubUpdates] = useState<SkillHubUpdateCheckResult | null>(null);
@@ -115,6 +129,7 @@ function App() {
   const [hookHub, setHookHub] = useState<HookHubList | null>(null);
   const [hookHubQuery, setHookHubQuery] = useState("");
   const [pluginHub, setPluginHub] = useState<PluginHubList | null>(null);
+  const [pluginHubStatus, setPluginHubStatus] = useState("");
   const [projectSkillPanelOpen, setProjectSkillPanelOpen] = useState(false);
   const [projectSkillState, setProjectSkillState] = useState<ProjectSkillTargetsState | null>(null);
   const [projectSkillTargetRoot, setProjectSkillTargetRoot] = useState<string | null>(null);
@@ -145,6 +160,14 @@ function App() {
   const [ruleCreateLoading, setRuleCreateLoading] = useState(false);
   const selectedProjectIdRef = useRef<string | null>(null);
   const viewRef = useRef(view);
+  const hubLoadSeqRef = useRef<Record<HubLoadKey, number>>({
+    skillhub: 0,
+    mcphub: 0,
+    hookhub: 0,
+    clihub: 0,
+    pluginhub: 0,
+    agenthub: 0
+  });
   const queryRef = useRef("");
   const selectedDriveRootRef = useRef("");
   const autoReloadInFlightRef = useRef(false);
@@ -231,7 +254,7 @@ function App() {
 
   useEffect(() => {
     if (view !== "agenthub" || !bootstrap?.initialized) return;
-    void loadAgentHub(agentHubQuery);
+    void loadAgentHub(agentHubQuery, true);
   }, [view, agentHubQuery, bootstrap?.initialized]);
 
   useEffect(() => {
@@ -251,7 +274,7 @@ function App() {
 
   useEffect(() => {
     if (view !== "pluginhub" || !bootstrap?.initialized) return;
-    void loadPluginHub();
+    void loadPluginHub(true);
   }, [view, bootstrap?.initialized]);
 
   async function initialize() {
@@ -275,28 +298,89 @@ function App() {
     setConfig(appConfig);
   }
 
-  async function loadSkillHub(search = skillHubQuery) {
-    setSkillHub(await client.skillhub(search));
+  async function loadHub<T>(options: HubLoadOptions<T>) {
+    const requestId = ++hubLoadSeqRef.current[options.key];
+    const isLatestRequest = () => requestId === hubLoadSeqRef.current[options.key];
+    const isLatest = () => isLatestRequest() && (options.isCurrent?.() ?? true);
+    try {
+      const cached = await options.load();
+      if (!isLatest()) return;
+      options.setData(cached);
+      if (!options.refresh) return;
+
+      if (options.loadingStatus) options.setStatus?.(options.loadingStatus);
+      const refreshed = await options.refresh();
+      if (isLatest()) options.setData(refreshed);
+    } catch (error) {
+      if (isLatest()) setMessage(error instanceof Error ? error.message : options.errorMessage);
+    } finally {
+      if (isLatestRequest() && options.refresh) options.setStatus?.("");
+    }
   }
 
-  async function loadAgentHub(search = agentHubQuery) {
-    setAgentHub(await client.agenthub(search));
+  async function loadSkillHub(search = skillHubQuery) {
+    await loadHub({
+      key: "skillhub",
+      load: () => client.skillhub(search),
+      setData: setSkillHub,
+      errorMessage: "SkillHub 读取失败"
+    });
+  }
+
+  async function loadAgentHub(search = agentHubQuery, refreshDiscovery = false) {
+    await loadHub({
+      key: "agenthub",
+      load: () => client.agenthub(search),
+      setData: setAgentHub,
+      refresh: refreshDiscovery ? () => client.refreshAgentHubDiscovery(search) : undefined,
+      loadingStatus: "AgentHub 正在刷新发现",
+      errorMessage: "AgentHub 发现刷新失败",
+      isCurrent: refreshDiscovery ? () => viewRef.current === "agenthub" : undefined
+    });
   }
 
   async function loadCliHub(refreshDiscovery = false) {
-    setCliHub(refreshDiscovery ? await client.refreshCliHubDiscovery() : await client.clihub());
+    await loadHub({
+      key: "clihub",
+      load: () => client.clihub(),
+      setData: setCliHub,
+      refresh: refreshDiscovery ? () => client.refreshCliHubDiscovery(undefined, false) : undefined,
+      loadingStatus: "CliHub 正在刷新发现",
+      setStatus: setCliHubStatus,
+      errorMessage: "CliHub 发现刷新失败",
+      isCurrent: refreshDiscovery ? () => viewRef.current === "clihub" : undefined
+    });
   }
 
   async function loadMcpHub() {
-    setMcpHub(await client.mcphub());
+    await loadHub({
+      key: "mcphub",
+      load: () => client.mcphub(),
+      setData: setMcpHub,
+      errorMessage: "McpHub 读取失败"
+    });
   }
 
   async function loadHookHub(search = hookHubQuery) {
-    setHookHub(await client.hookhub(search));
+    await loadHub({
+      key: "hookhub",
+      load: () => client.hookhub(search),
+      setData: setHookHub,
+      errorMessage: "HookHub 读取失败"
+    });
   }
 
-  async function loadPluginHub() {
-    setPluginHub(await client.pluginhub());
+  async function loadPluginHub(refreshDiscovery = false) {
+    await loadHub({
+      key: "pluginhub",
+      load: () => client.pluginhub(),
+      setData: setPluginHub,
+      refresh: refreshDiscovery ? () => client.refreshPluginHubDiscovery() : undefined,
+      loadingStatus: "PluginHub 正在刷新发现",
+      setStatus: setPluginHubStatus,
+      errorMessage: "PluginHub 发现刷新失败",
+      isCurrent: refreshDiscovery ? () => viewRef.current === "pluginhub" : undefined
+    });
   }
 
   async function loadDetail(projectId: string, search: string) {
@@ -472,7 +556,7 @@ function App() {
   const showingPluginHub = view === "pluginhub" && !selectedProject;
   const showingHub = showingSkillHub || showingAgentHub || showingCliHub || showingMcpHub || showingHookHub || showingPluginHub;
   const cliHubOperationStatus = showingCliHub && cliHub?.operation ? cliHubOperationMessage(cliHub.operation) : "";
-  const transientStatus = scanStatus || cliHubStatus || cliHubOperationStatus;
+  const transientStatus = scanStatus || cliHubStatus || cliHubOperationStatus || pluginHubStatus;
   const homeCommandBar = selectedProject || showingHub ? null : (
     <section className="toolbar-panel compact home-command-panel" aria-label="项目操作">
       <div className="home-actions">
@@ -771,7 +855,7 @@ function App() {
           onImportLocal={(inputPath, truthTool) => void runAction(() => importLocalAgents(inputPath, truthTool))}
           onReimportBuiltin={() => void runAction(reimportBuiltInAgents)}
           onOpenAgent={(agentId, target) => void runAction(() => openAgentHubAgent(agentId, target))}
-          onReparseAgent={(agentId) => void runAction(() => reparseAgentHubAgent(agentId))}
+          onDeleteAgent={(agentId) => void runAction(() => deleteAgentHubAgent(agentId))}
           onDeleteSource={(sourceId) => void runAction(() => deleteAgentHubSource(sourceId))}
         />
       ) : showingCliHub ? (
@@ -793,8 +877,13 @@ function App() {
           busy={busy}
           onPickLocalPath={pickDirectory}
           onImportLocal={(inputPath) => void runAction(() => importLocalPlugin(inputPath))}
+          onImportGitHub={(input) => void runAction(() => importGitHubPlugin(input))}
           onCreateCustom={(input) => void runAction(() => createCustomPlugin(input))}
           onUpdateCustom={(pluginId, input) => void runAction(() => updateCustomPlugin(pluginId, input))}
+          onUpdateSource={(sourceId) => void runAction(() => updatePluginHubSource(sourceId))}
+          onOpenSkill={(skillId, target) => void runAction(() => openSkillHubSkill(skillId, target))}
+          onOpenAgent={(agentId, target) => void runAction(() => openAgentHubAgent(agentId, target))}
+          onOpenPrivateFile={(pluginId, fileId, target) => void runAction(() => openPluginHubPrivateFile(pluginId, fileId, target))}
           onDeleteSource={(sourceId) => void runAction(() => deletePluginHubSource(sourceId))}
           onDeletePlugin={(pluginId) => void runAction(() => deletePluginHubPlugin(pluginId))}
         />
@@ -1099,6 +1188,20 @@ function App() {
     setMessage("AgentHub Agent 已重新解析");
   }
 
+  async function deleteAgentHubAgent(agentId: string) {
+    const confirmed = window.confirm("确定删除这个 AgentHub Agent？相关项目 binding 会一起移除。");
+    if (!confirmed) {
+      setMessage("已取消删除 AgentHub Agent");
+      return;
+    }
+    await client.deleteAgentHubAgent(agentId);
+    await loadAgentHub();
+    if (projectAgentPanelOpen && selectedProjectId) {
+      setProjectAgentState(await client.projectAgents(selectedProjectId, projectAgentTargetRoot ?? undefined));
+    }
+    setMessage("AgentHub Agent 已删除");
+  }
+
   async function deleteAgentHubSource(sourceId: string) {
     const confirmed = window.confirm("确定删除这个 AgentHub source？相关中心 Agent 和项目 binding 会一起移除。");
     if (!confirmed) {
@@ -1178,7 +1281,24 @@ function App() {
     const result = await client.importLocalPlugin(inputPath);
     await loadPluginHub();
     if (view === "skillhub") await loadSkillHub();
+    if (projectPluginPanelOpen) await refreshProjectPluginPanel();
     setMessage(`Plugin 导入完成：${result.plugins.length} 个 plugin，${result.importedSkills.length} 个 skills`);
+  }
+
+  async function importGitHubPlugin(input: string) {
+    const result = await client.importGitHubPlugin(input);
+    await loadPluginHub();
+    if (view === "skillhub") await loadSkillHub();
+    if (projectPluginPanelOpen) await refreshProjectPluginPanel();
+    setMessage(`GitHub Plugin 导入完成：${result.plugins.length} 个 plugin，${result.importedSkills.length} 个 skills`);
+  }
+
+  async function updatePluginHubSource(sourceId: string) {
+    const result = await client.updatePluginHubSource(sourceId);
+    await loadPluginHub();
+    if (view === "skillhub") await loadSkillHub();
+    if (projectPluginPanelOpen) await refreshProjectPluginPanel();
+    setMessage(`GitHub Plugin 已更新：${result.plugins.length} 个 plugin，${result.importedSkills.length} 个 skills`);
   }
 
   async function createCustomPlugin(input: PluginHubCustomPluginInput) {
@@ -1222,11 +1342,21 @@ function App() {
     setMessage(`Plugin 已删除：清理 ${result.projectBindings.length} 个项目 binding`);
   }
 
+  async function openPluginHubPrivateFile(pluginId: string, fileId: string, target: SkillHubOpenTarget) {
+    await client.openPluginHubPrivateFile(pluginId, fileId, target);
+    setMessage(target === "document" ? "已打开 Plugin 文件" : "已打开 Plugin 文件目录");
+  }
+
   async function refreshCliHubDiscovery(cliId?: string) {
+    const requestId = ++hubLoadSeqRef.current.clihub;
     setCliHubStatus(cliId ? "CliHub 正在刷新单个 CLI 发现" : "CliHub 正在刷新发现");
-    setCliHub(await client.refreshCliHubDiscovery(cliId));
-    setCliHubStatus("");
-    setMessage("CliHub 发现已刷新");
+    try {
+      const result = await client.refreshCliHubDiscovery(cliId);
+      if (requestId === hubLoadSeqRef.current.clihub) setCliHub(result);
+      setMessage("CliHub 发现已刷新");
+    } finally {
+      if (requestId === hubLoadSeqRef.current.clihub) setCliHubStatus("");
+    }
   }
 
   async function checkCliHubUpdates() {
@@ -1265,11 +1395,17 @@ function App() {
   }
 
   async function installCliHubCli(cliId: string, channelId: string) {
+    const requestId = ++hubLoadSeqRef.current.clihub;
     setCliHubStatus("CliHub 正在安装 CLI");
-    await client.installCliHubCli(cliId, channelId);
-    setCliHub(await client.clihub());
-    setCliHubStatus("");
-    setMessage("CliHub CLI 安装完成");
+    try {
+      const installed = await client.installCliHubCli(cliId, channelId);
+      if (requestId === hubLoadSeqRef.current.clihub) setCliHub((current) => replaceCliHubCli(current, installed));
+      const refreshed = await client.refreshCliHubDiscovery(cliId);
+      if (requestId === hubLoadSeqRef.current.clihub) setCliHub(refreshed);
+      setMessage("CliHub CLI 安装完成");
+    } finally {
+      if (requestId === hubLoadSeqRef.current.clihub) setCliHubStatus("");
+    }
   }
 
   async function updateCliHubCli(cliId: string) {
@@ -1972,6 +2108,14 @@ function cliHubOperationLabel(kind: string): string {
   if (kind === "update-check") return "检查更新";
   if (kind === "update") return "更新";
   return "刷新发现";
+}
+
+function replaceCliHubCli(current: CliHubList | null, cli: CliHubList["clis"][number]): CliHubList | null {
+  if (!current) return current;
+  return {
+    ...current,
+    clis: current.clis.map((item) => (item.cliId === cli.cliId ? cli : item))
+  };
 }
 
 function NewProjectDialog({

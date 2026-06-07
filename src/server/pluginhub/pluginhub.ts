@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   AppConfig,
   PluginHubComponentRef,
@@ -14,6 +16,7 @@ import type {
   PluginHubSource,
   PluginHubSourceDeleteMode,
   PluginHubSourceDeletePreview,
+  LocalOpenResponse,
   Project,
   ProjectLocalFileBackup,
   ProjectPluginApplyResult,
@@ -28,12 +31,14 @@ import type {
   SkillHubSource,
   ToolId
 } from "../../shared/types.js";
+import { openLocalPath } from "../core/localFilesystem.js";
 import { normalizeFsPath } from "../core/pathUtils.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";
-import { ensureSkillHub } from "../skillhub/skillhub.js";
+import { ensureSkillHub, parseGitHubInput } from "../skillhub/skillhub.js";
 import { createDirectoryLink, linkPointsTo, pathExists, removeDirectoryLink } from "../skillhub/links.js";
 import { listProjectToolTargets } from "../skillhub/projectSkills.js";
+import { listMcpHub } from "../mcphub/mcphub.js";
 
 interface DiscoveredPlugin {
   name: string;
@@ -65,6 +70,29 @@ interface ApplyOptions {
   conflictMode?: "overwrite" | "skip" | null;
 }
 
+interface PluginHubImportOptions {
+  sourceId?: string;
+  sourceLabel?: string;
+  inputPath?: string;
+  type?: PluginHubSource["type"];
+  repoKey?: string | null;
+  owner?: string | null;
+  repo?: string | null;
+  branch?: string | null;
+  input?: string;
+  sourcePath?: string | null;
+  currentRevision?: string | null;
+  checkoutPath?: string | null;
+}
+
+interface PluginHubGitHubImportOptions {
+  fixturePath?: string;
+}
+
+interface PluginHubListOptions {
+  seedDefaultSources?: boolean;
+}
+
 interface SkillInstallPlan {
   ref: PluginHubComponentRef;
   skill: SkillHubSkill;
@@ -76,17 +104,29 @@ interface PrivateInstallPlan {
   targetPath: string;
 }
 
-const PLUGINHUB_SKILL_SOURCE_TYPE: SkillHubSource["type"] = "local";
+const PLUGINHUB_SKILL_SOURCE_TYPE: SkillHubSource["type"] = "plugin";
+const DEFAULT_PLUGINHUB_SEEDED_SETTING = "pluginhub.default-sources.seeded.v1";
+const SUPERPOWERS_SOURCE_ID = "pluginhub-source-superpowers";
+const SUPERPOWERS_BUNDLED_FOLDER = "superpowers";
 
-export function listPluginHub(database: AppDatabase): PluginHubList {
+export function listPluginHub(database: AppDatabase, config?: AppConfig, dataDir?: string, options: PluginHubListOptions = {}): PluginHubList {
+  if ((options.seedDefaultSources ?? true) && config && dataDir) seedDefaultPluginHubSources(database, config, dataDir);
   const plugins = database.listPluginHubPlugins();
   return {
     sources: database.listPluginHubSources(),
     plugins,
     sourcePlugins: plugins.filter((plugin) => plugin.kind === "source"),
     customPlugins: plugins.filter((plugin) => plugin.kind === "custom"),
-    skills: database.listSkillHubSkills()
+    skills: database.listSkillHubSkills(),
+    agents: database.listAgentHubAgents(),
+    mcpServers: listMcpHub(database).servers,
+    hookSuites: database.listHookHubSuites()
   };
+}
+
+export function refreshPluginHubDiscovery(database: AppDatabase, config: AppConfig, dataDir: string): PluginHubList {
+  seedDefaultPluginHubSources(database, config, dataDir);
+  return listPluginHub(database, config, dataDir, { seedDefaultSources: false });
 }
 
 export function importPluginHubLocalSource(
@@ -94,6 +134,111 @@ export function importPluginHubLocalSource(
   config: AppConfig,
   dataDir: string,
   inputPath: string
+): PluginHubImportResult {
+  return importPluginHubSource(database, config, dataDir, inputPath, {
+    type: "local",
+    input: inputPath,
+    inputPath,
+    sourcePath: null,
+    repoKey: null,
+    owner: null,
+    repo: null,
+    branch: null,
+    currentRevision: null,
+    checkoutPath: null
+  });
+}
+
+export function importPluginHubGitHubSource(
+  database: AppDatabase,
+  config: AppConfig,
+  dataDir: string,
+  input: string,
+  options: PluginHubGitHubImportOptions = {}
+): PluginHubImportResult {
+  const parsed = parseGitHubInput(input);
+  const existing = database.getPluginHubSourceByRepoKey(parsed.repoKey);
+  const sourceId = existing?.id ?? stableId("pluginhub-source-github", parsed.repoKey);
+  const checkoutPath = existing?.checkoutPath ?? path.join(dataDir, "pluginhub", "sources", sourceId, "checkout");
+  materializeGitHubCheckout(parsed, checkoutPath, options.fixturePath);
+  const revision = gitOutput(["-C", checkoutPath, "rev-parse", "HEAD"]);
+  const branch = parsed.branch ?? (gitOutput(["-C", checkoutPath, "rev-parse", "--abbrev-ref", "HEAD"], false) || null);
+  const scanRoot = parsed.inputPath ? path.join(checkoutPath, parsed.inputPath) : checkoutPath;
+  if (!fs.existsSync(scanRoot) || !fs.statSync(scanRoot).isDirectory()) {
+    throw new Error(`GitHub Plugin source path not found: ${parsed.inputPath ?? "."}`);
+  }
+
+  return importPluginHubSource(database, config, dataDir, scanRoot, {
+    sourceId,
+    sourceLabel: pluginHubGitHubLabel(parsed.owner, parsed.repo, parsed.inputPath),
+    type: "github",
+    repoKey: parsed.repoKey,
+    owner: parsed.owner,
+    repo: parsed.repo,
+    branch,
+    input,
+    inputPath: input,
+    sourcePath: parsed.inputPath,
+    currentRevision: revision,
+    checkoutPath
+  });
+}
+
+export function updatePluginHubGitHubSource(database: AppDatabase, config: AppConfig, dataDir: string, sourceId: string): PluginHubImportResult {
+  const source = database.getPluginHubSource(sourceId);
+  if (!source || source.type !== "github" || !source.checkoutPath || !source.repoKey || !source.owner || !source.repo) {
+    throw new Error("GitHub Plugin source not found");
+  }
+  updateGitHubCheckout(source);
+  const revision = gitOutput(["-C", source.checkoutPath, "rev-parse", "HEAD"], false);
+  const scanRoot = source.sourcePath ? path.join(source.checkoutPath, source.sourcePath) : source.checkoutPath;
+  if (!fs.existsSync(scanRoot) || !fs.statSync(scanRoot).isDirectory()) {
+    throw new Error(`GitHub Plugin source path not found: ${source.sourcePath ?? "."}`);
+  }
+
+  return importPluginHubSource(database, config, dataDir, scanRoot, {
+    sourceId: source.id,
+    sourceLabel: source.label,
+    type: "github",
+    repoKey: source.repoKey,
+    owner: source.owner,
+    repo: source.repo,
+    branch: source.branch,
+    input: source.input,
+    inputPath: source.inputPath,
+    sourcePath: source.sourcePath,
+    currentRevision: revision ?? source.currentRevision,
+    checkoutPath: source.checkoutPath
+  });
+}
+
+export function seedDefaultPluginHubSources(database: AppDatabase, config: AppConfig, dataDir: string): void {
+  if (database.getSetting(DEFAULT_PLUGINHUB_SEEDED_SETTING, false)) return;
+  if (seedBuiltInSuperpowersPlugin(database, config, dataDir)) {
+    database.setSetting(DEFAULT_PLUGINHUB_SEEDED_SETTING, true);
+  }
+}
+
+function seedBuiltInSuperpowersPlugin(database: AppDatabase, config: AppConfig, dataDir: string): boolean {
+  const sourcePath = resolveBundledPath("builtin-plugins", SUPERPOWERS_BUNDLED_FOLDER);
+  if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isDirectory()) return false;
+  const result = importPluginHubSource(database, config, dataDir, sourcePath, {
+    sourceId: SUPERPOWERS_SOURCE_ID,
+    sourceLabel: "obra/superpowers",
+    inputPath: "builtin-plugins/superpowers",
+    input: "builtin-plugins/superpowers",
+    type: "local",
+    sourcePath: null
+  });
+  return result.plugins.length > 0 || Boolean(database.getPluginHubSource(SUPERPOWERS_SOURCE_ID));
+}
+
+function importPluginHubSource(
+  database: AppDatabase,
+  config: AppConfig,
+  dataDir: string,
+  inputPath: string,
+  options: PluginHubImportOptions = {}
 ): PluginHubImportResult {
   const sourcePath = path.resolve(inputPath);
   if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isDirectory()) {
@@ -105,14 +250,23 @@ export function importPluginHubLocalSource(
     throw new Error("未找到可导入的 plugin");
   }
 
-  const existing = database.getPluginHubSourceByResolvedPath(sourcePath);
-  const sourceId = existing?.id ?? stableId("pluginhub-source", normalizeFsPath(sourcePath));
+  const existing = options.sourceId ? database.getPluginHubSource(options.sourceId) : database.getPluginHubSourceByResolvedPath(sourcePath);
+  const sourceId = existing?.id ?? options.sourceId ?? stableId("pluginhub-source", normalizeFsPath(sourcePath));
   const source = database.upsertPluginHubSource({
     id: sourceId,
+    type: options.type ?? "local",
     kind: discovered.kind,
-    label: path.basename(sourcePath) || sourcePath,
-    inputPath: sourcePath,
+    label: options.sourceLabel ?? (path.basename(sourcePath) || sourcePath),
+    repoKey: options.repoKey ?? null,
+    owner: options.owner ?? null,
+    repo: options.repo ?? null,
+    branch: options.branch ?? null,
+    input: options.input ?? options.inputPath ?? sourcePath,
+    inputPath: options.inputPath ?? sourcePath,
+    sourcePath: options.sourcePath ?? null,
     resolvedPath: sourcePath,
+    currentRevision: options.currentRevision ?? null,
+    checkoutPath: options.checkoutPath ?? null,
     pluginCount: discovered.plugins.length,
     componentCount: unique(discovered.plugins.flatMap((plugin) => plugin.skills.map((skill) => skill.sourceRelativePath))).length,
     privateFileCount: discovered.plugins.reduce((count, plugin) => count + plugin.privateFiles.length, 0)
@@ -175,7 +329,8 @@ export function updateCustomPlugin(database: AppDatabase, dataDir: string, plugi
   return upsertCustomPlugin(database, dataDir, pluginId, input, existing);
 }
 
-export function listProjectPluginState(database: AppDatabase, project: Project): ProjectPluginState {
+export function listProjectPluginState(database: AppDatabase, project: Project, config?: AppConfig, dataDir?: string): ProjectPluginState {
+  if (config && dataDir) seedDefaultPluginHubSources(database, config, dataDir);
   const bindings = database
     .listProjectPluginBindings(project.id)
     .filter((binding) => normalizeFsPath(binding.targetRootPath) === normalizeFsPath(project.rootPath));
@@ -333,6 +488,14 @@ export function deletePluginHubPlugin(database: AppDatabase, pluginId: string): 
   removeCustomPluginPrivateMaterial(preview.plugin);
   database.deletePluginHubPlugin(pluginId);
   return preview;
+}
+
+export function openPluginHubPrivateFile(database: AppDatabase, pluginId: string, fileId: string, target: "document" | "folder"): LocalOpenResponse {
+  const plugin = database.getPluginHubPlugin(pluginId);
+  if (!plugin) throw new Error("PluginHub plugin not found");
+  const file = plugin.privateFiles.find((item) => item.id === fileId);
+  if (!file) throw new Error("PluginHub private file not found");
+  return openLocalPath(target === "document" ? file.contentPath : path.dirname(file.contentPath));
 }
 
 function applyProjectPlugin(
@@ -899,11 +1062,11 @@ function upsertPluginSkillSource(database: AppDatabase, source: PluginHubSource)
     owner: null,
     repo: null,
     branch: null,
-    input: source.inputPath,
-    inputPath: null,
+    input: source.input,
+    inputPath: source.sourcePath,
     resolvedPath: source.resolvedPath,
-    currentRevision: null,
-    checkoutPath: null
+    currentRevision: source.currentRevision,
+    checkoutPath: source.checkoutPath
   });
 }
 
@@ -954,10 +1117,25 @@ function readPluginManifest(directory: string): { name: string | null; displayNa
     if (!fs.existsSync(candidate)) continue;
     try {
       const parsed = JSON.parse(fs.readFileSync(candidate, "utf8")) as Record<string, unknown>;
+      const interfaceInfo = isRecord(parsed.interface) ? parsed.interface : {};
       return {
         name: typeof parsed.name === "string" ? parsed.name : null,
-        displayName: typeof parsed.displayName === "string" ? parsed.displayName : typeof parsed.title === "string" ? parsed.title : null,
-        description: typeof parsed.description === "string" ? parsed.description : null
+        displayName:
+          typeof parsed.displayName === "string"
+            ? parsed.displayName
+            : typeof interfaceInfo.displayName === "string"
+              ? interfaceInfo.displayName
+              : typeof parsed.title === "string"
+                ? parsed.title
+                : null,
+        description:
+          typeof parsed.description === "string"
+            ? parsed.description
+            : typeof interfaceInfo.longDescription === "string"
+              ? interfaceInfo.longDescription
+              : typeof interfaceInfo.shortDescription === "string"
+                ? interfaceInfo.shortDescription
+                : null
       };
     } catch {
       return { name: null, displayName: null, description: null };
@@ -1030,6 +1208,10 @@ function stableId(prefix: string, ...parts: string[]): string {
   return `${prefix}-${crypto.createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 16)}`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function sanitizeComponentRefs(refs: PluginHubComponentRef[]): PluginHubComponentRef[] {
   const seen = new Set<string>();
   const output: PluginHubComponentRef[] = [];
@@ -1053,4 +1235,61 @@ function stripYamlQuotes(value: string): string {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function pluginHubGitHubLabel(owner: string, repo: string, sourcePath: string | null): string {
+  return sourcePath ? `${owner}/${repo}/${sourcePath}` : `${owner}/${repo}`;
+}
+
+function materializeGitHubCheckout(parsed: ReturnType<typeof parseGitHubInput>, checkoutPath: string, fixturePath?: string): void {
+  fs.mkdirSync(path.dirname(checkoutPath), { recursive: true });
+  if (!fs.existsSync(checkoutPath)) {
+    const remote = fixturePath ? path.resolve(fixturePath) : parsed.remoteUrl;
+    const args = ["clone", remote, checkoutPath];
+    if (parsed.branch) args.splice(1, 0, "--branch", parsed.branch);
+    gitOutput(args);
+    return;
+  }
+  updateGitHubCheckout({ checkoutPath, branch: parsed.branch });
+}
+
+function updateGitHubCheckout(source: Pick<PluginHubSource, "checkoutPath" | "branch">): void {
+  if (!source.checkoutPath || !fs.existsSync(path.join(source.checkoutPath, ".git"))) return;
+  gitOutput(["-C", source.checkoutPath, "fetch", "--all", "--prune"], false);
+  const branch = source.branch && source.branch !== "HEAD" ? source.branch : gitOutput(["-C", source.checkoutPath, "rev-parse", "--abbrev-ref", "HEAD"], false);
+  if (branch && branch !== "HEAD") {
+    gitOutput(["-C", source.checkoutPath, "reset", "--hard", `origin/${branch}`], false);
+  }
+}
+
+function gitOutput(args: string[], required = true): string | null {
+  const result = spawnSync("git", args, { encoding: "utf8" });
+  if (result.status !== 0) {
+    if (!required) return null;
+    throw new Error((result.stderr || result.stdout || "git command failed").trim());
+  }
+  return result.stdout.trim();
+}
+
+function resolveBundledPath(...segments: string[]): string {
+  const roots = bundledRootCandidates();
+  const existing = roots.map((root) => path.join(root, ...segments)).find((candidate) => fs.existsSync(candidate));
+  return existing ?? path.join(roots[0] ?? process.cwd(), ...segments);
+}
+
+function bundledRootCandidates(): string[] {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return uniquePaths([process.cwd(), path.resolve(moduleDir, "../../.."), path.resolve(moduleDir, "../../../..")]);
+}
+
+function uniquePaths(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const item of paths) {
+    const normalized = path.resolve(item).toLowerCase();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    output.push(item);
+  }
+  return output;
 }

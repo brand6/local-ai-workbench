@@ -235,17 +235,33 @@ function ProjectMcpHubServerRow({
   );
 }
 
-function McpHubServerCard({ server, busy, onDelete }: { server: McpHubServer; busy: boolean; onDelete: (serverId: string) => void }) {
+export function McpHubServerCard({
+  server,
+  busy,
+  onDelete,
+  summaryPrefix,
+  summaryExtra,
+  className
+}: {
+  server: McpHubServer;
+  busy: boolean;
+  onDelete?: (serverId: string) => void;
+  summaryPrefix?: React.ReactNode;
+  summaryExtra?: React.ReactNode;
+  className?: string;
+}) {
   return (
-    <details className="mcphub-server-card">
+    <details className={["mcphub-server-card", className].filter(Boolean).join(" ")}>
       <summary>
         <span className="skillhub-source-main">
+          {summaryPrefix}
           <span className="skillhub-source-title">{server.serverId}</span>
           <span className="metric-pill">{server.transport}</span>
           {server.builtin ? <span className="metric-pill">内置</span> : null}
         </span>
         <span className="skillhub-source-actions">
           <span className="metric-pill strong">{formatTime(server.updatedAt)}</span>
+          {summaryExtra}
         </span>
       </summary>
       <div className="skillhub-skill-body">
@@ -256,13 +272,13 @@ function McpHubServerCard({ server, busy, onDelete }: { server: McpHubServer; bu
           {server.requiredEnv.length ? <span>requiredEnv: {server.requiredEnv.join(", ")}</span> : null}
         </div>
         <pre className="json-preview">{JSON.stringify(serverJson(server), null, 2)}</pre>
-        {server.builtin ? null : (
+        {!server.builtin && onDelete ? (
           <div className="card-actions">
             <button className="danger" type="button" disabled={busy} onClick={() => onDelete(server.serverId)}>
               删除
             </button>
           </div>
-        )}
+        ) : null}
       </div>
     </details>
   );

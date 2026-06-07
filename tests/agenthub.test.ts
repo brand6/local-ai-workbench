@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   applyProjectAgentTarget,
   conversionPreview,
+  deleteAgentHubAgent,
   deleteAgentHubSource,
   disableProjectAgentTarget,
   importBuiltInAgencyAgents,
@@ -28,31 +29,67 @@ describe("AgentHub", () => {
   it("lazily seeds packaged agency-agents as ordinary source data with searchable categories", () => {
     directory = testDir("agenthub-seed");
     const db = new AppDatabase(directory);
+    const expectedAgentFiles = listPackagedAgencyAgentFiles();
+    const expectedCategories = [...new Set(expectedAgentFiles.map((file) => file.split("/")[0]!))].sort();
 
     const first = listAgentHub(db, directory);
-    const second = listAgentHub(db, directory, "engineering");
+    const second = listAgentHub(db, directory, "academic-anthropologist");
 
     expect(first.sources).toHaveLength(1);
     expect(first.sources[0]).toMatchObject({ id: "agency-agents", type: "builtin", sourceTruthTool: "claude" });
-    expect(first.agents.map((agent) => agent.category).sort()).toEqual(["design", "engineering", "marketing", "testing"]);
+    expect(expectedAgentFiles.length).toBeGreaterThan(200);
+    expect(first.agents).toHaveLength(expectedAgentFiles.length);
+    expect(first.agents.map((agent) => agent.sourceRelativePath).filter(isString).sort()).toEqual(expectedAgentFiles);
+    expect([...new Set(first.agents.map((agent) => agent.category).filter(isString))].sort()).toEqual(expectedCategories);
     expect(first.agents.every((agent) => agent.sourceTruthTool === "claude" && agent.truthRole === "subagent")).toBe(true);
     expect(first.agents.map((agent) => agent.sourceRelativePath)).not.toContain("README.md");
     expect(first.agents.some((agent) => agent.sourceRelativePath?.includes("scripts"))).toBe(false);
-    expect(second.agents.map((agent) => agent.slug)).toEqual(["code-reviewer"]);
+    expect(first.agents.some((agent) => agent.slug === "engineering-code-reviewer")).toBe(true);
+    expect(second.agents.map((agent) => agent.slug)).toEqual(["academic-anthropologist"]);
 
     const deleted = deleteAgentHubSource(db, directory, "agency-agents");
-    expect(deleted.agentsDeleted).toHaveLength(4);
-    expect(listAgentHub(db, directory).agents).toHaveLength(0);
+    expect(deleted.agentsDeleted).toHaveLength(expectedAgentFiles.length);
+    expect(listAgentHub(db, directory, "", { seedDefaultSources: false }).agents).toHaveLength(0);
 
     const reimported = importBuiltInAgencyAgents(db, directory);
-    expect(reimported.imported).toHaveLength(4);
-    expect(listAgentHub(db, directory).agents).toHaveLength(4);
+    expect(reimported.imported).toHaveLength(expectedAgentFiles.length);
+    expect(listAgentHub(db, directory).agents).toHaveLength(expectedAgentFiles.length);
     db.close();
-  });
+  }, 60000);
+
+  it("upgrades an already-seeded packaged agency-agents source when the bundled snapshot changes", () => {
+    directory = testDir("agenthub-upgrade-stale-builtin");
+    const db = new AppDatabase(directory);
+    const oldNativePath = path.join(directory, "agenthub", "library", "agency-agents", "engineering", "code-reviewer.md");
+    fs.mkdirSync(path.dirname(oldNativePath), { recursive: true });
+    fs.writeFileSync(oldNativePath, importedNative("Code Reviewer", "Old four-agent placeholder."), "utf8");
+    const source = db.upsertAgentHubSource({
+      id: "agency-agents",
+      type: "builtin",
+      label: "msitarzewski/agency-agents",
+      inputPath: "builtin-agents/agency-agents",
+      resolvedPath: path.join(process.cwd(), "builtin-agents", "agency-agents"),
+      sourceTruthTool: "claude",
+      importedAt: new Date(0).toISOString(),
+      metadata: { packaged: true }
+    });
+    db.upsertAgentHubAgent(staleBuiltInAgent(source.id, oldNativePath));
+    db.setSetting("agenthub.builtin.agency-agents.seeded.v1", true);
+
+    const view = listAgentHub(db, directory);
+    const expectedAgentFiles = listPackagedAgencyAgentFiles();
+
+    expect(view.agents).toHaveLength(expectedAgentFiles.length);
+    expect(view.agents.map((agent) => agent.sourceRelativePath)).not.toContain("engineering/code-reviewer.md");
+    expect(view.agents.some((agent) => agent.slug === "engineering-code-reviewer")).toBe(true);
+    expect(db.getAgentHubSource("agency-agents")?.metadata.packagedAgentCount).toBe(expectedAgentFiles.length);
+    db.close();
+  }, 60000);
 
   it("imports local native agents, detects conflicts, preserves stable slugs on reparse, and renders all MVP targets", () => {
     directory = testDir("agenthub-local-import");
     const db = new AppDatabase(directory);
+    skipBuiltInAgencySeed(db);
     const sourceRoot = path.join(directory, "local-agents");
     fs.mkdirSync(path.join(sourceRoot, "nested"), { recursive: true });
     fs.writeFileSync(
@@ -111,9 +148,36 @@ describe("AgentHub", () => {
     db.close();
   });
 
+  it("deletes a single AgentHub agent and its bindings without deleting project target files", () => {
+    directory = testDir("agenthub-delete-agent");
+    const db = new AppDatabase(directory);
+    skipBuiltInAgencySeed(db);
+    const sourceRoot = path.join(directory, "source");
+    fs.mkdirSync(sourceRoot, { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, "reviewer.md"), importedNative("Reviewer", "Review the current patch."), "utf8");
+    const agent = importLocalAgentFolder(db, directory, sourceRoot, "claude").imported[0]!;
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["claude"]);
+    const applied = applyProjectAgentTarget(db, directory, project, agent.id, "claude");
+    expect(fs.existsSync(applied.preview.targetPath)).toBe(true);
+
+    const deleted = deleteAgentHubAgent(db, directory, agent.id);
+
+    expect(deleted.agent.id).toBe(agent.id);
+    expect(deleted.targetsDeleted.map((target) => target.toolId)).toEqual(["claude"]);
+    expect(fs.existsSync(agent.nativePath)).toBe(false);
+    expect(fs.existsSync(applied.preview.targetPath)).toBe(true);
+    expect(db.getAgentHubAgent(agent.id)).toBeNull();
+    expect(db.listProjectAgentTargetsForAgent(agent.id)).toHaveLength(0);
+    db.close();
+  });
+
   it("parses same-tool native truth for every MVP adapter and reports invalid project files", () => {
     directory = testDir("agenthub-native-adapters");
     const db = new AppDatabase(directory);
+    skipBuiltInAgencySeed(db);
     const projectRoot = path.join(directory, "repo");
     fs.mkdirSync(projectRoot, { recursive: true });
     const project = db.addProject(projectRoot).project;
@@ -185,6 +249,7 @@ describe("AgentHub", () => {
   it("tracks project target status, sync, unmanaged conflicts, migration, disable, and backup behavior", () => {
     directory = testDir("agenthub-project-lifecycle");
     const db = new AppDatabase(directory);
+    skipBuiltInAgencySeed(db);
     const sourceRoot = path.join(directory, "source");
     fs.mkdirSync(sourceRoot, { recursive: true });
     fs.writeFileSync(path.join(sourceRoot, "reviewer.md"), importedNative("Reviewer", "Review the current patch."), "utf8");
@@ -246,4 +311,70 @@ describe("AgentHub", () => {
 
 function importedNative(name: string, body: string): string {
   return `---\nname: ${name}\ndescription: ${name} description\n---\n\n${body}\n`;
+}
+
+function staleBuiltInAgent(sourceId: string, nativePath: string) {
+  return {
+    id: "old-code-reviewer",
+    sourceId,
+    sourceType: "builtin" as const,
+    sourceTruthTool: "claude" as const,
+    truthRole: "subagent" as const,
+    sourceFormat: "markdown" as const,
+    slug: "code-reviewer",
+    name: "Code Reviewer",
+    description: "Old placeholder",
+    nativePath,
+    libraryRelativePath: "agency-agents/engineering/code-reviewer.md",
+    sourceRelativePath: "engineering/code-reviewer.md",
+    category: "engineering",
+    projection: {
+      name: "Code Reviewer",
+      description: "Old placeholder",
+      body: "Old four-agent placeholder.",
+      slugCandidate: "code-reviewer",
+      parseWarnings: []
+    },
+    nativeMetadata: { name: "Code Reviewer", description: "Old placeholder" },
+    contentHash: "old-hash"
+  };
+}
+
+function skipBuiltInAgencySeed(db: AppDatabase): void {
+  db.setSetting("agenthub.builtin.agency-agents.seeded.v1", true);
+}
+
+function listPackagedAgencyAgentFiles(): string[] {
+  const root = path.join(process.cwd(), "builtin-agents", "agency-agents");
+  const skippedDirectories = new Set(["docs", "examples", "integrations", "scripts"]);
+  const output: string[] = [];
+
+  function visit(directory: string): void {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith(".") || skippedDirectories.has(entry.name.toLowerCase())) continue;
+        visit(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const relativePath = normalizeRelativeTestPath(path.relative(root, fullPath));
+      const lower = relativePath.toLowerCase();
+      if (!lower.endsWith(".md")) continue;
+      if (lower === "readme.md" || lower.endsWith("/readme.md")) continue;
+      if (lower.split("/").length < 2) continue;
+      output.push(relativePath);
+    }
+  }
+
+  visit(root);
+  return output.sort();
+}
+
+function normalizeRelativeTestPath(input: string): string {
+  return input.split(/[\\/]+/).filter(Boolean).join("/");
+}
+
+function isString(value: string | null): value is string {
+  return typeof value === "string";
 }

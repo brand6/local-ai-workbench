@@ -553,15 +553,113 @@ describe("session scanner", () => {
     expect(fs.existsSync(clineDb)).toBe(true);
   });
 
+  it("indexes Reasonix JSONL sessions without treating sidecars as sessions", () => {
+    directory = testDir("scanner-reasonix-jsonl");
+    const projectRoot = path.join(directory, "reasonix-project");
+    const sessionsRoot = path.join(directory, ".reasonix", "sessions");
+    const sourceFile = path.join(sessionsRoot, "main.jsonl");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.mkdirSync(sessionsRoot, { recursive: true });
+    fs.writeFileSync(
+      sourceFile,
+      JSON.stringify({
+        sessionName: "main",
+        workspaceRoot: projectRoot,
+        title: "Reasonix 会话恢复",
+        updatedAt: "2026-06-05T13:30:00Z"
+      })
+    );
+    fs.writeFileSync(path.join(sessionsRoot, "main.events.jsonl"), JSON.stringify({ type: "tool", sessionName: "main" }));
+    fs.writeFileSync(path.join(sessionsRoot, "main.meta.json"), JSON.stringify({ sessionName: "main" }));
+
+    const db = new AppDatabase(directory);
+    const result = refreshAllSessions(db, configWithReasonixSource(sessionsRoot, directory));
+    const sessions = db.listSessions();
+    db.close();
+
+    expect(result.indexedCount).toBe(1);
+    expect(result.warningCount).toBe(0);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      id: "reasonix:main",
+      toolId: "reasonix",
+      nativeSessionId: "main",
+      sourceFile,
+      sourceFormat: "reasonix-jsonl",
+      originalCwd: projectRoot,
+      resumeStatus: "ready"
+    });
+  });
+
+  it("indexes Deep Code sessions from sessions-index.json without indexing message JSONL files", () => {
+    directory = testDir("scanner-deepcode-index");
+    const projectRoot = path.join(directory, "deepcode-project");
+    const deepcodeProjectRoot = path.join(directory, ".deepcode", "projects", "deepcode-project");
+    const indexFile = path.join(deepcodeProjectRoot, "sessions-index.json");
+    const messageFile = path.join(deepcodeProjectRoot, "deepcode-session-1.jsonl");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.mkdirSync(deepcodeProjectRoot, { recursive: true });
+    fs.writeFileSync(
+      indexFile,
+      JSON.stringify(
+        {
+          version: 1,
+          originalPath: projectRoot,
+          entries: [
+            {
+              id: "deepcode-session-1",
+              summary: "Deep Code 项目会话",
+              status: "completed",
+              updateTime: "2026-06-05T10:30:00Z"
+            }
+          ]
+        },
+        null,
+        2
+      )
+    );
+    fs.writeFileSync(
+      messageFile,
+      JSON.stringify({
+        id: "message-1",
+        sessionId: "deepcode-session-1",
+        role: "user",
+        content: "这不是独立 session 文件",
+        createTime: "2026-06-05T10:00:00Z"
+      })
+    );
+
+    const db = new AppDatabase(directory);
+    const result = refreshAllSessions(db, configWithDeepcodeSource(path.join(directory, ".deepcode", "projects"), directory));
+    const sessions = db.listSessions();
+    db.close();
+
+    expect(result.indexedCount).toBe(1);
+    expect(result.warningCount).toBe(0);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      id: "deepcode:deepcode-session-1",
+      toolId: "deepcode",
+      nativeSessionId: "deepcode-session-1",
+      sourceFile: indexFile,
+      sourceFormat: "deepcode-index",
+      originalCwd: projectRoot,
+      resumeStatus: "ready"
+    });
+  });
+
   it("does not delete multi-session source files for index-backed sessions", () => {
     directory = testDir("scanner-multi-session-delete");
     const projectRoot = path.join(directory, "repo");
     const kimiIndex = path.join(directory, ".kimi-code", "session_index.jsonl");
+    const deepcodeIndex = path.join(directory, ".deepcode", "projects", "repo", "sessions-index.json");
     const clineDb = path.join(directory, ".cline", "data", "sessions", "history.db");
     fs.mkdirSync(projectRoot, { recursive: true });
     fs.mkdirSync(path.dirname(kimiIndex), { recursive: true });
+    fs.mkdirSync(path.dirname(deepcodeIndex), { recursive: true });
     fs.mkdirSync(path.dirname(clineDb), { recursive: true });
     fs.writeFileSync(kimiIndex, JSON.stringify({ session_id: "kimi-delete", workspaceRoot: projectRoot }));
+    fs.writeFileSync(deepcodeIndex, JSON.stringify({ version: 1, originalPath: projectRoot, entries: [{ id: "deepcode-delete" }] }));
     fs.writeFileSync(clineDb, "sqlite placeholder");
 
     const db = new AppDatabase(directory);
@@ -570,17 +668,24 @@ describe("session scanner", () => {
       sourceFormat: "kimi-code-index"
     });
     db.upsertSession({
+      ...session("deepcode:deepcode-delete", "Deep Code", projectRoot, deepcodeIndex, "deepcode"),
+      sourceFormat: "deepcode-index"
+    });
+    db.upsertSession({
       ...session("cline:cline-delete", "Cline", projectRoot, clineDb, "cline"),
       sourceFormat: "cline-sqlite"
     });
 
     const kimiDeleted = deleteSession(db, "kimi:kimi-delete");
+    const deepcodeDeleted = deleteSession(db, "deepcode:deepcode-delete");
     const clineDeleted = deleteSession(db, "cline:cline-delete");
     db.close();
 
     expect(kimiDeleted).toMatchObject({ deletedSourceFile: false, deletedNativeSession: false, removedIndexCount: 1 });
+    expect(deepcodeDeleted).toMatchObject({ deletedSourceFile: false, deletedNativeSession: false, removedIndexCount: 1 });
     expect(clineDeleted).toMatchObject({ deletedSourceFile: false, deletedNativeSession: false, removedIndexCount: 1 });
     expect(fs.existsSync(kimiIndex)).toBe(true);
+    expect(fs.existsSync(deepcodeIndex)).toBe(true);
     expect(fs.existsSync(clineDb)).toBe(true);
   });
 });
@@ -595,12 +700,14 @@ function configWithClaudeSource(claudeProjects: string, directory: string): AppC
       opencode: { command: "opencode", sessionSources: [path.join(directory, "missing-opencode-sessions")] },
       kilo: { command: "kilo", sessionSources: [path.join(directory, "missing-kilo-sessions")] },
       qwen: { command: "qwen", sessionSources: [path.join(directory, "missing-qwen-sessions")] },
+      deepcode: { command: "deepcode", sessionSources: [path.join(directory, "missing-deepcode-sessions")] },
       kimi: { command: "kimi", sessionSources: [path.join(directory, "missing-kimi-sessions")] },
       qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
       codebuddy: { command: "codebuddy", sessionSources: [path.join(directory, "missing-codebuddy-sessions")] },
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
-      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] }
+      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
     skillhub: { rootDir: path.join(directory, "skillhub") }
@@ -617,12 +724,14 @@ function configWithCodexSource(codexSessions: string, directory: string): AppCon
       opencode: { command: "opencode", sessionSources: [path.join(directory, "missing-opencode-sessions")] },
       kilo: { command: "kilo", sessionSources: [path.join(directory, "missing-kilo-sessions")] },
       qwen: { command: "qwen", sessionSources: [path.join(directory, "missing-qwen-sessions")] },
+      deepcode: { command: "deepcode", sessionSources: [path.join(directory, "missing-deepcode-sessions")] },
       kimi: { command: "kimi", sessionSources: [path.join(directory, "missing-kimi-sessions")] },
       qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
       codebuddy: { command: "codebuddy", sessionSources: [path.join(directory, "missing-codebuddy-sessions")] },
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
-      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] }
+      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
     skillhub: { rootDir: path.join(directory, "skillhub") }
@@ -639,12 +748,14 @@ function configWithCopilotSource(copilotState: string, directory: string): AppCo
       opencode: { command: "opencode", sessionSources: [path.join(directory, "missing-opencode-sessions")] },
       kilo: { command: "kilo", sessionSources: [path.join(directory, "missing-kilo-sessions")] },
       qwen: { command: "qwen", sessionSources: [path.join(directory, "missing-qwen-sessions")] },
+      deepcode: { command: "deepcode", sessionSources: [path.join(directory, "missing-deepcode-sessions")] },
       kimi: { command: "kimi", sessionSources: [path.join(directory, "missing-kimi-sessions")] },
       qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
       codebuddy: { command: "codebuddy", sessionSources: [path.join(directory, "missing-codebuddy-sessions")] },
       copilot: { command: "copilot", sessionSources: [copilotState] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
-      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] }
+      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
     skillhub: { rootDir: path.join(directory, "skillhub") }
@@ -661,12 +772,14 @@ function configWithOpencodeSource(opencodeDb: string, directory: string): AppCon
       opencode: { command: "opencode", sessionSources: [opencodeDb] },
       kilo: { command: "kilo", sessionSources: [path.join(directory, "missing-kilo-sessions")] },
       qwen: { command: "qwen", sessionSources: [path.join(directory, "missing-qwen-sessions")] },
+      deepcode: { command: "deepcode", sessionSources: [path.join(directory, "missing-deepcode-sessions")] },
       kimi: { command: "kimi", sessionSources: [path.join(directory, "missing-kimi-sessions")] },
       qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
       codebuddy: { command: "codebuddy", sessionSources: [path.join(directory, "missing-codebuddy-sessions")] },
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
-      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] }
+      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
     skillhub: { rootDir: path.join(directory, "skillhub") }
@@ -683,12 +796,14 @@ function configWithKiloSource(kiloDb: string, directory: string): AppConfig {
       opencode: { command: "opencode", sessionSources: [path.join(directory, "missing-opencode-sessions")] },
       kilo: { command: "kilo", sessionSources: [kiloDb] },
       qwen: { command: "qwen", sessionSources: [path.join(directory, "missing-qwen-sessions")] },
+      deepcode: { command: "deepcode", sessionSources: [path.join(directory, "missing-deepcode-sessions")] },
       kimi: { command: "kimi", sessionSources: [path.join(directory, "missing-kimi-sessions")] },
       qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
       codebuddy: { command: "codebuddy", sessionSources: [path.join(directory, "missing-codebuddy-sessions")] },
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
-      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] }
+      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
     skillhub: { rootDir: path.join(directory, "skillhub") }
@@ -705,12 +820,14 @@ function configWithKimiSource(kimiSource: string, directory: string): AppConfig 
       opencode: { command: "opencode", sessionSources: [path.join(directory, "missing-opencode-sessions")] },
       kilo: { command: "kilo", sessionSources: [path.join(directory, "missing-kilo-sessions")] },
       qwen: { command: "qwen", sessionSources: [path.join(directory, "missing-qwen-sessions")] },
+      deepcode: { command: "deepcode", sessionSources: [path.join(directory, "missing-deepcode-sessions")] },
       kimi: { command: "kimi", sessionSources: [kimiSource] },
       qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
       codebuddy: { command: "codebuddy", sessionSources: [path.join(directory, "missing-codebuddy-sessions")] },
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
-      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] }
+      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
     skillhub: { rootDir: path.join(directory, "skillhub") }
@@ -727,12 +844,14 @@ function configWithCodeBuddySource(codebuddySource: string, directory: string): 
       opencode: { command: "opencode", sessionSources: [path.join(directory, "missing-opencode-sessions")] },
       kilo: { command: "kilo", sessionSources: [path.join(directory, "missing-kilo-sessions")] },
       qwen: { command: "qwen", sessionSources: [path.join(directory, "missing-qwen-sessions")] },
+      deepcode: { command: "deepcode", sessionSources: [path.join(directory, "missing-deepcode-sessions")] },
       kimi: { command: "kimi", sessionSources: [path.join(directory, "missing-kimi-sessions")] },
       qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
       codebuddy: { command: "codebuddy", sessionSources: [codebuddySource] },
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
-      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] }
+      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
     skillhub: { rootDir: path.join(directory, "skillhub") }
@@ -749,12 +868,14 @@ function configWithClineSource(clineSource: string, directory: string): AppConfi
       opencode: { command: "opencode", sessionSources: [path.join(directory, "missing-opencode-sessions")] },
       kilo: { command: "kilo", sessionSources: [path.join(directory, "missing-kilo-sessions")] },
       qwen: { command: "qwen", sessionSources: [path.join(directory, "missing-qwen-sessions")] },
+      deepcode: { command: "deepcode", sessionSources: [path.join(directory, "missing-deepcode-sessions")] },
       kimi: { command: "kimi", sessionSources: [path.join(directory, "missing-kimi-sessions")] },
       qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
       codebuddy: { command: "codebuddy", sessionSources: [path.join(directory, "missing-codebuddy-sessions")] },
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
-      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] }
+      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
     skillhub: { rootDir: path.join(directory, "skillhub") }
@@ -771,12 +892,62 @@ function configWithCursorAntigravitySources(cursorSource: string, antigravitySou
       opencode: { command: "opencode", sessionSources: [path.join(directory, "missing-opencode-sessions")] },
       kilo: { command: "kilo", sessionSources: [path.join(directory, "missing-kilo-sessions")] },
       qwen: { command: "qwen", sessionSources: [path.join(directory, "missing-qwen-sessions")] },
+      deepcode: { command: "deepcode", sessionSources: [path.join(directory, "missing-deepcode-sessions")] },
       kimi: { command: "kimi", sessionSources: [path.join(directory, "missing-kimi-sessions")] },
       qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
       codebuddy: { command: "codebuddy", sessionSources: [path.join(directory, "missing-codebuddy-sessions")] },
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [cursorSource] },
-      antigravity: { command: "agy", sessionSources: [antigravitySource] }
+      antigravity: { command: "agy", sessionSources: [antigravitySource] },
+      reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
+    },
+    terminal: { mode: "new-window" },
+    skillhub: { rootDir: path.join(directory, "skillhub") }
+  };
+}
+
+function configWithReasonixSource(reasonixSource: string, directory: string): AppConfig {
+  return {
+    version: 1,
+    tools: {
+      codex: { command: "codex", sessionSources: [path.join(directory, "missing-codex-sessions")] },
+      claude: { command: "claude", sessionSources: [path.join(directory, "missing-claude-sessions")] },
+      cline: { command: "cline", sessionSources: [path.join(directory, "missing-cline-sessions")] },
+      opencode: { command: "opencode", sessionSources: [path.join(directory, "missing-opencode-sessions")] },
+      kilo: { command: "kilo", sessionSources: [path.join(directory, "missing-kilo-sessions")] },
+      qwen: { command: "qwen", sessionSources: [path.join(directory, "missing-qwen-sessions")] },
+      deepcode: { command: "deepcode", sessionSources: [path.join(directory, "missing-deepcode-sessions")] },
+      kimi: { command: "kimi", sessionSources: [path.join(directory, "missing-kimi-sessions")] },
+      qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
+      codebuddy: { command: "codebuddy", sessionSources: [path.join(directory, "missing-codebuddy-sessions")] },
+      copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
+      cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
+      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      reasonix: { command: "reasonix", sessionSources: [reasonixSource] }
+    },
+    terminal: { mode: "new-window" },
+    skillhub: { rootDir: path.join(directory, "skillhub") }
+  };
+}
+
+function configWithDeepcodeSource(deepcodeSource: string, directory: string): AppConfig {
+  return {
+    version: 1,
+    tools: {
+      codex: { command: "codex", sessionSources: [path.join(directory, "missing-codex-sessions")] },
+      claude: { command: "claude", sessionSources: [path.join(directory, "missing-claude-sessions")] },
+      cline: { command: "cline", sessionSources: [path.join(directory, "missing-cline-sessions")] },
+      opencode: { command: "opencode", sessionSources: [path.join(directory, "missing-opencode-sessions")] },
+      kilo: { command: "kilo", sessionSources: [path.join(directory, "missing-kilo-sessions")] },
+      qwen: { command: "qwen", sessionSources: [path.join(directory, "missing-qwen-sessions")] },
+      deepcode: { command: "deepcode", sessionSources: [deepcodeSource] },
+      kimi: { command: "kimi", sessionSources: [path.join(directory, "missing-kimi-sessions")] },
+      qoder: { command: "qodercli", sessionSources: [path.join(directory, "missing-qoder-sessions")] },
+      codebuddy: { command: "codebuddy", sessionSources: [path.join(directory, "missing-codebuddy-sessions")] },
+      copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
+      cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
+      antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
     skillhub: { rootDir: path.join(directory, "skillhub") }

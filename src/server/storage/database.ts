@@ -277,10 +277,19 @@ export class AppDatabase {
 
       CREATE TABLE IF NOT EXISTS pluginhub_sources (
         id TEXT PRIMARY KEY,
+        type TEXT NOT NULL DEFAULT 'local',
         kind TEXT NOT NULL,
         label TEXT NOT NULL,
+        repo_key TEXT,
+        owner TEXT,
+        repo TEXT,
+        branch TEXT,
+        input TEXT,
         input_path TEXT NOT NULL,
+        source_path TEXT,
         resolved_path TEXT NOT NULL,
+        current_revision TEXT,
+        checkout_path TEXT,
         plugin_count INTEGER NOT NULL,
         component_count INTEGER NOT NULL,
         private_file_count INTEGER NOT NULL,
@@ -456,6 +465,28 @@ export class AppDatabase {
     `);
 
     this.db.prepare("INSERT OR REPLACE INTO schema_metadata (key, value) VALUES (?, ?)").run("schema_version", "1");
+    this.ensureColumn("pluginhub_sources", "type", "TEXT NOT NULL DEFAULT 'local'");
+    this.ensureColumn("pluginhub_sources", "repo_key", "TEXT");
+    this.ensureColumn("pluginhub_sources", "owner", "TEXT");
+    this.ensureColumn("pluginhub_sources", "repo", "TEXT");
+    this.ensureColumn("pluginhub_sources", "branch", "TEXT");
+    this.ensureColumn("pluginhub_sources", "input", "TEXT");
+    this.ensureColumn("pluginhub_sources", "source_path", "TEXT");
+    this.ensureColumn("pluginhub_sources", "current_revision", "TEXT");
+    this.ensureColumn("pluginhub_sources", "checkout_path", "TEXT");
+    this.db.prepare("UPDATE pluginhub_sources SET type = 'local' WHERE type IS NULL").run();
+    this.db.prepare("UPDATE pluginhub_sources SET input = input_path WHERE input IS NULL OR input = ''").run();
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pluginhub_sources_repo_key
+        ON pluginhub_sources(repo_key)
+        WHERE repo_key IS NOT NULL;
+    `);
+  }
+
+  private ensureColumn(tableName: string, columnName: string, definition: string): void {
+    const columns = this.db.prepare(`PRAGMA table_info(${tableName})`).all();
+    if (columns.some((column) => String((column as Row).name) === columnName)) return;
+    this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   }
 
   private ensureProjectSkillTargetsLinkPathKey(): void {
@@ -971,6 +1002,11 @@ export class AppDatabase {
     return row ? this.pluginHubSourceFromRow(row) : null;
   }
 
+  getPluginHubSourceByRepoKey(repoKey: string): PluginHubSource | null {
+    const row = this.db.prepare("SELECT * FROM pluginhub_sources WHERE repo_key = ?").get(repoKey);
+    return row ? this.pluginHubSourceFromRow(row) : null;
+  }
+
   upsertPluginHubSource(input: Omit<PluginHubSource, "createdAt" | "updatedAt"> & { createdAt?: string; updatedAt?: string }): PluginHubSource {
     const existing = this.getPluginHubSource(input.id);
     const timestamp = nowIso();
@@ -979,14 +1015,24 @@ export class AppDatabase {
     this.db
       .prepare(
         `INSERT INTO pluginhub_sources (
-          id, kind, label, input_path, resolved_path, plugin_count, component_count,
-          private_file_count, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, type, kind, label, repo_key, owner, repo, branch, input, input_path,
+          source_path, resolved_path, current_revision, checkout_path, plugin_count,
+          component_count, private_file_count, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
+          type = excluded.type,
           kind = excluded.kind,
           label = excluded.label,
+          repo_key = excluded.repo_key,
+          owner = excluded.owner,
+          repo = excluded.repo,
+          branch = excluded.branch,
+          input = excluded.input,
           input_path = excluded.input_path,
+          source_path = excluded.source_path,
           resolved_path = excluded.resolved_path,
+          current_revision = excluded.current_revision,
+          checkout_path = excluded.checkout_path,
           plugin_count = excluded.plugin_count,
           component_count = excluded.component_count,
           private_file_count = excluded.private_file_count,
@@ -994,10 +1040,19 @@ export class AppDatabase {
       )
       .run(
         input.id,
+        input.type,
         input.kind,
         input.label,
+        input.repoKey,
+        input.owner,
+        input.repo,
+        input.branch,
+        input.input,
         input.inputPath,
+        input.sourcePath,
         normalizeFsPath(input.resolvedPath),
+        input.currentRevision,
+        input.checkoutPath,
         input.pluginCount,
         input.componentCount,
         input.privateFileCount,
@@ -2226,12 +2281,22 @@ export class AppDatabase {
   }
 
   private pluginHubSourceFromRow(row: Row): PluginHubSource {
+    const inputPath = String(row.input_path);
     return {
       id: String(row.id),
+      type: (row.type === "github" ? "github" : "local") as PluginHubSource["type"],
       kind: String(row.kind) as PluginHubSource["kind"],
       label: String(row.label),
-      inputPath: String(row.input_path),
+      repoKey: row.repo_key === null || row.repo_key === undefined ? null : String(row.repo_key),
+      owner: row.owner === null || row.owner === undefined ? null : String(row.owner),
+      repo: row.repo === null || row.repo === undefined ? null : String(row.repo),
+      branch: row.branch === null || row.branch === undefined ? null : String(row.branch),
+      input: row.input === null || row.input === undefined ? inputPath : String(row.input),
+      inputPath,
+      sourcePath: row.source_path === null || row.source_path === undefined ? null : String(row.source_path),
       resolvedPath: String(row.resolved_path),
+      currentRevision: row.current_revision === null || row.current_revision === undefined ? null : String(row.current_revision),
+      checkoutPath: row.checkout_path === null || row.checkout_path === undefined ? null : String(row.checkout_path),
       pluginCount: Number(row.plugin_count),
       componentCount: Number(row.component_count),
       privateFileCount: Number(row.private_file_count),

@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { exec, execFile, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -31,6 +31,7 @@ export interface CliHubCommandRunner {
 
 export interface CliHubPathManager {
   ensureUserPath(directory: string): Promise<void>;
+  refreshProcessPath?(): Promise<void>;
 }
 
 export interface CliHubRuntimeOptions {
@@ -63,12 +64,17 @@ interface BuiltInCli {
   kind: CliHubCli["kind"];
   commandNames: string[];
   channels: CliHubChannel[];
+  windowsPathHints?: string[];
 }
 
 interface InstallCommandParseResult {
   channel: CliHubChannel;
   inferredCommandName: string;
   displayName: string;
+}
+
+interface CliHubDiscoveryOptions {
+  includeDetails?: boolean;
 }
 
 const outputLimit = 1200;
@@ -82,10 +88,10 @@ const defaultCommandRunner: CliHubCommandRunner = {
   async lookup(commandName: string) {
     const result =
       process.platform === "win32"
-        ? spawnSync("where.exe", [commandName], { encoding: "utf8", timeout: discoveryCommandTimeoutMs })
-        : spawnSync("sh", ["-lc", `command -v ${shellQuote(commandName)}`], { encoding: "utf8", timeout: discoveryCommandTimeoutMs });
-    if (result.status !== 0) return [];
-    const paths = String(result.stdout ?? "")
+        ? await runProcess("where.exe", [commandName], { timeoutMs: discoveryCommandTimeoutMs })
+        : await runProcess("sh", ["-lc", `command -v ${shellQuote(commandName)}`], { timeoutMs: discoveryCommandTimeoutMs });
+    if (result.exitCode !== 0) return [];
+    const paths = result.stdout
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
@@ -93,39 +99,137 @@ const defaultCommandRunner: CliHubCommandRunner = {
   },
   async run(command: string, args: string[], options = {}) {
     const resolvedCommand = process.platform === "win32" ? resolveWindowsCommand(command) : command;
-    const spawnOptions = {
+    return runProcess(resolvedCommand, args, {
       cwd: options.cwd,
-      encoding: "utf8",
-      timeout: options.timeoutMs ?? defaultCommandTimeoutMs
-    } as const;
-    const result =
-      process.platform === "win32" && isWindowsShellCommand(resolvedCommand)
-        ? spawnSync(windowsCommandLine([resolvedCommand, ...args]), { ...spawnOptions, shell: true })
-        : spawnSync(resolvedCommand, args, spawnOptions);
-    const errorText = result.error instanceof Error ? result.error.message : "";
-    return {
-      exitCode: result.status ?? (result.error ? 1 : 0),
-      stdout: clipText(String(result.stdout ?? "")),
-      stderr: clipText([String(result.stderr ?? ""), errorText].filter(Boolean).join("\n"))
-    };
+      timeoutMs: options.timeoutMs ?? defaultCommandTimeoutMs,
+      shell: process.platform === "win32" && isWindowsShellCommand(resolvedCommand)
+    });
   }
 };
 
 const defaultPathManager: CliHubPathManager = {
   async ensureUserPath(directory: string) {
     const key = process.platform === "win32" && process.env.Path !== undefined ? "Path" : "PATH";
+    if (process.platform === "win32") {
+      const userEntries = readWindowsRegistryPath("HKCU\\Environment");
+      if (!userEntries.some((entry) => samePath(entry, directory))) {
+        const result = spawnSync("setx", ["PATH", uniquePathEntries([...userEntries, directory]).join(path.delimiter)], {
+          encoding: "utf8",
+          timeout: pathWriteTimeoutMs
+        });
+        if (result.status !== 0) throw new Error(`用户 PATH 写入失败：${clipText(String(result.stderr || result.stdout || ""))}`);
+      }
+      const nextProcessPath = uniquePathEntries([...splitPathEntries(process.env[key] ?? process.env.PATH ?? ""), directory]).join(path.delimiter);
+      process.env[key] = nextProcessPath;
+      process.env.PATH = nextProcessPath;
+      return;
+    }
     const current = process.env[key] ?? "";
     const entries = current.split(path.delimiter).filter(Boolean);
     if (entries.some((entry) => samePath(entry, directory))) return;
     const next = [...entries, directory].join(path.delimiter);
-    if (process.platform === "win32") {
-      const result = spawnSync("setx", ["PATH", next], { encoding: "utf8", timeout: pathWriteTimeoutMs });
-      if (result.status !== 0) throw new Error(`用户 PATH 写入失败：${clipText(String(result.stderr || result.stdout || ""))}`);
-    }
     process.env[key] = next;
     if (key !== "PATH") process.env.PATH = next;
+  },
+  async refreshProcessPath() {
+    refreshProcessPathFromRegistry();
   }
 };
+
+interface RunProcessOptions {
+  timeoutMs: number;
+  cwd?: string | undefined;
+  shell?: boolean;
+}
+
+interface ChildProcessError extends Error {
+  code?: number | string | null;
+}
+
+function runProcess(command: string, args: string[], options: RunProcessOptions): Promise<CliHubCommandResult> {
+  return new Promise((resolve) => {
+    const onComplete = (error: ChildProcessError | null, stdout: string | Buffer, stderr: string | Buffer) => {
+      const stdoutText = String(stdout ?? "");
+      const stderrText = String(stderr ?? "");
+      const errorText = error && !stdoutText.trim() && !stderrText.trim() ? error.message : "";
+      resolve({
+        exitCode: error ? childProcessExitCode(error) : 0,
+        stdout: clipText(stdoutText),
+        stderr: clipText([stderrText, errorText].filter(Boolean).join("\n"))
+      });
+    };
+    const execOptions = {
+      cwd: options.cwd,
+      encoding: "utf8" as const,
+      timeout: options.timeoutMs,
+      windowsHide: true
+    };
+
+    try {
+      if (options.shell) {
+        exec(windowsCommandLine([command, ...args]), execOptions, onComplete);
+        return;
+      }
+      execFile(command, args, execOptions, onComplete);
+    } catch (error) {
+      resolve({
+        exitCode: 1,
+        stdout: "",
+        stderr: clipText(error instanceof Error ? error.message : "command failed")
+      });
+    }
+  });
+}
+
+function childProcessExitCode(error: ChildProcessError): number {
+  return typeof error.code === "number" ? error.code : 1;
+}
+
+function refreshProcessPathFromRegistry(): void {
+  if (process.platform !== "win32") return;
+  const key = process.env.Path !== undefined ? "Path" : "PATH";
+  const current = process.env[key] ?? process.env.PATH ?? "";
+  const next = uniquePathEntries([...splitPathEntries(current), ...readWindowsRegistryPath("HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"), ...readWindowsRegistryPath("HKCU\\Environment")]);
+  if (next.length === 0) return;
+  const value = next.join(path.delimiter);
+  process.env[key] = value;
+  process.env.PATH = value;
+}
+
+function readWindowsRegistryPath(registryKey: string): string[] {
+  const result = spawnSync("reg.exe", ["query", registryKey, "/v", "Path"], {
+    encoding: "utf8",
+    timeout: discoveryCommandTimeoutMs
+  });
+  if (result.status !== 0) return [];
+  const output = String(result.stdout ?? "");
+  for (const line of output.split(/\r?\n/)) {
+    const parts = line.trim().split(/\s{2,}/);
+    if ((parts[0] ?? "").toLowerCase() !== "path" || !/^REG_/i.test(parts[1] ?? "")) continue;
+    return splitPathEntries(expandWindowsEnvironmentVariables(parts.slice(2).join("  ")));
+  }
+  return [];
+}
+
+function expandWindowsEnvironmentVariables(value: string): string {
+  return value.replace(/%([^%]+)%/g, (match, name: string) => process.env[name] ?? process.env[name.toUpperCase()] ?? process.env[name.toLowerCase()] ?? match);
+}
+
+function splitPathEntries(value: string): string[] {
+  return value.split(path.delimiter).map((entry) => entry.trim()).filter(Boolean);
+}
+
+function uniquePathEntries(entries: string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const entry of entries) {
+    const key = path.resolve(entry).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(entry);
+  }
+  return unique;
+}
 
 const builtInClis: BuiltInCli[] = [
   {
@@ -183,11 +287,6 @@ const builtInClis: BuiltInCli[] = [
     commandNames: ["kimi"],
     channels: [
       providerChannel("kimi:npm", "npm", "@moonshot-ai/kimi-code"),
-      installerCommandChannel("kimi:official-posix", "official install script: macOS/Linux/WSL", "kimi", [
-        "bash",
-        "-lc",
-        "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"
-      ]),
       installerCommandChannel("kimi:official-windows", "official install script: Windows PowerShell", "kimi", [
         "powershell",
         "-NoProfile",
@@ -224,12 +323,8 @@ const builtInClis: BuiltInCli[] = [
     displayName: "Cursor Agent",
     kind: "project-tool",
     commandNames: ["cursor-agent"],
+    windowsPathHints: ["%LOCALAPPDATA%\\cursor-agent\\cursor-agent.cmd"],
     channels: [
-      installerCommandChannel("cursor:official-posix", "official install script: macOS/Linux/WSL", "cursor-agent", [
-        "bash",
-        "-lc",
-        "curl https://cursor.com/install -fsS | bash"
-      ]),
       installerCommandChannel("cursor:official-windows", "official install script: Windows PowerShell", "cursor-agent", [
         "powershell",
         "-NoProfile",
@@ -245,12 +340,8 @@ const builtInClis: BuiltInCli[] = [
     displayName: "Antigravity",
     kind: "project-tool",
     commandNames: ["agy"],
+    windowsPathHints: ["%LOCALAPPDATA%\\agy\\bin\\agy.exe"],
     channels: [
-      installerCommandChannel("antigravity:official-posix", "official install script: macOS/Linux", "agy", [
-        "bash",
-        "-lc",
-        "curl -fsSL https://antigravity.google/cli/install.sh | bash"
-      ]),
       installerCommandChannel("antigravity:official-windows", "official install script: Windows PowerShell", "agy", [
         "powershell",
         "-NoProfile",
@@ -317,6 +408,8 @@ const builtInClis: BuiltInCli[] = [
   }
 ];
 
+const localOnlyExperimentalCliIds = new Set(["deepcode", "reasonix"]);
+
 export class CliHubOperationRunner {
   private running: CliHubRunningOperation | null = null;
 
@@ -343,10 +436,11 @@ export function listCliHub(database: AppDatabase, options: CliHubRuntimeOptions 
 }
 
 export function ensureBuiltInCliHubClis(database: AppDatabase): void {
+  demoteLocalOnlyExperimentalBuiltInClis(database);
   database.deleteStaleBuiltInCliHubClis(builtInClis.map((cli) => cli.cliId));
   for (const builtIn of builtInClis) {
     const existing = database.getCliHubCli(builtIn.cliId);
-    const channels = mergeChannels(builtIn.channels, existing?.channels ?? []);
+    const channels = mergeChannels(builtIn.channels, existing?.channels.filter((channel) => channel.builtin === false) ?? []);
     database.upsertCliHubCli({
       ...(existing ?? emptyCli(builtIn.cliId, builtIn.displayName, builtIn.kind, "builtin", "builtin", builtIn.commandNames)),
       displayName: builtIn.displayName,
@@ -360,13 +454,39 @@ export function ensureBuiltInCliHubClis(database: AppDatabase): void {
   }
 }
 
-export async function refreshCliHubDiscovery(database: AppDatabase, cliId?: string | null, options: CliHubRuntimeOptions = {}): Promise<CliHubList> {
+function demoteLocalOnlyExperimentalBuiltInClis(database: AppDatabase): void {
+  for (const cli of database.listCliHubClis()) {
+    if (cli.sourceType !== "builtin" || !localOnlyExperimentalCliIds.has(cli.cliId)) continue;
+    const localPath = cli.localPath ?? cli.resolvedPaths[0] ?? null;
+    if (!localPath) continue;
+    database.upsertCliHubCli({
+      ...cli,
+      kind: "custom",
+      sourceType: "custom",
+      sourceState: "local-path",
+      localPath,
+      channels: [],
+      currentProvider: {
+        provider: "local-path",
+        packageId: null,
+        confidence: "high",
+        reason: "从已移除的内置实验 CLI 保留为本地自定义 CLI"
+      },
+      providerCandidates: [],
+      updateStatus: "unknown",
+      updateCheckedAt: null,
+      updateError: null,
+      recentOperation: null
+    });
+  }
+}
+
+export async function refreshCliHubDiscovery(database: AppDatabase, cliId?: string | null, options: CliHubRuntimeOptions = {}, discoveryOptions: CliHubDiscoveryOptions = {}): Promise<CliHubList> {
   ensureBuiltInCliHubClis(database);
   const runner = commandRunner(options);
   const clis = cliId ? [requiredCli(database, cliId)] : database.listCliHubClis();
-  for (const cli of clis) {
-    database.upsertCliHubCli(await discoverCli(cli, runner));
-  }
+  const discoveredClis = await Promise.all(clis.map((cli) => discoverCli(cli, runner, { includeDetails: discoveryOptions.includeDetails ?? true })));
+  for (const cli of discoveredClis) database.upsertCliHubCli(cli);
   return listCliHub(database, options);
 }
 
@@ -443,8 +563,9 @@ export async function installCliHubCli(
     const startedAt = nowIso();
     try {
       let result: CliHubCommandResult;
+      const manager = pathManager(options);
       if (channel.provider === "github-release" || channel.appManaged) {
-        result = await installManagedBinary(cli, channel, dataDir, pathManager(options));
+        result = await installManagedBinary(cli, channel, dataDir, manager);
       } else {
         if (!channel.installCommand) throw new Error("安装渠道缺少 installCommand");
         result = await commandRunner(options).run(channel.installCommand[0] ?? "", channel.installCommand.slice(1), {
@@ -452,6 +573,8 @@ export async function installCliHubCli(
         });
       }
       if (result.exitCode !== 0) throw new CliHubCommandError("CLI 安装失败", result);
+      await manager.refreshProcessPath?.();
+      await ensureKnownCliInstallDirectoriesOnPath(cli, manager);
       storeOperation(database, cli, commandOperation("install", "success", channel.provider, startedAt, result, "CLI 安装完成"));
       await refreshCliHubDiscovery(database, cliId, options);
       return requiredCli(database, cliId);
@@ -641,7 +764,7 @@ async function checkOneCliUpdate(database: AppDatabase, cli: CliHubCli, options:
   });
 }
 
-async function discoverCli(cli: CliHubCli, runner: CliHubCommandRunner): Promise<CliHubCli> {
+async function discoverCli(cli: CliHubCli, runner: CliHubCommandRunner, options: Required<CliHubDiscoveryOptions>): Promise<CliHubCli> {
   const timestamp = nowIso();
   if (cli.sourceState === "local-path" && cli.localPath) {
     if (!fs.existsSync(cli.localPath)) {
@@ -657,7 +780,7 @@ async function discoverCli(cli: CliHubCli, runner: CliHubCommandRunner): Promise
         providerCandidates: []
       };
     }
-    const version = await readVersion(cli.localPath, runner);
+    const version = options.includeDetails ? await readVersion(cli.localPath, runner) : currentVersionSnapshot(cli);
     return {
       ...cli,
       availabilityState: "available",
@@ -671,7 +794,7 @@ async function discoverCli(cli: CliHubCli, runner: CliHubCommandRunner): Promise
     };
   }
 
-  const paths = uniqueStrings((await Promise.all(cli.commandNames.map((command) => runner.lookup(command)))).flat());
+  const paths = sortCommandPaths(uniqueStrings([...(await Promise.all(cli.commandNames.map((command) => runner.lookup(command)))).flat(), ...knownCliPathCandidates(cli)]));
   if (paths.length === 0) {
     return {
       ...cli,
@@ -686,8 +809,8 @@ async function discoverCli(cli: CliHubCli, runner: CliHubCommandRunner): Promise
     };
   }
 
-  const version = await readVersion(paths[0] ?? cli.commandNames[0] ?? cli.cliId, runner);
-  const provider = inferProvider(paths[0] ?? "", cli.channels);
+  const version = options.includeDetails ? await readVersion(paths[0] ?? cli.commandNames[0] ?? cli.cliId, runner) : currentVersionSnapshot(cli);
+  const provider = inferProvider(paths[0] ?? "", cli);
   return {
     ...cli,
     availabilityState: "available",
@@ -701,6 +824,10 @@ async function discoverCli(cli: CliHubCli, runner: CliHubCommandRunner): Promise
   };
 }
 
+function currentVersionSnapshot(cli: CliHubCli): { version: string | null; state: CliHubCli["versionState"]; error: string | null } {
+  return { version: cli.version, state: cli.versionState, error: cli.versionError };
+}
+
 async function readVersion(commandOrPath: string, runner: CliHubCommandRunner): Promise<{ version: string | null; state: CliHubCli["versionState"]; error: string | null }> {
   const result = await runner.run(commandOrPath, ["--version"], { timeoutMs: versionCommandTimeoutMs });
   const output = firstOutputLine(result.stdout) ?? firstOutputLine(result.stderr);
@@ -712,10 +839,13 @@ async function readVersion(commandOrPath: string, runner: CliHubCommandRunner): 
   };
 }
 
-function inferProvider(resolvedPath: string, channels: CliHubChannel[]): { current: CliHubProviderRef | null; candidates: CliHubProviderRef[] } {
+function inferProvider(resolvedPath: string, cli: CliHubCli): { current: CliHubProviderRef | null; candidates: CliHubProviderRef[] } {
   const normalized = resolvedPath.toLowerCase().replaceAll("/", "\\");
+  const channels = cli.channels;
   const high =
-    normalized.includes("\\scoop\\apps\\") || normalized.includes("\\scoop\\shims\\")
+    knownCliPathCandidates(cli).some((candidate) => samePath(candidate, resolvedPath))
+      ? providerRef("installer-command", channels, "路径位于官方安装器目录")
+      : normalized.includes("\\scoop\\apps\\") || normalized.includes("\\scoop\\shims\\")
       ? providerRef("scoop", channels, "路径位于 Scoop apps/shims")
       : normalized.includes("\\chocolatey\\bin\\")
         ? providerRef("choco", channels, "路径位于 Chocolatey bin")
@@ -734,6 +864,19 @@ function inferProvider(resolvedPath: string, channels: CliHubChannel[]): { curre
       reason: "PATH 已发现 CLI，但路径不能高置信匹配 provider"
     }));
   return { current: null, candidates };
+}
+
+async function ensureKnownCliInstallDirectoriesOnPath(cli: CliHubCli, manager: CliHubPathManager): Promise<void> {
+  const directories = uniquePathEntries(knownCliPathCandidates(cli).map((candidate) => path.dirname(candidate)));
+  for (const directory of directories) {
+    await manager.ensureUserPath(directory);
+  }
+}
+
+function knownCliPathCandidates(cli: Pick<CliHubCli, "cliId">): string[] {
+  if (process.platform !== "win32") return [];
+  const builtIn = builtInClis.find((item) => item.cliId === cli.cliId);
+  return (builtIn?.windowsPathHints ?? []).map(expandWindowsEnvironmentVariables).filter((candidate) => candidate && fs.existsSync(candidate));
 }
 
 function providerRef(provider: CliHubProvider, channels: CliHubChannel[], reason: string): CliHubProviderRef {
@@ -1021,7 +1164,11 @@ function providerLabel(provider: CliHubChannel["provider"], packageId: string): 
 
 function mergeChannels(primary: CliHubChannel[], secondary: CliHubChannel[]): CliHubChannel[] {
   const channels = new Map<string, CliHubChannel>();
-  for (const channel of [...primary, ...secondary]) channels.set(channel.channelId, channel);
+  for (const channel of primary) channels.set(channel.channelId, channel);
+  for (const channel of secondary) {
+    if (channel.builtin) continue;
+    channels.set(channel.channelId, channel);
+  }
   return [...channels.values()];
 }
 
@@ -1153,6 +1300,10 @@ function firstOutputLine(value: string): string | null {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
+}
+
+function sortCommandPaths(paths: string[]): string[] {
+  return process.platform === "win32" ? sortWindowsCommandPaths(paths) : paths;
 }
 
 function samePath(left: string, right: string): boolean {

@@ -120,6 +120,48 @@ describe("SkillHub", () => {
     db.close();
   });
 
+  it("marks historical PluginHub skills as plugin-owned when listing", () => {
+    directory = testDir("skillhub-plugin-source-migration");
+    const config = configFixture(directory);
+    const db = new AppDatabase(directory);
+    const oldSource = db.upsertSkillHubSource({
+      id: "pluginhub-source-old",
+      type: "local",
+      label: "team-plugin",
+      repoKey: null,
+      owner: null,
+      repo: null,
+      branch: null,
+      input: path.join(directory, "plugin"),
+      inputPath: null,
+      resolvedPath: path.join(directory, "plugin"),
+      currentRevision: null,
+      checkoutPath: null
+    });
+    const libraryPath = path.join(config.skillhub.rootDir, "library", "pluginhub", oldSource.id, "plugins", "team", "skills", "review");
+    writeSkill(libraryPath, "review", "Historical plugin skill");
+    db.upsertSkillHubSkill({
+      id: "plugin-skill-old",
+      sourceId: oldSource.id,
+      sourceType: oldSource.type,
+      folderName: "review",
+      skillName: "review",
+      description: "Historical plugin skill",
+      libraryRelativePath: `pluginhub/${oldSource.id}/plugins/team/skills/review`,
+      libraryPath,
+      sourceRelativePath: "plugins/team/skills/review",
+      contentHash: "plugin-hash"
+    });
+
+    const listed = listSkillHub(db, config, directory);
+    const historicalSkill = listed.skills.find((skill) => skill.id === "plugin-skill-old");
+
+    expect(historicalSkill).toMatchObject({ sourceType: "plugin", source: { id: oldSource.id, type: "plugin" } });
+    expect(db.getSkillHubSource(oldSource.id)).toMatchObject({ type: "plugin" });
+    expect(db.getSkillHubSkill("plugin-skill-old")).toMatchObject({ sourceType: "plugin", source: { type: "plugin" } });
+    db.close();
+  });
+
   it("imports local skills parent-first and keeps same folder names from different library paths", () => {
     directory = testDir("skillhub-local-import");
     const config = configFixture(directory);
