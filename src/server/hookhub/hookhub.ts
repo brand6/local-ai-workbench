@@ -20,7 +20,9 @@ import type {
   ProjectHookBinding,
   ProjectHookBindingRemovalResult,
   ProjectHookState,
-  ProjectHookToolState
+  ProjectHookToolState,
+  ProjectToolTarget,
+  ToolId
 } from "../../shared/types.js";
 import { displayPath, isPathInsideOrEqual, normalizeFsPath } from "../core/pathUtils.js";
 import { nowIso } from "../core/time.js";
@@ -64,8 +66,6 @@ interface JsonContainer {
 }
 
 const supportedToolIds: HookHubSupportedToolId[] = ["claude", "codex", "qwen", "qoder"];
-const discoveryToolIds: HookHubDiscoveryToolId[] = ["claude", "codex", "qwen", "qoder", "opencode", "copilot"];
-
 const adapterLabels: Record<HookHubSupportedToolId, string> = {
   claude: "Claude Code",
   codex: "Codex",
@@ -103,6 +103,10 @@ export function updateHookHubSuite(database: AppDatabase, suiteId: string, input
 }
 
 export function deleteHookHubSuite(database: AppDatabase, suiteId: string): { suiteId: string; deleted: boolean; bindingsRemoved: ProjectHookBinding[] } {
+  const pluginRefs = database.listPluginHubPlugins().filter((plugin) => plugin.componentRefs.some((ref) => ref.type === "hook" && ref.componentId === suiteId));
+  if (pluginRefs.length > 0) {
+    throw new Error(`HookHub suite 正被 PluginHub plugin 引用：${pluginRefs.map((plugin) => plugin.displayName).join(", ")}`);
+  }
   const bindingsRemoved = database.listProjectHookBindingsForSuite(suiteId);
   return { suiteId, deleted: database.deleteHookHubSuite(suiteId), bindingsRemoved };
 }
@@ -151,13 +155,15 @@ export function listProjectHookState(database: AppDatabase, project: Project, qu
   const bindings = new Map(database.listProjectHookBindings(project.id, project.rootPath).map((binding) => [binding.toolId, binding]));
   const tools: ProjectHookToolState[] = [];
 
-  for (const toolId of discoveryToolIds) {
-    if (isHookHubSupportedToolId(toolId)) {
-      const binding = bindings.get(toolId) ?? null;
+  for (const toolTarget of listProjectToolTargets(database, project).filter((target) => target.enabled)) {
+    if (isHookHubSupportedToolId(toolTarget.toolId)) {
+      const binding = bindings.get(toolTarget.toolId) ?? null;
       const suite = binding ? suiteById.get(binding.suiteId) ?? null : null;
-      tools.push(projectHookToolState(project, toolId, binding, suite));
+      tools.push(projectHookToolState(project, toolTarget.toolId, binding, suite));
+    } else if (isDiscoveryOnlyHookToolId(toolTarget.toolId)) {
+      tools.push(discoveryOnlyToolState(project, toolTarget.toolId));
     } else {
-      tools.push(discoveryOnlyToolState(project, toolId));
+      tools.push(unsupportedHookToolState(project, toolTarget));
     }
   }
 
@@ -481,6 +487,40 @@ function discoveryOnlyToolState(project: Project, toolId: Exclude<HookHubDiscove
     suite: null,
     discovery
   };
+}
+
+function unsupportedHookToolState(project: Project, toolTarget: ProjectToolTarget): ProjectHookToolState {
+  return {
+    projectId: project.id,
+    targetRootPath: project.rootPath,
+    toolId: toolTarget.toolId,
+    label: toolLabel(toolTarget.toolId),
+    supported: false,
+    configPath: null,
+    scope: null,
+    status: "unsupported",
+    hooks: null,
+    hooksSummary: "尚未支持",
+    reason: "尚未支持",
+    error: null,
+    binding: null,
+    suite: null,
+    discovery: []
+  };
+}
+
+function isDiscoveryOnlyHookToolId(toolId: ToolId): toolId is Exclude<HookHubDiscoveryToolId, HookHubSupportedToolId> {
+  return toolId === "opencode" || toolId === "copilot";
+}
+
+function toolLabel(toolId: ToolId): string {
+  if (toolId === "qwen") return "Qwen";
+  if (toolId === "qoder") return "Qoder";
+  if (toolId === "opencode") return "OpenCode";
+  if (toolId === "codebuddy") return "CodeBuddy Code";
+  if (toolId === "deepcode") return "Deep Code";
+  if (toolId === "reasonix") return "Reasonix";
+  return `${toolId.charAt(0).toUpperCase()}${toolId.slice(1)}`;
 }
 
 function readProjectHooks(project: Project, toolId: HookHubSupportedToolId, preferredConfigPath: string | null): HookReadResult {

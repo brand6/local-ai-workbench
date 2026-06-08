@@ -12,7 +12,7 @@ export function backupProjectLocalTarget(
 ): ProjectLocalFileBackup | null {
   if (!fs.existsSync(targetPath)) return null;
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupRoot = path.join(projectRoot, ".github-repo-manager", "backups", hub.toLowerCase(), `${timestamp}-${crypto.randomUUID().slice(0, 8)}`);
+  const backupRoot = path.join(projectRoot, ".local-ai-workbench", "backups", hub.toLowerCase(), `${timestamp}-${crypto.randomUUID().slice(0, 8)}`);
   const relative = path.relative(projectRoot, targetPath);
   const backupPath = safeJoin(backupRoot, relative && !relative.startsWith("..") ? relative : path.basename(targetPath));
   fs.mkdirSync(path.dirname(backupPath), { recursive: true });

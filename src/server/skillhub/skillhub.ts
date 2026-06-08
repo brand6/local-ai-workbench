@@ -338,7 +338,7 @@ function findPluginSkillOwner(database: AppDatabase, projectId: string, toolId: 
             owner.type === "skill" &&
             owner.toolId === toolId &&
             owner.componentId === skillId &&
-            normalizeFsPath(owner.linkPath) === normalizeFsPath(linkPath)
+            normalizeFsPath(owner.linkPath ?? owner.targetPath) === normalizeFsPath(linkPath)
         )
       ) ?? null
   );

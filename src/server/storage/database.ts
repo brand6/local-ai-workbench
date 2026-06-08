@@ -69,7 +69,7 @@ export class AppDatabase {
       if (isSqliteLockedError(error)) {
         throw new Error(
           `Database is locked: ${path.join(dataDir, "index.sqlite")}. ` +
-            "Another github-repo-manager process is probably using this data directory. " +
+            "Another Local AI Workbench process is probably using this data directory. " +
             "Stop the existing process or start with --data-dir <different-directory>.",
           { cause: error }
         );
@@ -2013,9 +2013,10 @@ export class AppDatabase {
     });
   }
 
-  createProjectDetail(projectId: string, query = "") {
+  createProjectDetail(projectId: string, query = "", options: { includeSessions?: boolean } = {}) {
     const project = this.getProject(projectId);
     if (!project) return null;
+    const includeSessions = options.includeSessions ?? true;
     const sessions = this.listSessionsForProject(project, query);
     const groups = new Map<string, SessionEntry[]>();
 
@@ -2029,13 +2030,13 @@ export class AppDatabase {
     groups.delete(project.normalizedRootPath);
 
     const childGroups = [...groups.entries()]
-      .map(([key, groupSessions]) => this.detailGroup(project.rootPath, key, groupSessions, false))
+      .map(([key, groupSessions]) => this.detailGroup(project.rootPath, key, groupSessions, false, { includeSessions }))
       .sort((a, b) => compareNullableIsoDesc(a.latestActivity, b.latestActivity));
 
     return {
       project,
       groups: [
-        this.detailGroup(project.rootPath, project.normalizedRootPath, rootSessions, true),
+        this.detailGroup(project.rootPath, project.normalizedRootPath, rootSessions, true, { includeSessions }),
         ...childGroups
       ]
     };
@@ -2562,7 +2563,7 @@ export class AppDatabase {
       );
   }
 
-  private detailGroup(rootPath: string, normalizedPath: string, sessions: SessionEntry[], isRoot: boolean) {
+  private detailGroup(rootPath: string, normalizedPath: string, sessions: SessionEntry[], isRoot: boolean, options: { includeSessions?: boolean } = {}) {
     const display = sessions.find((session) => session.normalizedCwd === normalizedPath)?.originalCwd ?? normalizedPath;
     const byTool = new Map<ToolId, SessionEntry[]>();
     for (const session of sessions) {
@@ -2576,7 +2577,7 @@ export class AppDatabase {
           toolId,
           sessionCount: sortedSessions.length,
           latestActivity: sortedSessions[0]?.updatedAt ?? null,
-          sessions: sortedSessions
+          sessions: options.includeSessions === false ? [] : sortedSessions
         };
       })
       .sort((a, b) => b.sessionCount - a.sessionCount || compareNullableIsoDesc(a.latestActivity, b.latestActivity));

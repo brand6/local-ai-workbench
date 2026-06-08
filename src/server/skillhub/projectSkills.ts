@@ -181,7 +181,7 @@ function isPluginOwnedSkillTarget(database: AppDatabase, projectId: string, tool
         owner.type === "skill" &&
         owner.toolId === toolId &&
         owner.componentId === skillId &&
-        normalizeFsPath(owner.linkPath) === normalizeFsPath(linkPath)
+        normalizeFsPath(owner.linkPath ?? owner.targetPath) === normalizeFsPath(linkPath)
     )
   );
 }

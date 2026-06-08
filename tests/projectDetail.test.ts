@@ -35,6 +35,27 @@ describe("project detail grouping", () => {
     expect(filtered?.groups.flatMap((group) => group.tools.flatMap((tool) => tool.sessions))).toHaveLength(1);
     db.close();
   });
+
+  it("can build a summary without session details", () => {
+    directory = testDir("project-detail-summary");
+    const root = path.join(directory, "repo");
+    fs.mkdirSync(root, { recursive: true });
+
+    const db = new AppDatabase(directory);
+    const project = db.addProject(root, true).project;
+    db.upsertSession(session("codex:1", "codex", root, "根目录工作", null, "2026-06-01T01:00:00Z"));
+    db.upsertSession(session("codex:2", "codex", root, "第二个会话", null, "2026-06-01T02:00:00Z"));
+
+    const detail = db.createProjectDetail(project.id, "", { includeSessions: false });
+    expect(detail?.groups[0]?.sessionCount).toBe(2);
+    expect(detail?.groups[0]?.tools[0]).toMatchObject({
+      toolId: "codex",
+      sessionCount: 2,
+      latestActivity: "2026-06-01T02:00:00Z",
+      sessions: []
+    });
+    db.close();
+  });
 });
 
 function session(id: string, toolId: "codex" | "claude", cwd: string, title: string, summary: string | null, updatedAt: string): SessionEntry {

@@ -1329,9 +1329,9 @@ function terminalUpdateCompletionScript(command: LaunchCommand, callback: CliHub
     "$body = @{ exitCode = $updateExitCode } | ConvertTo-Json -Compress",
     "try {",
     `  Invoke-RestMethod -Method Post -Uri ${quotePowerShell(callback.url)} -Headers @{ 'x-local-api-token' = ${quotePowerShell(callback.token)} } -ContentType 'application/json' -Body $body | Out-Null`,
-    "  Write-Host 'GitHub Repo Manager 已刷新 CliHub 状态。'",
+    "  Write-Host 'Local AI Workbench 已刷新 CliHub 状态。'",
     "} catch {",
-    "  Write-Warning \"GitHub Repo Manager 状态刷新失败：$($_.Exception.Message)\"",
+    "  Write-Warning \"Local AI Workbench 状态刷新失败：$($_.Exception.Message)\"",
     "}",
     "exit $updateExitCode"
   ].join("; ");

@@ -1,5 +1,4 @@
-import { useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
-import { toolIds } from "../shared/types.js";
+import { useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import type {
   AgentHubAgent,
   HookHubSuite,
@@ -11,6 +10,7 @@ import type {
   PluginHubPlugin,
   ProjectPluginApplyResult,
   ProjectPluginState,
+  ProjectToolTarget,
   SkillHubOpenTarget,
   SkillHubSkill,
   ToolId
@@ -192,6 +192,14 @@ export function ProjectPluginsPanel({
   const [toolId, setToolId] = useState<ToolId>("codex");
   const plugins = state?.plugins ?? [];
   const selectedPluginId = pluginId || plugins[0]?.id || "";
+  const projectToolTargets = useMemo(() => state?.toolTargets ?? [], [state]);
+  const supportedToolTargets = useMemo(() => projectToolTargets.filter((target) => target.supported), [projectToolTargets]);
+  const selectedToolTarget = projectToolTargets.find((target) => target.toolId === toolId) ?? null;
+
+  useEffect(() => {
+    const fallback = supportedToolTargets[0] ?? projectToolTargets[0] ?? null;
+    if (fallback && (!selectedToolTarget || !selectedToolTarget.supported)) setToolId(fallback.toolId);
+  }, [projectToolTargets, selectedToolTarget, supportedToolTargets]);
 
   return (
     <aside className="side-panel project-plugins-panel" aria-label="项目 Plugin 管理">
@@ -224,17 +232,16 @@ export function ProjectPluginsPanel({
                   ))}
                 </select>
               </label>
-              <label className="field">
-                工具
-                <select value={toolId} disabled={busy} onChange={(event) => setToolId(event.target.value as ToolId)}>
-                  {toolIds.map((id) => (
-                    <option key={id} value={id}>
-                      {id}
-                    </option>
+              <div className="field">
+                <span className="field-label">工具</span>
+                <div className="tool-chip-list">
+                  {projectToolTargets.length === 0 ? <div className="empty-state compact">还没有项目使用工具</div> : null}
+                  {projectToolTargets.map((target) => (
+                    <ProjectPluginToolChip key={target.toolId} target={target} checked={toolId === target.toolId} busy={busy} onSelect={setToolId} />
                   ))}
-                </select>
-              </label>
-              <button className="primary" type="button" disabled={busy || !selectedPluginId} onClick={() => onInstall(selectedPluginId, toolId)}>
+                </div>
+              </div>
+              <button className="primary" type="button" disabled={busy || !selectedPluginId || !selectedToolTarget?.supported} onClick={() => onInstall(selectedPluginId, toolId)}>
                 安装
               </button>
             </div>
@@ -288,6 +295,34 @@ export function ProjectPluginsPanel({
         </>
       )}
     </aside>
+  );
+}
+
+function ProjectPluginToolChip({
+  target,
+  checked,
+  busy,
+  onSelect
+}: {
+  target: ProjectToolTarget;
+  checked: boolean;
+  busy: boolean;
+  onSelect: (toolId: ToolId) => void;
+}) {
+  return (
+    <label
+      className="tool-target-chip"
+      title={target.supported ? (target.skillDirectory ?? target.toolId) : "尚未支持"}
+      onClick={(event) => {
+        if (!busy && !target.supported) {
+          event.preventDefault();
+          window.alert("尚未支持");
+        }
+      }}
+    >
+      <input type="radio" name="project-plugin-tool" checked={checked} disabled={busy || !target.supported} onChange={() => onSelect(target.toolId)} />
+      <span>{target.toolId}</span>
+    </label>
   );
 }
 

@@ -488,9 +488,12 @@ label,
 }
 
 .new-project-dialog {
-  width: min(560px, 100%);
+  width: min(680px, 100%);
+  max-height: calc(100vh - 110px);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 16px;
   padding: 22px;
+  overflow: hidden;
 }
 
 .new-project-dialog header {
@@ -500,11 +503,16 @@ label,
 
 .new-project-form {
   display: grid;
+  grid-template-rows: minmax(0, 1fr) auto auto;
   gap: 16px;
+  min-height: 0;
 }
 
 .new-project-fields {
   gap: 16px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .new-project-dialog input {
@@ -521,6 +529,16 @@ label,
 
 .new-project-preview {
   min-width: 0;
+}
+
+.new-project-tool-list {
+  max-height: min(280px, 36vh);
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.new-project-tool-row {
+  grid-template-columns: auto minmax(96px, 0.35fr) minmax(0, 1fr);
 }
 
 .scan-dialog {
@@ -1226,9 +1244,13 @@ label,
 }
 
 .tool-refresh-row small {
+  min-width: 0;
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .directory-chooser {

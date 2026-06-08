@@ -18,7 +18,8 @@ import {
   updatePluginHubGitHubSource,
   updateCustomPlugin
 } from "../src/server/pluginhub/pluginhub.js";
-import { deleteSkillHubSkill, importLocalSkills, listProjectLocalSkillsState, previewDeleteSkillHubSkill } from "../src/server/skillhub/skillhub.js";
+import { deleteSkillHubSkill, importLocalSkills, previewDeleteSkillHubSkill } from "../src/server/skillhub/skillhub.js";
+import { deleteHookHubSuite } from "../src/server/hookhub/hookhub.js";
 import { setProjectSkillTargets, updateProjectToolTargets } from "../src/server/skillhub/projectSkills.js";
 import { AppDatabase } from "../src/server/storage/database.js";
 import type { AppConfig } from "../src/shared/types.js";
@@ -32,14 +33,18 @@ afterEach(() => {
 });
 
 describe("PluginHub", () => {
-  it("seeds Superpowers as a deletable built-in source on first catalog access", () => {
+  it("seeds built-in plugin sources as deletable sources on first catalog access", () => {
     directory = testDir("pluginhub-builtin-superpowers");
     const db = new AppDatabase(directory);
     const config = configFixture(directory);
+    db.setSetting("pluginhub.default-sources.seeded.v1", true);
 
     const listed = listPluginHub(db, config, directory);
     const source = listed.sources.find((item) => item.id === "pluginhub-source-superpowers");
     const plugin = listed.plugins.find((item) => item.sourceId === source?.id && item.name === "superpowers");
+    const cavemanSource = listed.sources.find((item) => item.id === "pluginhub-source-caveman");
+    const cavemanPlugin = listed.plugins.find((item) => item.sourceId === cavemanSource?.id && item.name === "caveman");
+    const cavemanRefs = cavemanPlugin?.componentRefs ?? [];
 
     expect(source).toMatchObject({
       id: "pluginhub-source-superpowers",
@@ -49,9 +54,46 @@ describe("PluginHub", () => {
       pluginCount: 1
     });
     expect(source?.componentCount).toBeGreaterThan(0);
+    expect(source?.privateFileCount).toBeGreaterThan(90);
     expect(plugin).toMatchObject({ displayName: "Superpowers", sourceId: "pluginhub-source-superpowers" });
     expect(plugin?.componentRefs.length).toBeGreaterThan(0);
+    expect(plugin?.privateFiles.map((file) => file.sourceRelativePath)).toEqual(
+      expect.arrayContaining([
+        "superpowers/.claude-plugin/plugin.json",
+        "superpowers/.cursor-plugin/plugin.json",
+        "superpowers/.opencode/plugins/superpowers.js",
+        "superpowers/docs/README.opencode.md",
+        "superpowers/hooks/hooks.json",
+        "superpowers/scripts/sync-to-codex-plugin.sh"
+      ])
+    );
     expect(listed.skills.some((skill) => skill.folderName === "using-superpowers")).toBe(true);
+    expect(cavemanSource).toMatchObject({
+      id: "pluginhub-source-caveman",
+      kind: "single-plugin",
+      label: "JuliusBrussee/caveman",
+      inputPath: "builtin-plugins/caveman",
+      pluginCount: 1
+    });
+    expect(cavemanSource?.componentCount).toBe(10);
+    expect(cavemanPlugin).toMatchObject({ displayName: "Caveman", sourceId: "pluginhub-source-caveman" });
+    expect(cavemanRefs.filter((ref) => ref.type === "skill")).toHaveLength(7);
+    expect(cavemanRefs.filter((ref) => ref.type === "agent")).toHaveLength(3);
+    expect(cavemanPlugin?.privateFiles.map((file) => file.sourceRelativePath)).toEqual(
+      expect.arrayContaining([
+        "caveman/.claude-plugin/plugin.json",
+        "caveman/commands/caveman.toml",
+        "caveman/commands/caveman-init.toml",
+        "caveman/src/hooks/caveman-mode-tracker.js",
+        "caveman/src/hooks/caveman-statusline.ps1",
+        "caveman/src/mcp-servers/caveman-shrink/index.js",
+        "caveman/src/tools/caveman-init.js"
+      ])
+    );
+    expect(listed.skills.some((skill) => skill.folderName === "caveman" && skill.sourceId === "pluginhub-source-caveman")).toBe(true);
+    expect(listed.skills.some((skill) => skill.folderName === "caveman-compress" && skill.sourceId === "pluginhub-source-caveman")).toBe(true);
+    expect(listed.skills.some((skill) => skill.folderName === "caveman-review" && skill.sourceId === "pluginhub-source-caveman")).toBe(true);
+    expect(listed.agents.some((agent) => agent.slug === "cavecrew-builder" && agent.sourceId === "pluginhub-source-caveman")).toBe(true);
 
     deletePluginHubSource(db, source?.id ?? "", "remove-custom-components");
     const afterDelete = listPluginHub(db, config, directory);
@@ -187,6 +229,27 @@ describe("PluginHub", () => {
     db.close();
   });
 
+  it("imports source plugin agents and structured MCP configs as PluginHub component refs", () => {
+    directory = testDir("pluginhub-import-agents-mcp");
+    const db = new AppDatabase(directory);
+    const config = configFixture(directory);
+    const library = path.join(directory, "library");
+    const pluginRoot = path.join(library, "plugins", "review-pack");
+    writePlugin(pluginRoot, "review-pack", [["review", "Review skill"]], {
+      "agents/reviewer.md": "---\nname: Reviewer\ndescription: Review code\n---\n\nReview code changes.\n",
+      ".mcp.json": JSON.stringify({ mcpServers: { docs: { command: "node", args: ["server.js"] } } }, null, 2)
+    });
+
+    const imported = importPluginHubLocalSource(db, config, directory, library);
+    const plugin = imported.plugins[0];
+    const listed = listPluginHub(db);
+
+    expect(plugin.componentRefs.map((ref) => ref.type).sort()).toEqual(["agent", "mcp", "skill"]);
+    expect(listed.agents).toEqual([expect.objectContaining({ sourceId: imported.source.id, slug: "reviewer", name: "Reviewer" })]);
+    expect(listed.mcpServers).toEqual(expect.arrayContaining([expect.objectContaining({ serverId: "docs", command: "node" })]));
+    db.close();
+  });
+
   (gitAvailable() ? it : it.skip)(
     "imports and updates GitHub plugin sources from a local git fixture",
     () => {
@@ -228,7 +291,7 @@ describe("PluginHub", () => {
     15000
   );
 
-  it("installs a project plugin, materializes private files, and marks plugin-owned skills readonly", () => {
+  it("installs a Codex project plugin as a native repo marketplace package", () => {
     directory = testDir("pluginhub-install");
     const db = new AppDatabase(directory);
     const config = configFixture(directory);
@@ -245,28 +308,33 @@ describe("PluginHub", () => {
     updateProjectToolTargets(db, project, ["codex"]);
 
     const installed = installProjectPlugin(db, project, plugin.id, "codex");
-    const skillPath = path.join(projectRoot, ".codex", "skills", "review");
-    const privatePath = path.join(projectRoot, ".agents", "plugins", "python-development", "commands", "test.md");
-    const localSkills = listProjectLocalSkillsState(db, project);
+    const packageRoot = path.join(projectRoot, "plugins", "python-development");
+    const skillPath = path.join(packageRoot, "skills", "review");
+    const commandPath = path.join(packageRoot, "commands", "test.md");
+    const marketplacePath = path.join(projectRoot, ".agents", "plugins", "marketplace.json");
+    const manifestPath = path.join(packageRoot, ".codex-plugin", "plugin.json");
 
-    expect(installed).toMatchObject({ requiresConfirmation: false, binding: { managedComponentCount: 1, existingComponentCount: 0, privateFileCount: 2 } });
-    expect(fs.lstatSync(skillPath).isSymbolicLink()).toBe(true);
-    expect(fs.readFileSync(privatePath, "utf8")).toBe("run pytest");
-    expect(localSkills.skills).toMatchObject([{ type: "plugin", folderName: "review", plugin: { id: plugin.id } }]);
+    expect(installed).toMatchObject({ requiresConfirmation: false, binding: { managedComponentCount: 1, existingComponentCount: 0, privateFileCount: 1 } });
+    expect(fs.existsSync(path.join(skillPath, "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(commandPath)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(manifestPath, "utf8"))).toMatchObject({ name: "python-development", skills: "./skills/" });
+    expect(JSON.parse(fs.readFileSync(marketplacePath, "utf8")).plugins).toEqual([
+      expect.objectContaining({ name: "python-development", source: { source: "local", path: "./plugins/python-development" } })
+    ]);
 
     const replacementSource = path.join(directory, "replacement");
     writePlugin(replacementSource, "replacement", [["review", "Replacement review"]]);
     const replacement = importPluginHubLocalSource(db, config, directory, replacementSource).importedSkills[0];
-    const blocked = setProjectSkillTargets(db, project, replacement.id, ["codex"], { replaceConflicts: true });
+    const appliedSkill = setProjectSkillTargets(db, project, replacement.id, ["codex"], { replaceConflicts: true });
 
-    expect(blocked.failures).toEqual([expect.objectContaining({ reason: "该目标由项目 Plugin 管理，请从 Plugin 入口卸载或同步" })]);
+    expect(appliedSkill.failures).toEqual([]);
     uninstallProjectPluginBinding(db, project, installed.binding?.id ?? "");
     expect(fs.existsSync(skillPath)).toBe(false);
-    expect(fs.existsSync(privatePath)).toBe(false);
+    expect(fs.existsSync(marketplacePath)).toBe(false);
     db.close();
   });
 
-  it("preflights plugin-private local overwrites and blocks different private-file owners", () => {
+  it("preflights native package local overwrites and blocks different package owners", () => {
     directory = testDir("pluginhub-private-preflight");
     const db = new AppDatabase(directory);
     const projectRoot = path.join(directory, "repo");
@@ -276,40 +344,256 @@ describe("PluginHub", () => {
     updateProjectToolTargets(db, project, ["codex"]);
 
     const first = createCustomPlugin(db, directory, {
-      name: "first-private",
-      privateFiles: [{ sourceRelativePath: "notes.md", targetRelativePath: ".agents/plugins/shared/notes.md", content: "first" }]
+      name: "shared",
+      privateFiles: [{ sourceRelativePath: "notes.md", content: "first" }]
     });
     const firstMaterialRoot = path.dirname(path.dirname(first.privateFiles[0].contentPath));
-    const editedFirst = updateCustomPlugin(db, directory, first.id, { name: "first-private", description: "Updated description" });
+    const editedFirst = updateCustomPlugin(db, directory, first.id, { name: "shared", description: "Updated description" });
     expect(editedFirst.privateFiles).toEqual(first.privateFiles);
     expect(fs.existsSync(first.privateFiles[0].contentPath)).toBe(true);
-    const second = createCustomPlugin(db, directory, {
-      name: "second-private",
-      privateFiles: [{ sourceRelativePath: "other.md", targetRelativePath: ".agents/plugins/shared/notes.md", content: "second" }]
-    });
-    const privatePath = path.join(projectRoot, ".agents", "plugins", "shared", "notes.md");
-    fs.mkdirSync(path.dirname(privatePath), { recursive: true });
-    fs.writeFileSync(privatePath, "local", "utf8");
+    const sourceRoot = path.join(directory, "source-shared");
+    writePlugin(sourceRoot, "shared", [], { "other.md": "second" });
+    const second = importPluginHubLocalSource(db, configFixture(directory), directory, sourceRoot).plugins[0];
+    const packageRoot = path.join(projectRoot, "plugins", "shared");
+    const privatePath = path.join(packageRoot, "notes.md");
+    fs.mkdirSync(packageRoot, { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, "local.txt"), "local", "utf8");
 
     const preview = installProjectPlugin(db, project, first.id, "codex");
     expect(preview).toMatchObject({ requiresConfirmation: true, binding: null });
-    expect(preview.preflight).toEqual([expect.objectContaining({ targetResourceType: "private-file", existingOwnerType: "local", backupRequired: true })]);
+    expect(preview.preflight).toEqual([expect.objectContaining({ targetResourceType: "native-plugin", existingOwnerType: "local", backupRequired: true })]);
 
     const installed = installProjectPlugin(db, project, first.id, "codex", { conflictMode: "overwrite" });
-    expect(installed.backups).toEqual([expect.objectContaining({ hub: "PluginHub", targetResourceType: "private-file", originalPath: privatePath })]);
+    expect(installed.backups).toEqual([expect.objectContaining({ hub: "PluginHub", targetResourceType: "native-plugin", originalPath: packageRoot })]);
     expect(fs.existsSync(installed.backups[0].metadataPath)).toBe(true);
     expect(fs.readFileSync(privatePath, "utf8")).toBe("first");
 
     const blocked = installProjectPlugin(db, project, second.id, "codex");
     expect(blocked).toMatchObject({ blocked: true, requiresConfirmation: false, binding: null });
-    expect(blocked.preflight).toEqual([expect.objectContaining({ targetResourceType: "private-file", existingOwnerType: "plugin-private" })]);
+    expect(blocked.preflight).toEqual([expect.objectContaining({ targetResourceType: "native-plugin", existingOwnerType: "plugin-private" })]);
 
     uninstallProjectPluginBinding(db, project, installed.binding?.id ?? "");
-    expect(fs.existsSync(privatePath)).toBe(false);
+    expect(fs.existsSync(packageRoot)).toBe(false);
     deletePluginHubPlugin(db, first.id);
     expect(fs.existsSync(firstMaterialRoot)).toBe(false);
     db.close();
   });
+
+  it("installs plugin-native Claude hooks through a Claude marketplace package without creating HookHub suites", () => {
+    directory = testDir("pluginhub-native-hooks");
+    const db = new AppDatabase(directory);
+    const config = configFixture(directory);
+    const pluginRoot = path.join(directory, "caveman");
+    writePlugin(pluginRoot, "caveman", [["caveman", "Caveman skill"]], {
+      ".claude-plugin/plugin.json": JSON.stringify(
+        {
+          name: "caveman",
+          hooks: {
+            SessionStart: [
+              {
+                hooks: [
+                  {
+                    type: "command",
+                    command: 'node "${CLAUDE_PLUGIN_ROOT}/src/hooks/caveman-activate.js"',
+                    timeout: 5
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        null,
+        2
+      ),
+      "src/hooks/caveman-activate.js": "process.stdout.write('caveman');\n"
+    });
+    const plugin = importPluginHubLocalSource(db, config, directory, pluginRoot).plugins[0];
+    const projectRoot = path.join(directory, "repo");
+    const settingsPath = path.join(projectRoot, ".claude", "settings.local.json");
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify(
+        {
+          permissions: { allow: ["Bash(npm test)"] },
+          hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo local" }] }] }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    fs.writeFileSync(path.join(projectRoot, "AGENTS.md"), "rules", "utf8");
+    const project = db.addProject(projectRoot).project;
+    updateProjectToolTargets(db, project, ["claude"]);
+
+    const preview = installProjectPlugin(db, project, plugin.id, "claude");
+    expect(preview).toMatchObject({ requiresConfirmation: false, binding: expect.any(Object) });
+    expect(db.listHookHubSuites()).toEqual([]);
+
+    const installed = preview;
+    const projectSettingsPath = path.join(projectRoot, ".claude", "settings.json");
+    const projectSettings = JSON.parse(fs.readFileSync(projectSettingsPath, "utf8"));
+    const localSettings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    const packageRoot = path.join(projectRoot, ".pluginhub", "claude-marketplace", "plugins", "caveman");
+    const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, ".claude-plugin", "plugin.json"), "utf8"));
+    const hookCommand = manifest.hooks.SessionStart[0].hooks[0].command;
+
+    expect(installed).toMatchObject({ requiresConfirmation: false, binding: { managedComponentCount: 1, existingComponentCount: 0, privateFileCount: 1 } });
+    expect(installed.backups).toEqual([]);
+    expect(localSettings.permissions).toEqual({ allow: ["Bash(npm test)"] });
+    expect(localSettings.hooks.PreToolUse[0].hooks[0].command).toBe("echo local");
+    expect(projectSettings.enabledPlugins).toEqual({ "caveman@pluginhub": true });
+    expect(projectSettings.extraKnownMarketplaces.pluginhub.source).toEqual({ source: "directory", path: "./.pluginhub/claude-marketplace" });
+    expect(hookCommand).toContain("${CLAUDE_PLUGIN_ROOT}/src/hooks/caveman-activate.js");
+    expect(fs.readFileSync(path.join(packageRoot, "src", "hooks", "caveman-activate.js"), "utf8")).toContain("caveman");
+    expect(installed.binding?.privateFileOwnership.some((item) => item.kind === "native-plugin")).toBe(true);
+    expect(listPluginHub(db).hookSuites).toEqual([]);
+
+    uninstallProjectPluginBinding(db, project, installed.binding?.id ?? "");
+    const afterUninstall = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    expect(afterUninstall.hooks.PreToolUse[0].hooks[0].command).toBe("echo local");
+    expect(fs.existsSync(packageRoot)).toBe(false);
+    db.close();
+  });
+
+  it("materializes custom Claude plugin components into the native package and protects HookHub suite references", () => {
+    directory = testDir("pluginhub-custom-claude-package");
+    const db = new AppDatabase(directory);
+    const config = configFixture(directory);
+    const skill = seedSkillHubSkill(db, config, "team-source", "review", "Review skill");
+    const agentSource = db.upsertAgentHubSource({
+      id: "team-agents",
+      type: "local-import",
+      label: "Team Agents",
+      inputPath: null,
+      resolvedPath: path.join(directory, "agents"),
+      sourceTruthTool: "claude",
+      importedAt: "2026-06-01T00:00:00Z",
+      metadata: {}
+    });
+    const agent = db.upsertAgentHubAgent({
+      id: "agent-1",
+      sourceId: agentSource.id,
+      sourceType: agentSource.type,
+      sourceTruthTool: "claude",
+      truthRole: "subagent",
+      sourceFormat: "markdown",
+      slug: "code-reviewer",
+      name: "Code Reviewer",
+      description: "Review changes",
+      nativePath: path.join(directory, "agents", "code-reviewer.md"),
+      libraryRelativePath: "team-agents/code-reviewer.md",
+      sourceRelativePath: "code-reviewer.md",
+      category: "engineering",
+      projection: { name: "Code Reviewer", description: "Review changes", body: "Review changes.", slugCandidate: "code-reviewer", parseWarnings: [] },
+      nativeMetadata: {},
+      contentHash: "agent-hash"
+    });
+    const mcp = db.upsertMcpHubServer({
+      serverId: "docs",
+      name: "docs",
+      description: "Docs MCP",
+      transport: "stdio",
+      command: "node",
+      args: ["server.js"],
+      url: null,
+      headers: {},
+      env: {},
+      requiredEnv: []
+    });
+    const hook = db.upsertHookHubSuite({
+      suiteId: "suite-1",
+      name: "提交前检查",
+      description: "Run checks",
+      riskNotes: null,
+      requiredEnv: [],
+      payloads: { claude: { PreToolUse: [{ hooks: [{ type: "command", command: "npm test" }] }] } }
+    });
+    const custom = createCustomPlugin(db, directory, {
+      name: "workflow",
+      componentRefs: [
+        { type: "skill", componentId: skill.id, required: true },
+        { type: "agent", componentId: agent.id, required: true },
+        { type: "mcp", componentId: mcp.serverId, required: true },
+        { type: "hook", componentId: hook.suiteId, required: true }
+      ]
+    });
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "AGENTS.md"), "rules", "utf8");
+    const project = db.addProject(projectRoot).project;
+    updateProjectToolTargets(db, project, ["claude"]);
+
+    const installed = installProjectPlugin(db, project, custom.id, "claude", directory);
+    const packageRoot = path.join(projectRoot, ".pluginhub", "claude-marketplace", "plugins", "workflow");
+    const mcpConfig = JSON.parse(fs.readFileSync(path.join(packageRoot, ".mcp.json"), "utf8"));
+    const hooksConfig = JSON.parse(fs.readFileSync(path.join(packageRoot, "hooks", "hooks.json"), "utf8"));
+
+    expect(installed).toMatchObject({ requiresConfirmation: false, binding: { managedComponentCount: 4 } });
+    expect(fs.existsSync(path.join(packageRoot, "skills", "review", "SKILL.md"))).toBe(true);
+    expect(fs.readFileSync(path.join(packageRoot, "agents", "code-reviewer.md"), "utf8")).toContain("Review changes.");
+    expect(mcpConfig.mcpServers.docs).toMatchObject({ command: "node", args: ["server.js"] });
+    expect(hooksConfig.PreToolUse[0].hooks[0].command).toBe("npm test");
+    expect(() => deleteHookHubSuite(db, hook.suiteId)).toThrow("HookHub suite 正被 PluginHub plugin 引用");
+    db.close();
+  });
+
+  it("installs custom Codex plugin agents through AgentHub project targets", () => {
+    directory = testDir("pluginhub-custom-codex-agent");
+    const db = new AppDatabase(directory);
+    const agentSource = db.upsertAgentHubSource({
+      id: "team-agents",
+      type: "local-import",
+      label: "Team Agents",
+      inputPath: null,
+      resolvedPath: path.join(directory, "agents"),
+      sourceTruthTool: "claude",
+      importedAt: "2026-06-01T00:00:00Z",
+      metadata: {}
+    });
+    const agent = db.upsertAgentHubAgent({
+      id: "agent-1",
+      sourceId: agentSource.id,
+      sourceType: agentSource.type,
+      sourceTruthTool: "claude",
+      truthRole: "subagent",
+      sourceFormat: "markdown",
+      slug: "code-reviewer",
+      name: "Code Reviewer",
+      description: "Review changes",
+      nativePath: path.join(directory, "agents", "code-reviewer.md"),
+      libraryRelativePath: "team-agents/code-reviewer.md",
+      sourceRelativePath: "code-reviewer.md",
+      category: "engineering",
+      projection: { name: "Code Reviewer", description: "Review changes", body: "Review changes.", slugCandidate: "code-reviewer", parseWarnings: [] },
+      nativeMetadata: {},
+      contentHash: "agent-hash"
+    });
+    const custom = createCustomPlugin(db, directory, {
+      name: "codex-workflow",
+      componentRefs: [{ type: "agent", componentId: agent.id, required: true }]
+    });
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "AGENTS.md"), "rules", "utf8");
+    const project = db.addProject(projectRoot).project;
+    updateProjectToolTargets(db, project, ["codex"]);
+
+    const installed = installProjectPlugin(db, project, custom.id, "codex", directory);
+    const codexAgentPath = path.join(projectRoot, ".codex", "agents", "code-reviewer.toml");
+    const packageRoot = path.join(projectRoot, "plugins", "codex-workflow");
+
+    expect(installed).toMatchObject({ requiresConfirmation: false, binding: { managedComponentCount: 1, privateFileCount: 1 } });
+    expect(fs.readFileSync(codexAgentPath, "utf8")).toContain('name = "Code Reviewer"');
+    expect(db.listProjectAgentTargets(project.id, project.rootPath)).toEqual([expect.objectContaining({ toolId: "codex", agentId: agent.id })]);
+    expect(fs.existsSync(path.join(packageRoot, ".codex-plugin", "plugin.json"))).toBe(true);
+
+    uninstallProjectPluginBinding(db, project, installed.binding?.id ?? "");
+    expect(fs.existsSync(codexAgentPath)).toBe(false);
+    expect(db.listProjectAgentTargets(project.id, project.rootPath)).toEqual([]);
+    db.close();
+  }, 20000);
 
   it("preflights local overwrites, supports skip installs, and backs up confirmed overwrites", () => {
     directory = testDir("pluginhub-preflight");
@@ -319,7 +603,8 @@ describe("PluginHub", () => {
     writePlugin(path.join(library, "plugins", "python-development"), "python-development", [["review", "Python review"]]);
     const plugin = importPluginHubLocalSource(db, config, directory, library).plugins[0];
     const projectRoot = path.join(directory, "repo");
-    writeSkill(path.join(projectRoot, ".codex", "skills", "review"), "review", "Local review");
+    const packageRoot = path.join(projectRoot, "plugins", "python-development");
+    writeSkill(path.join(packageRoot, "skills", "review"), "review", "Local review");
     fs.writeFileSync(path.join(projectRoot, "AGENTS.md"), "rules", "utf8");
     const project = db.addProject(projectRoot).project;
     updateProjectToolTargets(db, project, ["codex"]);
@@ -328,14 +613,14 @@ describe("PluginHub", () => {
     const skipped = installProjectPlugin(db, project, plugin.id, "codex", { conflictMode: "skip" });
 
     expect(preview).toMatchObject({ requiresConfirmation: true, binding: null });
-    expect(preview.preflight).toEqual([expect.objectContaining({ existingOwnerType: "local", backupRequired: true })]);
-    expect(skipped.binding).toMatchObject({ managedComponentCount: 0, existingComponentCount: 1 });
-    expect(fs.lstatSync(path.join(projectRoot, ".codex", "skills", "review")).isSymbolicLink()).toBe(false);
+    expect(preview.preflight).toEqual([expect.objectContaining({ targetResourceType: "native-plugin", existingOwnerType: "local", backupRequired: true })]);
+    expect(skipped).toMatchObject({ blocked: true, binding: null });
+    expect(fs.existsSync(path.join(packageRoot, "skills", "review", "SKILL.md"))).toBe(true);
     const overwritten = installProjectPlugin(db, project, plugin.id, "codex", { conflictMode: "overwrite" });
     expect(overwritten.binding).toMatchObject({ managedComponentCount: 1, existingComponentCount: 0 });
-    expect(overwritten.backups[0]).toMatchObject({ hub: "PluginHub", targetResourceType: "skill" });
+    expect(overwritten.backups[0]).toMatchObject({ hub: "PluginHub", targetResourceType: "native-plugin", originalPath: packageRoot });
     expect(fs.existsSync(overwritten.backups[0].metadataPath)).toBe(true);
-    expect(fs.lstatSync(path.join(projectRoot, ".codex", "skills", "review")).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(path.join(packageRoot, "skills", "review", "SKILL.md"))).toBe(true);
     db.close();
   });
 
@@ -358,13 +643,15 @@ describe("PluginHub", () => {
     updateProjectToolTargets(db, project, ["codex"]);
     const sourceInstall = installProjectPlugin(db, project, sourcePlugin.id, "codex");
     const customInstall = installProjectPlugin(db, project, customPlugin.id, "codex");
-    const skillPath = path.join(projectRoot, ".codex", "skills", "review");
+    const sourceSkillPath = path.join(projectRoot, "plugins", "python-development", "skills", "review", "SKILL.md");
+    const customSkillPath = path.join(projectRoot, "plugins", "custom-review", "skills", "review", "SKILL.md");
 
     uninstallProjectPluginBinding(db, project, sourceInstall.binding?.id ?? "");
-    expect(fs.existsSync(skillPath)).toBe(true);
+    expect(fs.existsSync(sourceSkillPath)).toBe(false);
+    expect(fs.existsSync(customSkillPath)).toBe(true);
 
     uninstallProjectPluginBinding(db, project, customInstall.binding?.id ?? "");
-    expect(fs.existsSync(skillPath)).toBe(false);
+    expect(fs.existsSync(customSkillPath)).toBe(false);
     db.close();
   });
 
@@ -394,7 +681,7 @@ describe("PluginHub", () => {
     });
     expect(listProjectPluginState(db, project).syncRequiredPluginIds).toEqual([custom.id]);
     syncProjectPluginBinding(db, project, installed.binding?.id ?? "");
-    expect(fs.existsSync(path.join(projectRoot, ".codex", "skills", "triage"))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, "plugins", "workflow", "skills", "triage", "SKILL.md"))).toBe(true);
 
     updateCustomPlugin(db, directory, custom.id, {
       name: "workflow",
@@ -403,8 +690,8 @@ describe("PluginHub", () => {
     const syncedRemoval = syncProjectPluginBinding(db, project, installed.binding?.id ?? "");
 
     expect(syncedRemoval.binding).toMatchObject({ managedComponentCount: 1 });
-    expect(fs.existsSync(path.join(projectRoot, ".codex", "skills", "review"))).toBe(false);
-    expect(fs.existsSync(path.join(projectRoot, ".codex", "skills", "triage"))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, "plugins", "workflow", "skills", "review"))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, "plugins", "workflow", "skills", "triage", "SKILL.md"))).toBe(true);
     db.close();
   });
 

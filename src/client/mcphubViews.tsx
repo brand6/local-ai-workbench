@@ -8,6 +8,7 @@ import type {
   ProjectMcpApplyResult,
   ProjectMcpState
 } from "../shared/types.js";
+import { isMcpHubTargetToolId } from "../shared/types.js";
 
 export function McpHubPage({
   mcphub,
@@ -185,8 +186,8 @@ function ProjectMcpHubServerRow({
   busy: boolean;
   onUpdateServerTools: (serverId: string, toolIds: McpHubTargetToolId[]) => void;
 }) {
-  const supportedToolIds = targets.filter((target) => target.supported).map((target) => target.toolId);
-  const activeTargetIds = targets.filter((target) => activeToolIds.has(target.toolId)).map((target) => target.toolId);
+  const supportedToolIds = targets.filter((target) => target.supported && isMcpHubTargetToolId(target.toolId)).map((target) => target.toolId as McpHubTargetToolId);
+  const activeTargetIds = targets.filter((target) => isMcpHubTargetToolId(target.toolId) && activeToolIds.has(target.toolId)).map((target) => target.toolId as McpHubTargetToolId);
   const checked = supportedToolIds.length > 0 && supportedToolIds.every((toolId) => activeToolIds.has(toolId));
   const indeterminate = supportedToolIds.some((toolId) => activeToolIds.has(toolId)) && !checked;
 
@@ -210,17 +211,29 @@ function ProjectMcpHubServerRow({
         <div className="tool-chip-list" aria-label={`${server.serverId} 可配置工具`}>
           {targets.length === 0 ? <div className="empty-state compact">还没有可配置工具</div> : null}
           {targets.map((target) => {
-            const checked = activeToolIds.has(target.toolId);
+            const supportedToolId = isMcpHubTargetToolId(target.toolId) ? target.toolId : null;
+            const checked = supportedToolId ? activeToolIds.has(supportedToolId) : false;
             return (
-              <label className="tool-target-chip" key={`${server.serverId}:${target.toolId}`} title={target.reason ?? target.configPath}>
+              <label
+                className="tool-target-chip"
+                key={`${server.serverId}:${target.toolId}`}
+                title={target.supported ? target.configPath : "尚未支持"}
+                onClick={(event) => {
+                  if (!busy && !target.supported) {
+                    event.preventDefault();
+                    window.alert("尚未支持");
+                  }
+                }}
+              >
                 <input
                   type="checkbox"
                   checked={checked}
-                  disabled={busy || !target.supported}
+                  disabled={busy || !target.supported || !supportedToolId}
                   onChange={(event) => {
+                    if (!supportedToolId) return;
                     const next = event.target.checked
-                      ? uniqueMcpTargetToolIds([...activeTargetIds, target.toolId])
-                      : activeTargetIds.filter((toolId) => toolId !== target.toolId);
+                      ? uniqueMcpTargetToolIds([...activeTargetIds, supportedToolId])
+                      : activeTargetIds.filter((toolId) => toolId !== supportedToolId);
                     onUpdateServerTools(server.serverId, next);
                   }}
                 />

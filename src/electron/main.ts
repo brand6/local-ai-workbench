@@ -6,7 +6,7 @@ let runtime: RunningHttpServer | null = null;
 let mainWindow: BrowserWindow | null = null;
 let quitting = false;
 
-app.setName("GitHub Repo Manager");
+app.setName("Local AI Workbench");
 
 app.whenReady()
   .then(async () => {
@@ -14,7 +14,7 @@ app.whenReady()
     mainWindow = createMainWindow(runtime.url);
   })
   .catch((error) => {
-    dialog.showErrorBox("GitHub Repo Manager 启动失败", error instanceof Error ? error.message : String(error));
+    dialog.showErrorBox("Local AI Workbench 启动失败", error instanceof Error ? error.message : String(error));
     app.quit();
   });
 
@@ -41,7 +41,7 @@ function createMainWindow(url: string): BrowserWindow {
     height: 860,
     minWidth: 960,
     minHeight: 640,
-    title: "GitHub Repo Manager",
+    title: "Local AI Workbench",
     show: false,
     webPreferences: {
       contextIsolation: true,

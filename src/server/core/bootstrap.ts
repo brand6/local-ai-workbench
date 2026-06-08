@@ -8,14 +8,22 @@ export interface BootstrapFile {
   dataDir: string;
 }
 
+const appDirectoryName = "local-ai-workbench";
+const legacyAppDirectoryName = "github-repo-manager";
+
 export function getDefaultDataDir(env: NodeJS.ProcessEnv = process.env): string {
   const base = env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local");
-  return path.join(base, "github-repo-manager");
+  return path.join(base, appDirectoryName);
 }
 
 export function getBootstrapPath(env: NodeJS.ProcessEnv = process.env): string {
   const base = env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming");
-  return path.join(base, "github-repo-manager", "bootstrap.json");
+  return path.join(base, appDirectoryName, "bootstrap.json");
+}
+
+export function getLegacyBootstrapPath(env: NodeJS.ProcessEnv = process.env): string {
+  const base = env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming");
+  return path.join(base, legacyAppDirectoryName, "bootstrap.json");
 }
 
 export function readBootstrap(bootstrapPath = getBootstrapPath()): BootstrapFile | null {
@@ -103,7 +111,7 @@ export function resolveBootstrapState(dataDirArg: string | null): BootstrapState
     };
   }
 
-  const bootstrap = readBootstrap();
+  const bootstrap = readBootstrap() ?? readBootstrap(getLegacyBootstrapPath());
   return {
     initialized: Boolean(bootstrap),
     dataDir: bootstrap?.dataDir ?? null,

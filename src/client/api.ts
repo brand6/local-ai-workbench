@@ -231,6 +231,7 @@ export const client = {
     apiPatch<Project>(`/api/projects/${id}`, { includeSubdirectories }),
   removeProject: (id: string) => apiDelete<{ removed: boolean }>(`/api/projects/${id}`),
   detail: (id: string, query: string) => apiGet<ProjectDetail>(`/api/projects/${id}/detail?query=${encodeURIComponent(query)}`),
+  detailSummary: (id: string, query: string) => apiGet<ProjectDetail>(`/api/projects/${id}/detail?query=${encodeURIComponent(query)}&includeSessions=false`),
   refreshProject: (id: string) => apiPost<RefreshResult>(`/api/projects/${id}/refresh`),
   projectToolTargets: (id: string) => apiGet<ProjectToolTarget[]>(`/api/projects/${id}/tool-targets`),
   updateProjectToolTargets: (id: string, toolIds: string[]) => apiPatch<ProjectToolTarget[]>(`/api/projects/${id}/tool-targets`, { toolIds }),
@@ -261,6 +262,8 @@ export const client = {
     }),
   projectAgents: (id: string, targetRootPath?: string, query = "") =>
     apiGet<ProjectAgentState>(`/api/projects/${id}/agents${projectTargetQuery(targetRootPath, query)}`),
+  projectLocalAgents: (id: string, targetRootPath?: string) =>
+    apiGet<ProjectAgentState>(`/api/projects/${id}/local-agents${projectTargetQuery(targetRootPath)}`),
   applyProjectAgent: (id: string, agentId: string, toolId: AgentHubToolId, targetRootPath?: string, conflictMode?: AgentHubApplyConflictMode | null) =>
     apiPut<ProjectAgentApplyResult>(`/api/projects/${id}/agent-targets/${encodeURIComponent(agentId)}/${encodeURIComponent(toolId)}`, {
       conflictMode,

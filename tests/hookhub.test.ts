@@ -153,7 +153,7 @@ describe("HookHub", () => {
     fs.writeFileSync(path.join(projectRoot, ".github", "hooks", "pre-commit.json"), "{}", "utf8");
     const before = fs.readFileSync(path.join(projectRoot, ".claude", "settings.json"), "utf8");
     const project = db.addProject(projectRoot).project;
-    db.replaceProjectToolTargets(project.id, ["claude"]);
+    db.replaceProjectToolTargets(project.id, ["claude", "opencode", "copilot", "kilo"]);
 
     const shared = shareProjectHooksToHookHub(db, project, "claude", { name: "通知 hooks" });
     expect(shared.suite.payloads.claude).toEqual({ Stop: [{ command: "notify" }] });
@@ -165,6 +165,11 @@ describe("HookHub", () => {
       supported: false
     });
     expect(state.tools.find((tool) => tool.toolId === "copilot")?.discovery).toContain(path.join(".github", "hooks", "pre-commit.json"));
+    expect(state.tools.find((tool) => tool.toolId === "kilo")).toMatchObject({
+      status: "unsupported",
+      supported: false,
+      reason: "尚未支持"
+    });
     db.close();
   });
 });

@@ -241,7 +241,7 @@ export function isAgentHubToolId(value: unknown): value is AgentHubToolId {
 export type AgentHubSourceType = "builtin" | "local-import";
 export type AgentHubSourceFormat = "markdown" | "toml" | "mdc";
 export type AgentHubTruthRole = "subagent" | "custom-agent" | "rule";
-export type AgentHubTargetStatus = "current" | "outdated" | "drifted" | "missing" | "unmanaged" | "invalid";
+export type AgentHubTargetStatus = "current" | "outdated" | "drifted" | "missing" | "unmanaged" | "invalid" | "unsupported";
 export type AgentHubImportConflictAction = "overwrite" | "rename" | "skip";
 export type AgentHubApplyConflictMode = "overwrite" | "migrate-then-overwrite" | "replace-managed";
 export type AgentHubDisableMode = "keep-file" | "delete-with-backup";
@@ -358,7 +358,7 @@ export interface ProjectAgentTarget {
 export interface ProjectAgentTargetState {
   projectId: string;
   targetRootPath: string;
-  toolId: AgentHubToolId;
+  toolId: ToolId;
   agent: AgentHubAgent;
   binding: ProjectAgentTarget | null;
   outputPath: string;
@@ -574,7 +574,7 @@ export interface ProjectPluginComponentOwnership {
   componentId: string;
   toolId: ToolId;
   targetPath: string;
-  linkPath: string;
+  linkPath?: string | null;
   ownerState: "managed" | "existing";
   required: boolean;
   reason: string | null;
@@ -584,6 +584,7 @@ export interface ProjectPluginPrivateFileOwnership {
   privateFileId: string;
   toolId: ToolId;
   targetPath: string;
+  kind?: "private-file" | "hook" | "native-plugin";
   ownerState: "managed" | "blocked";
   reason: string | null;
 }
@@ -608,7 +609,7 @@ export interface ProjectPluginBinding {
 
 export interface ProjectPluginPreflightItem {
   targetPath: string;
-  targetResourceType: "skill" | "private-file";
+  targetResourceType: "skill" | "private-file" | "hook" | "agent" | "mcp" | "native-plugin";
   existingOwnerType: "none" | "same-component" | "different-component" | "plugin-private" | "local";
   overwriteReason: string;
   backupRequired: boolean;
@@ -622,7 +623,7 @@ export interface ProjectLocalFileBackup {
   backupPath: string;
   metadataPath: string;
   hub: string;
-  targetResourceType: "skill" | "private-file" | "agent";
+  targetResourceType: "skill" | "private-file" | "agent" | "hook" | "mcp" | "native-plugin";
   createdAt: string;
 }
 
@@ -639,6 +640,7 @@ export interface ProjectPluginApplyResult {
 export interface ProjectPluginState {
   projectId: string;
   targetRootPath: string;
+  toolTargets: ProjectToolTarget[];
   plugins: PluginHubPlugin[];
   bindings: ProjectPluginBinding[];
   syncRequiredPluginIds: string[];
@@ -826,7 +828,7 @@ export interface ProjectLocalMcpEntry {
 }
 
 export interface ProjectMcpTarget {
-  toolId: McpHubTargetToolId;
+  toolId: ToolId;
   label: string;
   enabled: boolean;
   inferred: boolean;
@@ -937,7 +939,7 @@ export interface ProjectHookBinding {
 export interface ProjectHookToolState {
   projectId: string;
   targetRootPath: string;
-  toolId: HookHubDiscoveryToolId;
+  toolId: ToolId;
   label: string;
   supported: boolean;
   configPath: string | null;

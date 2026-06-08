@@ -1,5 +1,5 @@
 {
-  "name": "github-repo-manager",
+  "name": "local-ai-workbench",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -40,8 +40,8 @@
     "vitest": "^3.2.3"
   },
   "build": {
-    "appId": "local.github-repo-manager",
-    "productName": "GitHub Repo Manager",
+    "appId": "local.local-ai-workbench",
+    "productName": "Local AI Workbench",
     "directories": {
       "output": "release"
     },

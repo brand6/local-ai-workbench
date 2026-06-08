@@ -5,6 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   AppConfig,
+  AgentHubAgent,
+  AgentHubToolId,
+  HookHubSupportedToolId,
+  McpHubServer,
   PluginHubComponentRef,
   PluginHubCustomPluginInput,
   PluginHubDeleteFailure,
@@ -31,14 +35,17 @@ import type {
   SkillHubSource,
   ToolId
 } from "../../shared/types.js";
+import { isAgentHubToolId } from "../../shared/types.js";
 import { openLocalPath } from "../core/localFilesystem.js";
 import { normalizeFsPath } from "../core/pathUtils.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";
+import { applyProjectAgentTarget, conversionPreview, importPluginHubAgentRoots, renderAgentForTool } from "../agenthub/agenthub.js";
+import { isHookHubSupportedToolId } from "../hookhub/hookhub.js";
 import { ensureSkillHub, parseGitHubInput } from "../skillhub/skillhub.js";
 import { createDirectoryLink, linkPointsTo, pathExists, removeDirectoryLink } from "../skillhub/links.js";
 import { listProjectToolTargets } from "../skillhub/projectSkills.js";
-import { listMcpHub } from "../mcphub/mcphub.js";
+import { importMcpHubJson, listMcpHub } from "../mcphub/mcphub.js";
 
 interface DiscoveredPlugin {
   name: string;
@@ -47,6 +54,8 @@ interface DiscoveredPlugin {
   directory: string;
   sourceRelativePath: string;
   skills: DiscoveredPluginSkill[];
+  agentRoot: DiscoveredPluginAgentRoot | null;
+  mcpDocuments: DiscoveredPluginMcpDocument[];
   privateFiles: DiscoveredPrivateFile[];
 }
 
@@ -64,6 +73,16 @@ interface DiscoveredPrivateFile {
   sourceRelativePath: string;
   targetRelativePath: string;
   contentHash: string;
+}
+
+interface DiscoveredPluginAgentRoot {
+  rootPath: string;
+  sourceRelativePrefix: string;
+}
+
+interface DiscoveredPluginMcpDocument {
+  sourceRelativePath: string;
+  input: string;
 }
 
 interface ApplyOptions {
@@ -93,6 +112,13 @@ interface PluginHubListOptions {
   seedDefaultSources?: boolean;
 }
 
+interface BuiltInPluginSource {
+  sourceId: string;
+  folderName: string;
+  label: string;
+  seedSettingKey?: string;
+}
+
 interface SkillInstallPlan {
   ref: PluginHubComponentRef;
   skill: SkillHubSkill;
@@ -104,10 +130,50 @@ interface PrivateInstallPlan {
   targetPath: string;
 }
 
+interface AgentInstallPlan {
+  ref: PluginHubComponentRef;
+  agent: AgentHubAgent;
+  toolId: AgentHubToolId;
+  targetPath: string;
+}
+
+interface NativePackageInstallPlan {
+  toolId: "claude" | "codex";
+  ownerId: string;
+  pluginName: string;
+  packageRoot: string;
+  marketplacePath: string;
+  settingsPath: string | null;
+  marketplaceName: string;
+  previousPackageRoot: string | null;
+}
+
+interface NativeHookInstallPlan {
+  toolId: ToolId;
+  ownerId: string;
+  configPath: string;
+  hooks: unknown;
+  previousFingerprint: string | null;
+}
+
 const PLUGINHUB_SKILL_SOURCE_TYPE: SkillHubSource["type"] = "plugin";
 const DEFAULT_PLUGINHUB_SEEDED_SETTING = "pluginhub.default-sources.seeded.v1";
-const SUPERPOWERS_SOURCE_ID = "pluginhub-source-superpowers";
-const SUPERPOWERS_BUNDLED_FOLDER = "superpowers";
+const SUPERPOWERS_FULL_SEEDED_SETTING = "pluginhub.default-source.superpowers.full-snapshot.seeded.v1";
+const CAVEMAN_SEEDED_SETTING = "pluginhub.default-source.caveman.seeded.v1";
+const BUILT_IN_PLUGIN_SOURCES: BuiltInPluginSource[] = [
+  {
+    sourceId: "pluginhub-source-superpowers",
+    folderName: "superpowers",
+    label: "obra/superpowers",
+    seedSettingKey: SUPERPOWERS_FULL_SEEDED_SETTING
+  },
+  {
+    sourceId: "pluginhub-source-caveman",
+    folderName: "caveman",
+    label: "JuliusBrussee/caveman",
+    seedSettingKey: CAVEMAN_SEEDED_SETTING
+  }
+];
 
 export function listPluginHub(database: AppDatabase, config?: AppConfig, dataDir?: string, options: PluginHubListOptions = {}): PluginHubList {
   if ((options.seedDefaultSources ?? true) && config && dataDir) seedDefaultPluginHubSources(database, config, dataDir);
@@ -213,24 +279,28 @@ export function updatePluginHubGitHubSource(database: AppDatabase, config: AppCo
 }
 
 export function seedDefaultPluginHubSources(database: AppDatabase, config: AppConfig, dataDir: string): void {
-  if (database.getSetting(DEFAULT_PLUGINHUB_SEEDED_SETTING, false)) return;
-  if (seedBuiltInSuperpowersPlugin(database, config, dataDir)) {
-    database.setSetting(DEFAULT_PLUGINHUB_SEEDED_SETTING, true);
+  const legacyDefaultsSeeded = database.getSetting(DEFAULT_PLUGINHUB_SEEDED_SETTING, false);
+  for (const source of BUILT_IN_PLUGIN_SOURCES) {
+    const settingKey = source.seedSettingKey ?? DEFAULT_PLUGINHUB_SEEDED_SETTING;
+    if ((source.seedSettingKey ? database.getSetting(settingKey, false) : legacyDefaultsSeeded)) continue;
+    if (seedBuiltInPluginSource(database, config, dataDir, source)) {
+      database.setSetting(settingKey, true);
+    }
   }
 }
 
-function seedBuiltInSuperpowersPlugin(database: AppDatabase, config: AppConfig, dataDir: string): boolean {
-  const sourcePath = resolveBundledPath("builtin-plugins", SUPERPOWERS_BUNDLED_FOLDER);
+function seedBuiltInPluginSource(database: AppDatabase, config: AppConfig, dataDir: string, source: BuiltInPluginSource): boolean {
+  const sourcePath = resolveBundledPath("builtin-plugins", source.folderName);
   if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isDirectory()) return false;
   const result = importPluginHubSource(database, config, dataDir, sourcePath, {
-    sourceId: SUPERPOWERS_SOURCE_ID,
-    sourceLabel: "obra/superpowers",
-    inputPath: "builtin-plugins/superpowers",
-    input: "builtin-plugins/superpowers",
+    sourceId: source.sourceId,
+    sourceLabel: source.label,
+    inputPath: `builtin-plugins/${source.folderName}`,
+    input: `builtin-plugins/${source.folderName}`,
     type: "local",
     sourcePath: null
   });
-  return result.plugins.length > 0 || Boolean(database.getPluginHubSource(SUPERPOWERS_SOURCE_ID));
+  return result.plugins.length > 0 || Boolean(database.getPluginHubSource(source.sourceId));
 }
 
 function importPluginHubSource(
@@ -268,13 +338,16 @@ function importPluginHubSource(
     currentRevision: options.currentRevision ?? null,
     checkoutPath: options.checkoutPath ?? null,
     pluginCount: discovered.plugins.length,
-    componentCount: unique(discovered.plugins.flatMap((plugin) => plugin.skills.map((skill) => skill.sourceRelativePath))).length,
+    componentCount: discoveredComponentCount(discovered.plugins),
     privateFileCount: discovered.plugins.reduce((count, plugin) => count + plugin.privateFiles.length, 0)
   });
   const skillSource = upsertPluginSkillSource(database, source);
   const resolvedSkillHub = ensureSkillHub(config, dataDir);
   const importedSkills: SkillHubSkill[] = [];
   const plugins: PluginHubPlugin[] = [];
+  const agentImport = importDiscoveredPluginAgents(database, dataDir, source, discovered.plugins, discovered.skipped);
+  const agentsBySourceRelativePath = new Map(agentImport.agents.map((agent) => [agent.sourceRelativePath, agent]));
+  const mcpServersByPluginSourcePath = importDiscoveredPluginMcp(database, discovered.plugins, discovered.skipped);
 
   for (const plugin of discovered.plugins) {
     const componentRefs: PluginHubComponentRef[] = [];
@@ -297,6 +370,14 @@ function importPluginHubSource(
       });
       importedSkills.push(storedSkill);
       componentRefs.push({ type: "skill", componentId: storedSkill.id, required: false });
+    }
+    if (plugin.agentRoot) {
+      const prefix = normalizeRelativePath(plugin.agentRoot.sourceRelativePrefix);
+      const agents = [...agentsBySourceRelativePath.values()].filter((agent) => agent.sourceRelativePath?.startsWith(`${prefix}/`));
+      for (const agent of agents) componentRefs.push({ type: "agent", componentId: agent.id, required: false });
+    }
+    for (const server of mcpServersByPluginSourcePath.get(plugin.sourceRelativePath) ?? []) {
+      componentRefs.push({ type: "mcp", componentId: server.serverId, required: false });
     }
 
     const pluginId = stableId("pluginhub-plugin", source.id, plugin.name);
@@ -337,6 +418,7 @@ export function listProjectPluginState(database: AppDatabase, project: Project, 
   return {
     projectId: project.id,
     targetRootPath: project.rootPath,
+    toolTargets: listProjectToolTargets(database, project, config).filter((target) => target.enabled),
     plugins: database.listPluginHubPlugins(),
     bindings,
     syncRequiredPluginIds: bindings.filter((binding) => binding.plugin && topologyHash(binding.plugin) !== binding.topologyHash).map((binding) => binding.pluginId)
@@ -348,8 +430,11 @@ export function installProjectPlugin(
   project: Project,
   pluginId: string,
   toolId: ToolId,
-  options: ApplyOptions = {}
+  dataDirOrOptions: string | ApplyOptions = {},
+  maybeOptions: ApplyOptions = {}
 ): ProjectPluginApplyResult {
+  const dataDir = typeof dataDirOrOptions === "string" ? dataDirOrOptions : null;
+  const options = typeof dataDirOrOptions === "string" ? maybeOptions : dataDirOrOptions;
   const plugin = database.getPluginHubPlugin(pluginId);
   if (!plugin) throw new Error("PluginHub plugin not found");
   const toolTarget = projectToolTarget(database, project, toolId);
@@ -360,17 +445,25 @@ export function installProjectPlugin(
     throw new Error(toolTarget.reason ?? "该工具暂不支持项目 plugin 安装");
   }
 
-  return applyProjectPlugin(database, project, plugin, toolTarget, options);
+  return applyProjectPlugin(database, dataDir, project, plugin, toolTarget, options);
 }
 
-export function syncProjectPluginBinding(database: AppDatabase, project: Project, bindingId: string, options: ApplyOptions = {}): ProjectPluginApplyResult {
+export function syncProjectPluginBinding(
+  database: AppDatabase,
+  project: Project,
+  bindingId: string,
+  dataDirOrOptions: string | ApplyOptions = {},
+  maybeOptions: ApplyOptions = {}
+): ProjectPluginApplyResult {
+  const dataDir = typeof dataDirOrOptions === "string" ? dataDirOrOptions : null;
+  const options = typeof dataDirOrOptions === "string" ? maybeOptions : dataDirOrOptions;
   const binding = database.listProjectPluginBindings(project.id).find((item) => item.id === bindingId);
   if (!binding?.plugin) throw new Error("Project plugin binding not found");
   const toolTarget = projectToolTarget(database, project, binding.toolId);
   if (!toolTarget?.enabled || !toolTarget.supported) {
     throw new Error(toolTarget?.reason ?? "该工具暂不支持项目 plugin 同步");
   }
-  return applyProjectPlugin(database, project, binding.plugin, toolTarget, options);
+  return applyProjectPlugin(database, dataDir, project, binding.plugin, toolTarget, options);
 }
 
 export function uninstallProjectPluginBinding(database: AppDatabase, project: Project, bindingId: string): ProjectPluginApplyResult {
@@ -405,7 +498,8 @@ export function previewDeletePluginHubSource(database: AppDatabase, sourceId: st
   if (!source) throw new Error("PluginHub source not found");
   const sourcePlugins = database.listPluginHubPluginsForSource(source.id);
   const sourceComponents = database.listSkillHubSkillsForSource(source.id);
-  const componentIds = new Set(sourceComponents.map((skill) => skill.id));
+  const sourceAgents = database.listAgentHubAgentsForSource(source.id);
+  const componentIds = new Set([...sourceComponents.map((skill) => skill.id), ...sourceAgents.map((agent) => agent.id)]);
   const customPlugins = database
     .listCustomPluginHubPlugins()
     .filter((plugin) => plugin.componentRefs.some((ref) => componentIds.has(ref.componentId)));
@@ -434,7 +528,9 @@ export function deletePluginHubSource(
     }
   }
 
+  const sourceAgents = database.listAgentHubAgentsForSource(sourceId);
   failures.push(...removeSourceComponentTargets(database, preview.sourceComponents));
+  failures.push(...removeSourceAgentTargets(database, sourceAgents));
   if (failures.length > 0) {
     return { ...preview, failures };
   }
@@ -445,7 +541,7 @@ export function deletePluginHubSource(
       database.deletePluginHubPlugin(plugin.id);
     }
   } else {
-    const removedComponentIds = new Set(preview.sourceComponents.map((skill) => skill.id));
+    const removedComponentIds = new Set([...preview.sourceComponents.map((skill) => skill.id), ...sourceAgents.map((agent) => agent.id)]);
     for (const plugin of preview.customPlugins) {
       database.upsertPluginHubPlugin({
         ...plugin,
@@ -458,6 +554,11 @@ export function deletePluginHubSource(
     fs.rmSync(skill.libraryPath, { recursive: true, force: true });
     database.deleteSkillHubSkill(skill.id);
   }
+  for (const agent of sourceAgents) {
+    fs.rmSync(agent.nativePath, { force: true });
+    database.deleteAgentHubAgent(agent.id);
+  }
+  database.deleteAgentHubSource(sourceId);
   database.deletePluginHubPluginsForSource(sourceId);
   database.deletePluginHubSource(sourceId);
   database.deleteSkillHubSource(sourceId);
@@ -500,15 +601,30 @@ export function openPluginHubPrivateFile(database: AppDatabase, pluginId: string
 
 function applyProjectPlugin(
   database: AppDatabase,
+  dataDir: string | null,
   project: Project,
   plugin: PluginHubPlugin,
   toolTarget: ProjectToolTarget,
   options: ApplyOptions
 ): ProjectPluginApplyResult {
   const existingBinding = database.getProjectPluginBinding(project.id, project.rootPath, toolTarget.toolId, plugin.id);
-  const skillPlans = skillInstallPlans(database, plugin, toolTarget);
-  const privatePlans = privateInstallPlans(project, plugin);
-  const preview = previewProjectPluginPreflight(database, project, toolTarget, existingBinding, skillPlans, privatePlans);
+  const nativePackagePlans = nativePackageInstallPlans(project, plugin, toolTarget, existingBinding);
+  const nativePackageMode = nativePackagePlans.length > 0;
+  const skillPlans = nativePackageMode ? [] : skillInstallPlans(database, plugin, toolTarget);
+  const privatePlans = nativePackageMode ? [] : privateInstallPlans(project, plugin);
+  const nativeHookPlans = nativePackageMode ? [] : nativeHookInstallPlans(project, plugin, toolTarget, existingBinding);
+  const agentPlans = agentInstallPlans(database, project, plugin, toolTarget);
+  const preview = previewProjectPluginPreflight(
+    database,
+    project,
+    toolTarget,
+    existingBinding,
+    skillPlans,
+    privatePlans,
+    nativeHookPlans,
+    nativePackagePlans,
+    agentPlans
+  );
   if (preview.preflight.length > 0 && !options.conflictMode) {
     return {
       projectId: project.id,
@@ -525,6 +641,48 @@ function applyProjectPlugin(
   const componentOwnership: ProjectPluginComponentOwnership[] = [];
   const privateFileOwnership: ProjectPluginPrivateFileOwnership[] = [];
   let blocked = false;
+
+  for (const plan of nativePackagePlans) {
+    const privateConflict = findPrivateTargetOwner(database, project.id, toolTarget.toolId, plan.packageRoot, existingBinding?.id ?? null);
+    const samePackage = normalizeFsPath(plan.previousPackageRoot ?? "") === normalizeFsPath(plan.packageRoot);
+    if (privateConflict && privateConflict.privateFileId !== plan.ownerId) {
+      preflight.push({
+        targetPath: plan.packageRoot,
+        targetResourceType: "native-plugin",
+        existingOwnerType: "plugin-private",
+        overwriteReason: "目标原生 plugin package 已由其他 PluginHub plugin 占用",
+        backupRequired: false,
+        required: true,
+        componentId: null,
+        privateFileId: plan.ownerId
+      });
+      blocked = true;
+      privateFileOwnership.push(nativePackageOwnershipItem(plan, "blocked", "目标原生 plugin package 已由其他 PluginHub plugin 占用"));
+      continue;
+    }
+
+    const localConflict = !samePackage && !privateConflict && pathExists(plan.packageRoot);
+    if (localConflict && options.conflictMode !== "overwrite") {
+      preflight.push({
+        targetPath: plan.packageRoot,
+        targetResourceType: "native-plugin",
+        existingOwnerType: "local",
+        overwriteReason: "目标原生 plugin package 路径已有本地内容",
+        backupRequired: true,
+        required: true,
+        componentId: null,
+        privateFileId: plan.ownerId
+      });
+      if (options.conflictMode === "skip") blocked = true;
+      privateFileOwnership.push(nativePackageOwnershipItem(plan, "blocked", "原生 plugin package 必须覆盖或保持阻止"));
+      continue;
+    }
+
+    if (localConflict) backups.push(backupLocalTarget(project.rootPath, plan.packageRoot, "PluginHub", "native-plugin"));
+    materializeNativePluginPackage(database, project, plugin, plan);
+    privateFileOwnership.push(nativePackageOwnershipItem(plan, "managed", nativePackageOwnershipReason(plan)));
+    componentOwnership.push(...nativePackageComponentOwnership(database, plugin, plan));
+  }
 
   for (const plan of skillPlans) {
     const existingByLink = database.getProjectSkillTargetByLinkPath(project.id, toolTarget.toolId, plan.linkPath);
@@ -617,6 +775,76 @@ function applyProjectPlugin(
     privateFileOwnership.push(privateOwnershipItem(plan, toolTarget.toolId, "managed", null));
   }
 
+  for (const plan of nativeHookPlans) {
+    const current = readPluginHookConfig(plan.toolId, plan.configPath);
+    const currentFingerprint = hooksFingerprint(current.hooks);
+    const currentOwned = plan.previousFingerprint !== null && currentFingerprint === plan.previousFingerprint;
+    const sameHooks = currentFingerprint === hooksFingerprint(plan.hooks);
+    const hasLocalHooks = !isEmptyHooks(current.hooks) && !currentOwned && !sameHooks;
+    const needsOverwrite = Boolean(current.error) || hasLocalHooks;
+
+    if (needsOverwrite && options.conflictMode !== "overwrite") {
+      preflight.push({
+        targetPath: plan.configPath,
+        targetResourceType: "hook",
+        existingOwnerType: "local",
+        overwriteReason: current.error ? `目标工具 hooks 配置 JSON 解析失败：${current.error}` : "目标工具已有未接管 hooks section",
+        backupRequired: true,
+        required: true,
+        componentId: null,
+        privateFileId: plan.ownerId
+      });
+      if (options.conflictMode === "skip") blocked = true;
+      privateFileOwnership.push(hookOwnershipItem(plan, "blocked", "plugin-native hooks 必须覆盖或保持阻止"));
+      continue;
+    }
+
+    if (needsOverwrite) backups.push(backupLocalTarget(project.rootPath, plan.configPath, "PluginHub", "hook"));
+    writePluginHooksSection(toolTarget.toolId, plan.configPath, plan.hooks);
+    privateFileOwnership.push(hookOwnershipItem(plan, "managed", hooksFingerprint(plan.hooks)));
+  }
+
+  for (const plan of agentPlans) {
+    const existingBindingForAgent = database.getProjectAgentTargetByOutputPath(project.id, project.rootPath, plan.toolId, plan.targetPath);
+    const sameAgent = existingBindingForAgent?.agentId === plan.agent.id;
+    const localConflict = !existingBindingForAgent && pathExists(plan.targetPath);
+    const managedConflict = existingBindingForAgent && !sameAgent;
+    if ((localConflict || managedConflict) && options.conflictMode !== "overwrite") {
+      preflight.push({
+        targetPath: plan.targetPath,
+        targetResourceType: "agent",
+        existingOwnerType: managedConflict ? "different-component" : "local",
+        overwriteReason: managedConflict ? "目标路径已由其他 AgentHub agent 占用" : "目标路径已有本地 agent 文件",
+        backupRequired: localConflict,
+        required: plan.ref.required,
+        componentId: plan.agent.id,
+        privateFileId: null
+      });
+      if (plan.ref.required && options.conflictMode === "skip") blocked = true;
+      componentOwnership.push(agentOwnershipItem(plan, managedConflict ? "existing" : "existing", managedConflict ? "沿用项目中已有 AgentHub agent" : "沿用项目本地 agent 文件"));
+      continue;
+    }
+    if (!dataDir) throw new Error("PluginHub 安装 AgentHub agent 需要 dataDir");
+    const applied = applyAgentPlan(database, dataDir, project, plan, options);
+    backups.push(...applied.backups);
+    if (applied.requiresConfirmation || !applied.binding) {
+      preflight.push({
+        targetPath: plan.targetPath,
+        targetResourceType: "agent",
+        existingOwnerType: applied.replacedBindings.length > 0 ? "different-component" : "local",
+        overwriteReason: applied.replacedBindings.length > 0 ? "目标路径已由其他 AgentHub agent 占用" : "目标路径已有本地 agent 文件",
+        backupRequired: applied.conflicts.length > 0,
+        required: plan.ref.required,
+        componentId: plan.agent.id,
+        privateFileId: null
+      });
+      if (plan.ref.required) blocked = true;
+      componentOwnership.push(agentOwnershipItem(plan, "existing", "AgentHub agent 未覆盖"));
+      continue;
+    }
+    componentOwnership.push(agentOwnershipItem(plan, "managed", null));
+  }
+
   const requiresConfirmation = preflight.length > 0 && !options.conflictMode;
   if (requiresConfirmation || blocked) {
     return {
@@ -639,7 +867,7 @@ function applyProjectPlugin(
     pluginId: plugin.id,
     managedComponentCount: componentOwnership.filter((item) => item.ownerState === "managed").length,
     existingComponentCount: componentOwnership.filter((item) => item.ownerState === "existing").length,
-    privateFileCount: privateFileOwnership.filter((item) => item.ownerState === "managed").length,
+    privateFileCount: privateFileOwnership.filter((item) => item.ownerState === "managed" && item.kind !== "hook").length,
     topologyHash: topologyHash(plugin),
     componentOwnership,
     privateFileOwnership,
@@ -663,10 +891,44 @@ function previewProjectPluginPreflight(
   toolTarget: ProjectToolTarget,
   existingBinding: ProjectPluginBinding | null,
   skillPlans: SkillInstallPlan[],
-  privatePlans: PrivateInstallPlan[]
+  privatePlans: PrivateInstallPlan[],
+  nativeHookPlans: NativeHookInstallPlan[],
+  nativePackagePlans: NativePackageInstallPlan[],
+  agentPlans: AgentInstallPlan[]
 ): { preflight: ProjectPluginPreflightItem[]; blocked: boolean } {
   const preflight: ProjectPluginPreflightItem[] = [];
   let blocked = false;
+  for (const plan of nativePackagePlans) {
+    const privateConflict = findPrivateTargetOwner(database, project.id, toolTarget.toolId, plan.packageRoot, existingBinding?.id ?? null);
+    const samePackage = normalizeFsPath(plan.previousPackageRoot ?? "") === normalizeFsPath(plan.packageRoot);
+    if (privateConflict && privateConflict.privateFileId !== plan.ownerId) {
+      preflight.push({
+        targetPath: plan.packageRoot,
+        targetResourceType: "native-plugin",
+        existingOwnerType: "plugin-private",
+        overwriteReason: "目标原生 plugin package 已由其他 PluginHub plugin 占用",
+        backupRequired: false,
+        required: true,
+        componentId: null,
+        privateFileId: plan.ownerId
+      });
+      blocked = true;
+      continue;
+    }
+    if (!privateConflict && !samePackage && pathExists(plan.packageRoot)) {
+      preflight.push({
+        targetPath: plan.packageRoot,
+        targetResourceType: "native-plugin",
+        existingOwnerType: "local",
+        overwriteReason: "目标原生 plugin package 路径已有本地内容",
+        backupRequired: true,
+        required: true,
+        componentId: null,
+        privateFileId: plan.ownerId
+      });
+    }
+  }
+
   for (const plan of skillPlans) {
     const existingByLink = database.getProjectSkillTargetByLinkPath(project.id, toolTarget.toolId, plan.linkPath);
     const sameComponent = existingByLink?.skillId === plan.skill.id || (pathExists(plan.linkPath) && linkPointsTo(plan.linkPath, plan.skill.libraryPath));
@@ -711,6 +973,40 @@ function previewProjectPluginPreflight(
         privateFileId: plan.file.id
       });
     }
+  }
+
+  for (const plan of nativeHookPlans) {
+    const current = readPluginHookConfig(plan.toolId, plan.configPath);
+    const currentFingerprint = hooksFingerprint(current.hooks);
+    const currentOwned = plan.previousFingerprint !== null && currentFingerprint === plan.previousFingerprint;
+    const sameHooks = currentFingerprint === hooksFingerprint(plan.hooks);
+    if (!current.error && (isEmptyHooks(current.hooks) || currentOwned || sameHooks)) continue;
+    preflight.push({
+      targetPath: plan.configPath,
+      targetResourceType: "hook",
+      existingOwnerType: "local",
+      overwriteReason: current.error ? `目标工具 hooks 配置 JSON 解析失败：${current.error}` : "目标工具已有未接管 hooks section",
+      backupRequired: true,
+      required: true,
+      componentId: null,
+      privateFileId: plan.ownerId
+    });
+  }
+
+  for (const plan of agentPlans) {
+    const existingByPath = database.getProjectAgentTargetByOutputPath(project.id, project.rootPath, plan.toolId, plan.targetPath);
+    const sameComponent = existingByPath?.agentId === plan.agent.id;
+    if (sameComponent || (!existingByPath && !pathExists(plan.targetPath))) continue;
+    preflight.push({
+      targetPath: plan.targetPath,
+      targetResourceType: "agent",
+      existingOwnerType: existingByPath ? "different-component" : "local",
+      overwriteReason: existingByPath ? "目标路径已由其他 AgentHub agent 占用" : "目标路径已有本地 agent 文件",
+      backupRequired: !existingByPath,
+      required: plan.ref.required,
+      componentId: plan.agent.id,
+      privateFileId: null
+    });
   }
 
   return { preflight, blocked };
@@ -815,6 +1111,8 @@ function discoverPlugin(pluginDir: string, sourceRelativePath: string): Discover
     directory: pluginDir,
     sourceRelativePath,
     skills: discoverPluginSkills(pluginDir, sourceRelativePath),
+    agentRoot: discoverPluginAgentRoot(pluginDir, sourceRelativePath),
+    mcpDocuments: discoverPluginMcpDocuments(pluginDir, sourceRelativePath),
     privateFiles: discoverPrivateFiles(pluginDir, sourceRelativePath, name)
   };
 }
@@ -847,6 +1145,59 @@ function discoverPluginSkills(pluginDir: string, pluginSourceRelativePath: strin
   return skills;
 }
 
+function discoverPluginAgentRoot(pluginDir: string, pluginSourceRelativePath: string): DiscoveredPluginAgentRoot | null {
+  const agentsRoot = path.join(pluginDir, "agents");
+  if (!fs.existsSync(agentsRoot) || !fs.statSync(agentsRoot).isDirectory()) return null;
+  return {
+    rootPath: agentsRoot,
+    sourceRelativePrefix: normalizeRelativePath(path.join(pluginSourceRelativePath, "agents"))
+  };
+}
+
+function discoverPluginMcpDocuments(pluginDir: string, pluginSourceRelativePath: string): DiscoveredPluginMcpDocument[] {
+  const documents: DiscoveredPluginMcpDocument[] = [];
+  for (const relativePath of [".mcp.json", "mcp.json"]) {
+    const filePath = path.join(pluginDir, relativePath);
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      documents.push({
+        sourceRelativePath: normalizeRelativePath(path.join(pluginSourceRelativePath, relativePath)),
+        input: fs.readFileSync(filePath, "utf8")
+      });
+    }
+  }
+
+  for (const manifestPath of [path.join(pluginDir, ".codex-plugin", "plugin.json"), path.join(pluginDir, ".claude-plugin", "plugin.json")]) {
+    if (!fs.existsSync(manifestPath) || !fs.statSync(manifestPath).isFile()) continue;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+      const mcpServers = parsed.mcpServers;
+      if (typeof mcpServers === "string") {
+        const configPath = safeJoin(pluginDir, mcpServers);
+        if (fs.existsSync(configPath) && fs.statSync(configPath).isFile()) {
+          documents.push({
+            sourceRelativePath: normalizeRelativePath(path.join(pluginSourceRelativePath, normalizeRelativePath(path.relative(pluginDir, configPath)))),
+            input: fs.readFileSync(configPath, "utf8")
+          });
+        }
+      } else if (isRecord(mcpServers)) {
+        documents.push({
+          sourceRelativePath: normalizeRelativePath(path.join(pluginSourceRelativePath, normalizeRelativePath(path.relative(pluginDir, manifestPath)), "mcpServers")),
+          input: stableJson({ mcpServers })
+        });
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  const seen = new Set<string>();
+  return documents.filter((document) => {
+    if (seen.has(document.sourceRelativePath)) return false;
+    seen.add(document.sourceRelativePath);
+    return true;
+  });
+}
+
 function discoverPrivateFiles(pluginDir: string, pluginSourceRelativePath: string, pluginName: string): DiscoveredPrivateFile[] {
   const files: DiscoveredPrivateFile[] = [];
   for (const file of listFiles(pluginDir)) {
@@ -875,6 +1226,66 @@ function privateFileFromDiscovery(pluginId: string, file: DiscoveredPrivateFile)
   };
 }
 
+function discoveredComponentCount(plugins: DiscoveredPlugin[]): number {
+  const keys = new Set<string>();
+  for (const plugin of plugins) {
+    for (const skill of plugin.skills) keys.add(`skill:${skill.sourceRelativePath}`);
+    if (plugin.agentRoot) {
+      for (const file of listFiles(plugin.agentRoot.rootPath).filter((item) => path.extname(item).toLowerCase() === ".md")) {
+        keys.add(`agent:${normalizeRelativePath(path.join(plugin.agentRoot.sourceRelativePrefix, path.relative(plugin.agentRoot.rootPath, file)))}`);
+      }
+    }
+    for (const document of plugin.mcpDocuments) keys.add(`mcp:${plugin.sourceRelativePath}:${document.sourceRelativePath}`);
+  }
+  return keys.size;
+}
+
+function importDiscoveredPluginAgents(
+  database: AppDatabase,
+  dataDir: string,
+  source: PluginHubSource,
+  plugins: DiscoveredPlugin[],
+  skipped: Array<{ path: string; reason: string }>
+): { agents: AgentHubAgent[] } {
+  const roots = plugins.flatMap((plugin) => (plugin.agentRoot ? [plugin.agentRoot] : []));
+  if (roots.length === 0) return { agents: [] };
+  const result = importPluginHubAgentRoots(database, dataDir, {
+    sourceId: source.id,
+    label: source.label,
+    inputPath: source.inputPath,
+    resolvedPath: source.resolvedPath,
+    roots
+  });
+  skipped.push(...result.skipped);
+  return result;
+}
+
+function importDiscoveredPluginMcp(
+  database: AppDatabase,
+  plugins: DiscoveredPlugin[],
+  skipped: Array<{ path: string; reason: string }>
+): Map<string, McpHubServer[]> {
+  const serversByPlugin = new Map<string, McpHubServer[]>();
+  for (const plugin of plugins) {
+    const servers: McpHubServer[] = [];
+    for (const document of plugin.mcpDocuments) {
+      const result = importMcpHubJson(database, document.input);
+      servers.push(...result.added, ...result.updated, ...result.patched);
+      for (const failure of result.failed) {
+        skipped.push({
+          path: document.sourceRelativePath,
+          reason: failure.serverId ? `${failure.serverId}: ${failure.reason}` : failure.reason
+        });
+      }
+    }
+    if (servers.length > 0) {
+      const uniqueServers = [...new Map(servers.map((server) => [server.serverId, server])).values()];
+      serversByPlugin.set(plugin.sourceRelativePath, uniqueServers);
+    }
+  }
+  return serversByPlugin;
+}
+
 function skillInstallPlans(database: AppDatabase, plugin: PluginHubPlugin, toolTarget: ProjectToolTarget): SkillInstallPlan[] {
   if (!toolTarget.skillDirectory) return [];
   return plugin.componentRefs.flatMap((ref) => {
@@ -892,6 +1303,294 @@ function privateInstallPlans(project: Project, plugin: PluginHubPlugin): Private
   }));
 }
 
+function agentInstallPlans(database: AppDatabase, project: Project, plugin: PluginHubPlugin, toolTarget: ProjectToolTarget): AgentInstallPlan[] {
+  if (toolTarget.toolId !== "codex") return [];
+  return plugin.componentRefs.flatMap((ref) => {
+    if (ref.type !== "agent") return [];
+    const agent = database.getAgentHubAgent(ref.componentId);
+    if (!agent) return [];
+    const preview = conversionPreview(agent, "codex", project.rootPath, "create");
+    return [{ ref, agent, toolId: "codex", targetPath: preview.targetPath }];
+  });
+}
+
+function nativePackageInstallPlans(
+  project: Project,
+  plugin: PluginHubPlugin,
+  toolTarget: ProjectToolTarget,
+  existingBinding: ProjectPluginBinding | null
+): NativePackageInstallPlan[] {
+  if (toolTarget.toolId !== "claude" && toolTarget.toolId !== "codex") return [];
+  const toolId = toolTarget.toolId;
+  const pluginName = safeName(plugin.name);
+  const ownerId = stableId("pluginhub-native-plugin", plugin.id, toolId);
+  const previous = existingBinding?.privateFileOwnership.find((item) => item.kind === "native-plugin" && item.privateFileId === ownerId) ?? null;
+  return [
+    {
+      toolId,
+      ownerId,
+      pluginName,
+      packageRoot: nativePluginPackageRoot(project.rootPath, toolId, pluginName),
+      marketplacePath: nativePluginMarketplacePath(project.rootPath, toolId),
+      settingsPath: toolId === "claude" ? path.join(project.rootPath, ".claude", "settings.json") : null,
+      marketplaceName: toolId === "claude" ? "pluginhub" : "pluginhub",
+      previousPackageRoot: previous?.targetPath ?? null
+    }
+  ];
+}
+
+function nativePluginPackageRoot(projectRoot: string, toolId: "claude" | "codex", pluginName: string): string {
+  if (toolId === "claude") return path.join(projectRoot, ".pluginhub", "claude-marketplace", "plugins", pluginName);
+  return path.join(projectRoot, "plugins", pluginName);
+}
+
+function nativePluginMarketplacePath(projectRoot: string, toolId: "claude" | "codex"): string {
+  if (toolId === "claude") return path.join(projectRoot, ".pluginhub", "claude-marketplace", ".claude-plugin", "marketplace.json");
+  return path.join(projectRoot, ".agents", "plugins", "marketplace.json");
+}
+
+function materializeNativePluginPackage(database: AppDatabase, project: Project, plugin: PluginHubPlugin, plan: NativePackageInstallPlan): void {
+  removeAnyPath(plan.packageRoot);
+  fs.mkdirSync(plan.packageRoot, { recursive: true });
+  copyPluginPrivateFilesToNativePackage(plugin, plan);
+  copyPluginSkillsToNativePackage(database, plugin, plan);
+  copyPluginAgentsToNativePackage(database, project, plugin, plan);
+  writePluginMcpToNativePackage(database, plugin, plan);
+  writePluginHooksToNativePackage(database, plugin, plan);
+  ensureNativePluginManifest(plugin, plan);
+  upsertNativePluginMarketplace(plugin, plan);
+  if (plan.toolId === "claude") upsertClaudeProjectPluginSettings(plan);
+}
+
+function copyPluginPrivateFilesToNativePackage(plugin: PluginHubPlugin, plan: NativePackageInstallPlan): void {
+  for (const file of plugin.privateFiles) {
+    const relativePath = pluginPackageRelativePath(plugin, file.sourceRelativePath);
+    if (!shouldCopyPrivateFileToNativePackage(relativePath, plan.toolId)) continue;
+    materializePrivateFile(file.contentPath, safeJoin(plan.packageRoot, relativePath));
+  }
+}
+
+function shouldCopyPrivateFileToNativePackage(relativePath: string, toolId: "claude" | "codex"): boolean {
+  if (relativePath.startsWith("skills/")) return false;
+  if (toolId === "claude") return !relativePath.startsWith(".codex-plugin/");
+  if (relativePath.startsWith(".claude-plugin/")) return false;
+  if (relativePath.startsWith("agents/")) return false;
+  if (relativePath.startsWith("commands/")) return false;
+  return true;
+}
+
+function copyPluginSkillsToNativePackage(database: AppDatabase, plugin: PluginHubPlugin, plan: NativePackageInstallPlan): void {
+  for (const ref of plugin.componentRefs.filter((item) => item.type === "skill")) {
+    const skill = database.getSkillHubSkill(ref.componentId);
+    if (!skill) continue;
+    replaceDirectory(skill.libraryPath, safeJoin(plan.packageRoot, path.join("skills", skill.folderName)));
+  }
+}
+
+function copyPluginAgentsToNativePackage(database: AppDatabase, project: Project, plugin: PluginHubPlugin, plan: NativePackageInstallPlan): void {
+  if (plan.toolId !== "claude") return;
+  for (const ref of plugin.componentRefs.filter((item) => item.type === "agent")) {
+    const rendered = renderAgentForTool(database, ref.componentId, "claude", project.rootPath);
+    const targetPath = safeJoin(plan.packageRoot, path.join("agents", `${rendered.agent.slug}.md`));
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, rendered.content, "utf8");
+  }
+}
+
+function writePluginMcpToNativePackage(database: AppDatabase, plugin: PluginHubPlugin, plan: NativePackageInstallPlan): void {
+  const servers = plugin.componentRefs.flatMap((ref) => {
+    if (ref.type !== "mcp") return [];
+    const server = database.getMcpHubServer(ref.componentId);
+    return server ? [server] : [];
+  });
+  if (servers.length === 0) return;
+  const configPath = safeJoin(plan.packageRoot, ".mcp.json");
+  const existing = readJsonObject(configPath);
+  const mcpServers = isRecord(existing.mcpServers) ? { ...existing.mcpServers } : {};
+  for (const server of servers) {
+    mcpServers[server.serverId] = mcpServerPluginPayload(server);
+  }
+  writeJsonObject(configPath, { ...existing, mcpServers });
+}
+
+function writePluginHooksToNativePackage(database: AppDatabase, plugin: PluginHubPlugin, plan: NativePackageInstallPlan): void {
+  if (!isHookHubSupportedToolId(plan.toolId)) return;
+  const hooks = plugin.componentRefs.flatMap((ref) => {
+    if (ref.type !== "hook") return [];
+    const suite = database.getHookHubSuite(ref.componentId);
+    const payload = suite?.payloads[plan.toolId as HookHubSupportedToolId];
+    return payload === undefined ? [] : [payload];
+  });
+  if (hooks.length === 0) return;
+  const merged = mergeHookPayloads(hooks);
+  const hooksPath = safeJoin(plan.packageRoot, path.join("hooks", "hooks.json"));
+  writeJsonObject(hooksPath, isRecord(merged) ? merged : { hooks: merged });
+}
+
+function ensureNativePluginManifest(plugin: PluginHubPlugin, plan: NativePackageInstallPlan): void {
+  if (plan.toolId === "claude") {
+    const manifestPath = safeJoin(plan.packageRoot, path.join(".claude-plugin", "plugin.json"));
+    const existing = readJsonObject(manifestPath);
+    writeJsonObject(manifestPath, {
+      ...existing,
+      name: plan.pluginName,
+      version: stringValue(existing.version) ?? "1.0.0",
+      description: stringValue(existing.description) ?? plugin.description ?? plugin.displayName
+    });
+    return;
+  }
+
+  const manifestPath = safeJoin(plan.packageRoot, path.join(".codex-plugin", "plugin.json"));
+  const existing = readJsonObject(manifestPath);
+  const next: Record<string, unknown> = {
+    ...existing,
+    name: plan.pluginName,
+    version: stringValue(existing.version) ?? "1.0.0",
+    description: stringValue(existing.description) ?? plugin.description ?? plugin.displayName
+  };
+  if (fs.existsSync(safeJoin(plan.packageRoot, "skills"))) next.skills = stringValue(next.skills) ?? "./skills/";
+  if (fs.existsSync(safeJoin(plan.packageRoot, ".mcp.json"))) next.mcpServers = stringValue(next.mcpServers) ?? "./.mcp.json";
+  writeJsonObject(manifestPath, next);
+}
+
+function upsertNativePluginMarketplace(plugin: PluginHubPlugin, plan: NativePackageInstallPlan): void {
+  if (plan.toolId === "claude") {
+    const marketplace = readJsonObject(plan.marketplacePath);
+    const plugins = Array.isArray(marketplace.plugins) ? marketplace.plugins.filter((item) => isRecord(item) && item.name !== plan.pluginName) : [];
+    plugins.push({ name: plan.pluginName, source: `./plugins/${plan.pluginName}` });
+    writeJsonObject(plan.marketplacePath, {
+      ...marketplace,
+      name: plan.marketplaceName,
+      owner: isRecord(marketplace.owner) ? marketplace.owner : { name: "PluginHub" },
+      description: stringValue(marketplace.description) ?? "PluginHub project marketplace",
+      plugins
+    });
+    return;
+  }
+
+  const marketplace = readJsonObject(plan.marketplacePath);
+  const plugins = Array.isArray(marketplace.plugins) ? marketplace.plugins.filter((item) => isRecord(item) && item.name !== plan.pluginName) : [];
+  plugins.push({
+    name: plan.pluginName,
+    source: { source: "local", path: `./plugins/${plan.pluginName}` },
+    policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+    category: "Productivity"
+  });
+  writeJsonObject(plan.marketplacePath, {
+    name: stringValue(marketplace.name) ?? plan.marketplaceName,
+    interface: isRecord(marketplace.interface) ? marketplace.interface : { displayName: "PluginHub" },
+    ...marketplace,
+    plugins
+  });
+}
+
+function upsertClaudeProjectPluginSettings(plan: NativePackageInstallPlan): void {
+  if (!plan.settingsPath) return;
+  const settings = readJsonObject(plan.settingsPath);
+  const extraKnownMarketplaces = isRecord(settings.extraKnownMarketplaces) ? { ...settings.extraKnownMarketplaces } : {};
+  extraKnownMarketplaces[plan.marketplaceName] = {
+    source: {
+      source: "directory",
+      path: "./.pluginhub/claude-marketplace"
+    }
+  };
+  const enabledPlugins = isRecord(settings.enabledPlugins) ? { ...settings.enabledPlugins } : {};
+  enabledPlugins[`${plan.pluginName}@${plan.marketplaceName}`] = true;
+  writeJsonObject(plan.settingsPath, { ...settings, extraKnownMarketplaces, enabledPlugins });
+}
+
+function mcpServerPluginPayload(server: McpHubServer): Record<string, unknown> {
+  if (server.transport === "http") {
+    return {
+      ...(server.name ? { name: server.name } : {}),
+      ...(server.description ? { description: server.description } : {}),
+      transport: server.transport,
+      ...(server.url ? { url: server.url } : {}),
+      ...(Object.keys(server.headers).length > 0 ? { headers: server.headers } : {}),
+      ...(Object.keys(server.env).length > 0 ? { env: server.env } : {})
+    };
+  }
+  return {
+    ...(server.name ? { name: server.name } : {}),
+    ...(server.description ? { description: server.description } : {}),
+    transport: server.transport,
+    command: server.command,
+    args: server.args,
+    ...(Object.keys(server.env).length > 0 ? { env: server.env } : {})
+  };
+}
+
+function mergeHookPayloads(payloads: unknown[]): unknown {
+  const records = payloads.filter(isRecord);
+  if (records.length !== payloads.length) return payloads.length === 1 ? payloads[0] : payloads;
+  const merged: Record<string, unknown> = {};
+  for (const payload of records) {
+    for (const [eventName, value] of Object.entries(payload)) {
+      if (Array.isArray(merged[eventName]) && Array.isArray(value)) merged[eventName] = [...merged[eventName], ...value];
+      else merged[eventName] = value;
+    }
+  }
+  return merged;
+}
+
+function nativeHookInstallPlans(
+  project: Project,
+  plugin: PluginHubPlugin,
+  toolTarget: ProjectToolTarget,
+  existingBinding: ProjectPluginBinding | null
+): NativeHookInstallPlan[] {
+  const hooks = nativeHooksForTool(project, plugin, toolTarget.toolId);
+  if (hooks === null) return [];
+  const configPath = pluginHookConfigPath(project.rootPath, toolTarget.toolId);
+  const ownerId = stableId("pluginhub-hook", plugin.id, toolTarget.toolId, configPath);
+  const previous = existingBinding?.privateFileOwnership.find(
+    (item) => item.kind === "hook" && item.privateFileId === ownerId && normalizeFsPath(item.targetPath) === normalizeFsPath(configPath)
+  );
+  return [
+    {
+      toolId: toolTarget.toolId,
+      ownerId,
+      configPath,
+      hooks,
+      previousFingerprint: previous?.reason ?? null
+    }
+  ];
+}
+
+function nativeHooksForTool(project: Project, plugin: PluginHubPlugin, toolId: ToolId): unknown | null {
+  if (toolId !== "claude") return null;
+  const manifest = plugin.privateFiles.find((file) => isPluginNativeManifest(file, ".claude-plugin/plugin.json"));
+  if (!manifest) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(manifest.contentPath, "utf8")) as Record<string, unknown>;
+    const hooks = isRecord(parsed.hooks) ? parsed.hooks : null;
+    if (!hooks || Object.keys(hooks).length === 0) return null;
+    return rewritePluginHookPayload(hooks, projectPluginRoot(project.rootPath, plugin.name));
+  } catch {
+    return null;
+  }
+}
+
+function isPluginNativeManifest(file: PluginHubPrivateFile, relativePath: string): boolean {
+  const normalized = normalizeRelativePath(file.sourceRelativePath);
+  return normalized === relativePath || normalized.endsWith(`/${relativePath}`);
+}
+
+function projectPluginRoot(projectRoot: string, pluginName: string): string {
+  return safeJoin(projectRoot, path.join(".agents", "plugins", pluginName));
+}
+
+function rewritePluginHookPayload(value: unknown, pluginRoot: string): unknown {
+  if (typeof value === "string") return value.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginRoot);
+  if (Array.isArray(value)) return value.map((item) => rewritePluginHookPayload(item, pluginRoot));
+  if (isRecord(value)) {
+    const output: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) output[key] = rewritePluginHookPayload(item, pluginRoot);
+    return output;
+  }
+  return value;
+}
+
 function replaceWithSkillLink(database: AppDatabase, projectId: string, toolId: ToolId, skill: SkillHubSkill, linkPath: string): void {
   const existing = database.getProjectSkillTargetByLinkPath(projectId, toolId, linkPath);
   if (existing) database.deleteProjectSkillTargetByLinkPath(projectId, toolId, linkPath);
@@ -906,11 +1605,19 @@ function releaseRemovedOwnership(database: AppDatabase, previous: ProjectPluginB
   for (const component of previous.componentOwnership.filter((item) => item.ownerState === "managed")) {
     if (nextComponents.has(componentOwnerKey(component))) continue;
     if (otherComponentOwners(database, previous.id, previous.projectId, component).length > 0) continue;
-    const removal = removeDirectoryLink(component.linkPath);
-    if (!removal.reason || removal.missing) {
-      database.deleteProjectSkillTarget(previous.projectId, component.toolId, component.componentId, component.linkPath);
-    } else {
-      failures.push({ path: component.linkPath, reason: removal.reason });
+    if (component.type === "skill") {
+      if (!component.linkPath) continue;
+      const removal = removeDirectoryLink(component.linkPath);
+      if (!removal.reason || removal.missing) {
+        database.deleteProjectSkillTarget(previous.projectId, component.toolId, component.componentId, component.linkPath);
+      } else {
+        failures.push({ path: component.linkPath, reason: removal.reason });
+      }
+      continue;
+    }
+    if (component.type === "agent" && isAgentHubToolId(component.toolId)) {
+      const failure = releasePluginAgentOwnership(database, previous, component);
+      if (failure) failures.push(failure);
     }
   }
 
@@ -918,6 +1625,16 @@ function releaseRemovedOwnership(database: AppDatabase, previous: ProjectPluginB
   for (const file of previous.privateFileOwnership.filter((item) => item.ownerState === "managed")) {
     if (nextPrivateFiles.has(privateOwnerKey(file))) continue;
     if (otherPrivateOwners(database, previous.id, previous.projectId, file).length > 0) continue;
+    if (file.kind === "hook") {
+      const removal = releasePluginHookOwnership(file);
+      if (removal) failures.push(removal);
+      continue;
+    }
+    if (file.kind === "native-plugin") {
+      const removal = releaseNativePluginOwnership(previous, file);
+      if (removal) failures.push(removal);
+      continue;
+    }
     try {
       removeAnyPath(file.targetPath);
     } catch (error) {
@@ -937,6 +1654,21 @@ function removeSourceComponentTargets(database: AppDatabase, skills: SkillHubSki
       } else {
         failures.push(skillTargetFailure(target, removal.reason));
       }
+    }
+  }
+  return failures;
+}
+
+function removeSourceAgentTargets(database: AppDatabase, agents: AgentHubAgent[]): PluginHubDeleteFailure[] {
+  const failures: PluginHubDeleteFailure[] = [];
+  for (const agent of agents) {
+    for (const target of database.listProjectAgentTargetsForAgent(agent.id)) {
+      if (fs.existsSync(target.outputPath) && hashFile(target.outputPath) !== target.appliedOutputHash) {
+        failures.push({ path: target.outputPath, reason: "目标 AgentHub 输出已被本地修改" });
+        continue;
+      }
+      if (fs.existsSync(target.outputPath)) fs.unlinkSync(target.outputPath);
+      database.deleteProjectAgentTarget(target.id);
     }
   }
   return failures;
@@ -1005,6 +1737,57 @@ function componentOwnershipItem(
   };
 }
 
+function agentOwnershipItem(
+  plan: AgentInstallPlan,
+  ownerState: ProjectPluginComponentOwnership["ownerState"],
+  reason: string | null
+): ProjectPluginComponentOwnership {
+  return {
+    type: "agent",
+    componentId: plan.agent.id,
+    toolId: plan.toolId,
+    targetPath: plan.targetPath,
+    linkPath: plan.targetPath,
+    ownerState,
+    required: plan.ref.required,
+    reason
+  };
+}
+
+function nativePackageComponentOwnership(database: AppDatabase, plugin: PluginHubPlugin, plan: NativePackageInstallPlan): ProjectPluginComponentOwnership[] {
+  return plugin.componentRefs.flatMap((ref) => {
+    if (plan.toolId === "codex" && ref.type === "agent") return [];
+    const targetPath = nativePackageComponentTargetPath(database, ref, plan);
+    if (!targetPath) return [];
+    return [
+      {
+        type: ref.type,
+        componentId: ref.componentId,
+        toolId: plan.toolId,
+        targetPath,
+        linkPath: targetPath,
+        ownerState: "managed",
+        required: ref.required,
+        reason: null
+      }
+    ];
+  });
+}
+
+function nativePackageComponentTargetPath(database: AppDatabase, ref: PluginHubComponentRef, plan: NativePackageInstallPlan): string | null {
+  if (ref.type === "skill") {
+    const skill = database.getSkillHubSkill(ref.componentId);
+    return skill ? safeJoin(plan.packageRoot, path.join("skills", skill.folderName)) : null;
+  }
+  if (ref.type === "agent") {
+    const agent = database.getAgentHubAgent(ref.componentId);
+    return agent ? safeJoin(plan.packageRoot, path.join("agents", `${agent.slug}.md`)) : null;
+  }
+  if (ref.type === "mcp") return safeJoin(plan.packageRoot, ".mcp.json");
+  if (ref.type === "hook") return safeJoin(plan.packageRoot, path.join("hooks", "hooks.json"));
+  return null;
+}
+
 function privateOwnershipItem(
   plan: PrivateInstallPlan,
   toolId: ToolId,
@@ -1015,23 +1798,326 @@ function privateOwnershipItem(
     privateFileId: plan.file.id,
     toolId,
     targetPath: plan.targetPath,
+    kind: "private-file",
+    ownerState,
+    reason
+  };
+}
+
+function hookOwnershipItem(
+  plan: NativeHookInstallPlan,
+  ownerState: ProjectPluginPrivateFileOwnership["ownerState"],
+  reason: string | null
+): ProjectPluginPrivateFileOwnership {
+  return {
+    privateFileId: plan.ownerId,
+    toolId: plan.toolId,
+    targetPath: plan.configPath,
+    kind: "hook",
+    ownerState,
+    reason
+  };
+}
+
+function nativePackageOwnershipItem(
+  plan: NativePackageInstallPlan,
+  ownerState: ProjectPluginPrivateFileOwnership["ownerState"],
+  reason: string | null
+): ProjectPluginPrivateFileOwnership {
+  return {
+    privateFileId: plan.ownerId,
+    toolId: plan.toolId,
+    targetPath: plan.packageRoot,
+    kind: "native-plugin",
     ownerState,
     reason
   };
 }
 
 function componentOwnerKey(owner: ProjectPluginComponentOwnership): string {
-  return [owner.toolId, owner.type, owner.componentId, normalizeFsPath(owner.linkPath)].join("\0");
+  return [owner.toolId, owner.type, owner.componentId, normalizeFsPath(owner.linkPath ?? owner.targetPath)].join("\0");
 }
 
 function privateOwnerKey(owner: ProjectPluginPrivateFileOwnership): string {
   return [owner.toolId, owner.privateFileId, normalizeFsPath(owner.targetPath)].join("\0");
 }
 
-function backupLocalTarget(projectRoot: string, targetPath: string, hub: string, targetResourceType: "skill" | "private-file"): ProjectLocalFileBackup {
+function releasePluginAgentOwnership(
+  database: AppDatabase,
+  binding: ProjectPluginBinding,
+  owner: ProjectPluginComponentOwnership
+): PluginHubDeleteFailure | null {
+  if (!isAgentHubToolId(owner.toolId)) return null;
+  const target = database.getProjectAgentTargetByOutputPath(binding.projectId, binding.targetRootPath, owner.toolId, owner.targetPath);
+  if (!target || target.agentId !== owner.componentId) return null;
+  if (fs.existsSync(target.outputPath) && hashFile(target.outputPath) !== target.appliedOutputHash) {
+    return { path: target.outputPath, reason: "PluginHub 管理的 AgentHub 输出已被本地修改，未自动删除" };
+  }
+  if (fs.existsSync(target.outputPath)) fs.unlinkSync(target.outputPath);
+  database.deleteProjectAgentTarget(target.id);
+  return null;
+}
+
+function releasePluginHookOwnership(owner: ProjectPluginPrivateFileOwnership): PluginHubDeleteFailure | null {
+  const current = readPluginHookConfig(owner.toolId, owner.targetPath);
+  if (hooksFingerprint(current.hooks) !== owner.reason) {
+    return { path: owner.targetPath, reason: "plugin-native hooks 已被本地修改，未自动删除" };
+  }
+  removePluginHooksSection(owner.toolId, owner.targetPath);
+  return null;
+}
+
+function releaseNativePluginOwnership(binding: ProjectPluginBinding, owner: ProjectPluginPrivateFileOwnership): PluginHubDeleteFailure | null {
+  const reason = parseNativePackageOwnershipReason(owner.reason);
+  const pluginName = reason?.pluginName ?? binding.plugin?.name ?? path.basename(owner.targetPath);
+  try {
+    if (owner.toolId === "claude") {
+      removeClaudeProjectPluginSettings(reason?.settingsPath ?? path.join(binding.targetRootPath, ".claude", "settings.json"), pluginName, reason?.marketplaceName ?? "pluginhub");
+      removeClaudeMarketplacePlugin(reason?.marketplacePath ?? nativePluginMarketplacePath(binding.targetRootPath, "claude"), pluginName);
+    } else if (owner.toolId === "codex") {
+      removeCodexMarketplacePlugin(reason?.marketplacePath ?? nativePluginMarketplacePath(binding.targetRootPath, "codex"), pluginName);
+    }
+    removeAnyPath(owner.targetPath);
+    return null;
+  } catch (error) {
+    return { path: owner.targetPath, reason: error instanceof Error ? error.message : "原生 plugin package 删除失败" };
+  }
+}
+
+function pluginHookConfigPath(projectRoot: string, toolId: ToolId): string {
+  const candidates = pluginHookConfigCandidates(projectRoot, toolId);
+  const withHooks = candidates.find((candidate) => !isEmptyHooks(readPluginHookConfig(toolId, candidate).hooks));
+  if (withHooks) return withHooks;
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? pluginHookDefaultConfigPath(projectRoot, toolId);
+}
+
+function pluginHookConfigCandidates(projectRoot: string, toolId: ToolId): string[] {
+  if (toolId === "claude") return [path.join(projectRoot, ".claude", "settings.local.json"), path.join(projectRoot, ".claude", "settings.json")];
+  if (toolId === "qwen") return [path.join(projectRoot, ".qwen", "settings.local.json"), path.join(projectRoot, ".qwen", "settings.json")];
+  if (toolId === "qoder") return [path.join(projectRoot, ".qoder", "settings.local.json"), path.join(projectRoot, ".qoder", "settings.json")];
+  return [pluginHookDefaultConfigPath(projectRoot, toolId)];
+}
+
+function pluginHookDefaultConfigPath(projectRoot: string, toolId: ToolId): string {
+  if (toolId === "codex") return path.join(projectRoot, ".codex", "hooks.json");
+  if (toolId === "claude") return path.join(projectRoot, ".claude", "settings.json");
+  if (toolId === "qwen") return path.join(projectRoot, ".qwen", "settings.json");
+  if (toolId === "qoder") return path.join(projectRoot, ".qoder", "settings.json");
+  return path.join(projectRoot, ".agents", "plugins", "hooks.json");
+}
+
+function readPluginHookConfig(toolId: ToolId, configPath: string): { value: Record<string, unknown>; hooks: unknown | null; error: string | null } {
+  if (!fs.existsSync(configPath)) return { value: {}, hooks: null, error: null };
+  try {
+    const parsed = JSON.parse(stripJsonComments(fs.readFileSync(configPath, "utf8")));
+    const value = isRecord(parsed) ? parsed : {};
+    return {
+      value,
+      hooks: extractPluginHooksPayload(toolId, value),
+      error: null
+    };
+  } catch (error) {
+    return { value: {}, hooks: null, error: error instanceof Error ? error.message : "JSON 解析失败" };
+  }
+}
+
+function extractPluginHooksPayload(toolId: ToolId, value: unknown): unknown | null {
+  if (!isRecord(value)) return null;
+  if (Object.prototype.hasOwnProperty.call(value, "hooks")) return value.hooks;
+  if (toolId === "codex" && Object.keys(value).length > 0) return value;
+  return null;
+}
+
+function writePluginHooksSection(toolId: ToolId, configPath: string, hooks: unknown): void {
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  const current = readPluginHookConfig(toolId, configPath);
+  const base = { ...current.value };
+  if (toolId === "codex" && !Object.prototype.hasOwnProperty.call(base, "hooks") && Object.keys(base).length === 0) {
+    fs.writeFileSync(configPath, `${stableJson(hooks, 2)}\n`, "utf8");
+    return;
+  }
+  base.hooks = hooks;
+  fs.writeFileSync(configPath, `${stableJson(base, 2)}\n`, "utf8");
+}
+
+function removePluginHooksSection(toolId: ToolId, configPath: string): void {
+  if (!fs.existsSync(configPath)) return;
+  const current = readPluginHookConfig(toolId, configPath);
+  const base = { ...current.value };
+  if (toolId === "codex" && !Object.prototype.hasOwnProperty.call(base, "hooks")) {
+    removeAnyPath(configPath);
+    return;
+  }
+  delete base.hooks;
+  if (Object.keys(base).length === 0) {
+    removeAnyPath(configPath);
+    return;
+  }
+  fs.writeFileSync(configPath, `${stableJson(base, 2)}\n`, "utf8");
+}
+
+function isEmptyHooks(hooks: unknown): boolean {
+  if (hooks === null || hooks === undefined) return true;
+  if (Array.isArray(hooks)) return hooks.length === 0;
+  if (isRecord(hooks)) return Object.keys(hooks).length === 0;
+  return false;
+}
+
+function hooksFingerprint(hooks: unknown): string {
+  return crypto.createHash("sha256").update(stableJson(hooks)).digest("hex");
+}
+
+function stripJsonComments(input: string): string {
+  return input.replace(/^\s*\/\/.*$/gm, "").replace(/,\s*([}\]])/g, "$1");
+}
+
+function stableJson(value: unknown, space = 0): string {
+  return JSON.stringify(sortJsonValue(value), null, space);
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJsonValue);
+  if (isRecord(value)) {
+    const output: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) output[key] = sortJsonValue(value[key]);
+    return output;
+  }
+  return value;
+}
+
+function readJsonObject(filePath: string): Record<string, unknown> {
+  if (!fs.existsSync(filePath)) return {};
+  try {
+    const parsed = JSON.parse(stripJsonComments(fs.readFileSync(filePath, "utf8")));
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeJsonObject(filePath: string, value: Record<string, unknown>): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${stableJson(value, 2)}\n`, "utf8");
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function pluginPackageRelativePath(plugin: PluginHubPlugin, sourceRelativePath: string): string {
+  const normalized = normalizeRelativePath(sourceRelativePath);
+  for (const prefix of [`plugins/${plugin.name}/`, `${plugin.name}/`]) {
+    if (normalized.startsWith(prefix)) return normalized.slice(prefix.length);
+  }
+  for (const marker of [".codex-plugin/", ".claude-plugin/", "skills/", "commands/", "agents/", "hooks/", "bin/", "src/"]) {
+    const index = normalized.indexOf(marker);
+    if (index >= 0) return normalized.slice(index);
+  }
+  for (const exact of [".mcp.json", "mcp.json", "settings.json"]) {
+    if (normalized === exact || normalized.endsWith(`/${exact}`)) return exact;
+  }
+  const parts = normalized.split("/");
+  return parts.length > 1 ? parts.slice(1).join("/") : normalized;
+}
+
+function nativePackageOwnershipReason(plan: NativePackageInstallPlan): string {
+  return stableJson({
+    pluginName: plan.pluginName,
+    marketplaceName: plan.marketplaceName,
+    packageRoot: plan.packageRoot,
+    marketplacePath: plan.marketplacePath,
+    settingsPath: plan.settingsPath
+  });
+}
+
+function parseNativePackageOwnershipReason(reason: string | null): {
+  pluginName: string;
+  marketplaceName: string;
+  packageRoot: string;
+  marketplacePath: string;
+  settingsPath: string | null;
+} | null {
+  if (!reason) return null;
+  try {
+    const parsed = JSON.parse(reason);
+    if (!isRecord(parsed)) return null;
+    return {
+      pluginName: stringValue(parsed.pluginName) ?? "",
+      marketplaceName: stringValue(parsed.marketplaceName) ?? "pluginhub",
+      packageRoot: stringValue(parsed.packageRoot) ?? "",
+      marketplacePath: stringValue(parsed.marketplacePath) ?? "",
+      settingsPath: stringValue(parsed.settingsPath)
+    };
+  } catch {
+    return null;
+  }
+}
+
+function removeClaudeProjectPluginSettings(settingsPath: string, pluginName: string, marketplaceName: string): void {
+  if (!fs.existsSync(settingsPath)) return;
+  const settings = readJsonObject(settingsPath);
+  const enabledPlugins = isRecord(settings.enabledPlugins) ? { ...settings.enabledPlugins } : {};
+  delete enabledPlugins[`${pluginName}@${marketplaceName}`];
+  const extraKnownMarketplaces = isRecord(settings.extraKnownMarketplaces) ? { ...settings.extraKnownMarketplaces } : {};
+  const hasOtherMarketplacePlugin = Object.entries(enabledPlugins).some(([key, value]) => key.endsWith(`@${marketplaceName}`) && value === true);
+  if (!hasOtherMarketplacePlugin) delete extraKnownMarketplaces[marketplaceName];
+  const next = { ...settings };
+  if (Object.keys(enabledPlugins).length > 0) next.enabledPlugins = enabledPlugins;
+  else delete next.enabledPlugins;
+  if (Object.keys(extraKnownMarketplaces).length > 0) next.extraKnownMarketplaces = extraKnownMarketplaces;
+  else delete next.extraKnownMarketplaces;
+  writeJsonObject(settingsPath, next);
+}
+
+function removeClaudeMarketplacePlugin(marketplacePath: string, pluginName: string): void {
+  removeMarketplacePluginEntry(marketplacePath, pluginName);
+}
+
+function removeCodexMarketplacePlugin(marketplacePath: string, pluginName: string): void {
+  removeMarketplacePluginEntry(marketplacePath, pluginName);
+}
+
+function removeMarketplacePluginEntry(marketplacePath: string, pluginName: string): void {
+  if (!fs.existsSync(marketplacePath)) return;
+  const marketplace = readJsonObject(marketplacePath);
+  const plugins = Array.isArray(marketplace.plugins) ? marketplace.plugins.filter((item) => !(isRecord(item) && item.name === pluginName)) : [];
+  if (plugins.length === 0) {
+    removeAnyPath(marketplacePath);
+    return;
+  }
+  writeJsonObject(marketplacePath, { ...marketplace, plugins });
+}
+
+function applyAgentPlan(
+  database: AppDatabase,
+  dataDir: string,
+  project: Project,
+  plan: AgentInstallPlan,
+  options: ApplyOptions
+): ReturnType<typeof applyProjectAgentTarget> {
+  let result = applyProjectAgentTarget(
+    database,
+    dataDir,
+    project,
+    plan.agent.id,
+    plan.toolId,
+    options.conflictMode === "overwrite" ? { conflictMode: "overwrite" } : {}
+  );
+  if (result.requiresConfirmation && options.conflictMode === "overwrite" && result.preview.action === "replace-managed") {
+    result = applyProjectAgentTarget(database, dataDir, project, plan.agent.id, plan.toolId, { conflictMode: "replace-managed" });
+  }
+  return result;
+}
+
+function backupLocalTarget(
+  projectRoot: string,
+  targetPath: string,
+  hub: string,
+  targetResourceType: ProjectLocalFileBackup["targetResourceType"]
+): ProjectLocalFileBackup {
   const timestamp = nowIso().replace(/[:.]/g, "-");
   const relative = normalizeRelativePath(path.relative(projectRoot, targetPath));
-  const backupRoot = path.join(projectRoot, ".github-repo-manager", "backups", "pluginhub", timestamp);
+  const backupRoot = path.join(projectRoot, ".local-ai-workbench", "backups", "pluginhub", timestamp);
   const backupPath = safeJoin(backupRoot, relative || path.basename(targetPath));
   fs.mkdirSync(path.dirname(backupPath), { recursive: true });
   if (fs.existsSync(targetPath)) {
@@ -1077,7 +2163,7 @@ function projectToolTarget(database: AppDatabase, project: Project, toolId: Tool
 function pluginHarnessSupport(): PluginHubPlugin["harnessSupport"] {
   return {
     codex: "native",
-    claude: "planned",
+    claude: "native",
     cursor: "planned",
     opencode: "planned",
     copilot: "planned"

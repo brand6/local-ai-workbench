@@ -547,7 +547,16 @@ function ProjectHookToolRow({
 
   if (!supportedToolId) {
     return (
-      <article className="project-hook-tool-row unsupported">
+      <article
+        className="project-hook-tool-row unsupported"
+        role="button"
+        tabIndex={0}
+        title="尚未支持"
+        onClick={() => window.alert("尚未支持")}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") window.alert("尚未支持");
+        }}
+      >
         <div className="project-hook-tool-main">
           <strong>{tool.label}</strong>
           <span className={statusClass(tool.status)}>{statusLabel(tool.status)}</span>

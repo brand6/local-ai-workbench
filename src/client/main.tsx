@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { terminalModes } from "../shared/types.js";
+import { isMcpHubTargetToolId, terminalModes } from "../shared/types.js";
 import type {
   AgentHubApplyConflictMode,
   AgentHubDisableMode,
@@ -149,6 +149,7 @@ function App() {
   const [lastProjectPluginResult, setLastProjectPluginResult] = useState<ProjectPluginApplyResult | null>(null);
   const [projectAgentPanelOpen, setProjectAgentPanelOpen] = useState(false);
   const [projectAgentState, setProjectAgentState] = useState<ProjectAgentState | null>(null);
+  const [projectAgentHubLoaded, setProjectAgentHubLoaded] = useState(false);
   const [projectAgentTargetRoot, setProjectAgentTargetRoot] = useState<string | null>(null);
   const [lastProjectAgentResult, setLastProjectAgentResult] = useState<ProjectAgentApplyResult | null>(null);
   const [ruleSyncStatus, setRuleSyncStatus] = useState<RuleSyncStatus | null>(null);
@@ -160,6 +161,7 @@ function App() {
   const [ruleCreateLoading, setRuleCreateLoading] = useState(false);
   const selectedProjectIdRef = useRef<string | null>(null);
   const viewRef = useRef(view);
+  const projectDetailLoadSeqRef = useRef(0);
   const hubLoadSeqRef = useRef<Record<HubLoadKey, number>>({
     skillhub: 0,
     mcphub: 0,
@@ -384,15 +386,25 @@ function App() {
   }
 
   async function loadDetail(projectId: string, search: string) {
-    const [projectDetail, warningList, toolTargets] = await Promise.all([
-      client.detail(projectId, search),
+    const requestId = ++projectDetailLoadSeqRef.current;
+    const isLatest = () => requestId === projectDetailLoadSeqRef.current && selectedProjectIdRef.current === projectId;
+    const [projectSummary, warningList, toolTargets] = await Promise.all([
+      client.detailSummary(projectId, search),
       client.warnings(projectId),
       client.projectToolTargets(projectId)
     ]);
-    const repairList = await client.repairCandidates(projectId).catch(() => []);
-    setDetail(projectDetail);
+    if (!isLatest()) return;
+    setDetail(projectSummary);
     setWarnings(warningList);
     setProjectToolTargets(toolTargets);
+    setRepairCandidates([]);
+
+    const [projectDetail, repairList] = await Promise.all([
+      client.detail(projectId, search),
+      client.repairCandidates(projectId).catch(() => [])
+    ]);
+    if (!isLatest()) return;
+    setDetail(projectDetail);
     setRepairCandidates(repairList);
   }
 
@@ -772,7 +784,11 @@ function App() {
           busy={busy}
           lastResult={lastProjectSkillResult}
           onClose={() => setProjectSkillPanelOpen(false)}
+          onLoadSkillTargets={() => void runAction(refreshProjectSkillTargetsPanel)}
           onUpdateSkill={(skillId, toolIds) => void runAction(() => saveProjectSkillTargets(skillId, toolIds))}
+          onUpdateLocalSkill={(skillId, toolIds) =>
+            void runAction(() => saveProjectSkillTargets(skillId, toolIds, { refreshSkillState: false, refreshLocalSkillState: true }))
+          }
           onPickDirectory={pickDirectory}
           onMigrateLocalSkills={(skills, target) => void runAction(() => migrateProjectLocalSkills(skills, target))}
         />
@@ -818,9 +834,11 @@ function App() {
       {projectAgentPanelOpen ? (
         <ProjectAgentsPanel
           state={projectAgentState}
+          agentHubLoaded={projectAgentHubLoaded}
           busy={busy}
           lastApply={lastProjectAgentResult}
           onClose={() => setProjectAgentPanelOpen(false)}
+          onLoadAgentHub={() => void runAction(loadProjectAgentHubPanel)}
           onApplyAgent={(agentId, toolId, conflictMode) => void runAction(() => applyProjectAgent(agentId, toolId, conflictMode))}
           onSyncBinding={(bindingId) => void runAction(() => syncProjectAgent(bindingId))}
           onDisableBinding={(bindingId, mode) => void runAction(() => disableProjectAgent(bindingId, mode))}
@@ -1534,12 +1552,13 @@ function App() {
     setLastProjectSkillResult(null);
     setProjectSkillState(null);
     setProjectLocalSkillState(null);
-    const [skillTargets, localSkills] = await Promise.all([
-      client.projectSkillTargets(projectId, targetRootPath),
-      client.projectLocalSkills(projectId, targetRootPath)
-    ]);
-    setProjectSkillState(skillTargets);
-    setProjectLocalSkillState(localSkills);
+    setProjectLocalSkillState(await client.projectLocalSkills(projectId, targetRootPath));
+  }
+
+  async function refreshProjectSkillTargetsPanel() {
+    if (!selectedProjectId) return;
+    setProjectSkillState(null);
+    setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
   }
 
   async function openProjectAgentPanel(projectId: string, targetRootPath: string) {
@@ -1547,12 +1566,28 @@ function App() {
     setProjectAgentTargetRoot(targetRootPath);
     setLastProjectAgentResult(null);
     setProjectAgentState(null);
-    setProjectAgentState(await client.projectAgents(projectId, targetRootPath));
+    setProjectAgentHubLoaded(false);
+    setProjectAgentState(await client.projectLocalAgents(projectId, targetRootPath));
+  }
+
+  async function loadProjectAgentHubPanel() {
+    if (!selectedProjectId) return;
+    setProjectAgentState(null);
+    setProjectAgentHubLoaded(false);
+    setProjectAgentState(await client.projectAgents(selectedProjectId, projectAgentTargetRoot ?? undefined));
+    setProjectAgentHubLoaded(true);
   }
 
   async function refreshProjectAgentPanel() {
     if (!selectedProjectId) return;
     setProjectAgentState(await client.projectAgents(selectedProjectId, projectAgentTargetRoot ?? undefined));
+    setProjectAgentHubLoaded(true);
+  }
+
+  async function refreshProjectLocalAgentPanel() {
+    if (!selectedProjectId) return;
+    setProjectAgentState(await client.projectLocalAgents(selectedProjectId, projectAgentTargetRoot ?? undefined));
+    setProjectAgentHubLoaded(false);
   }
 
   async function openProjectMcpPanel(projectId: string, targetRootPath: string) {
@@ -1646,7 +1681,9 @@ function App() {
     setLastProjectPluginResult(result);
     await refreshProjectPluginPanel();
     if (projectSkillPanelOpen) {
-      setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
+      if (projectSkillState) {
+        setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
+      }
       setProjectLocalSkillState(await client.projectLocalSkills(selectedProjectId, projectLocalSkillTargetRoot ?? undefined));
     }
     setMessage(result.blocked ? result.message : result.binding ? "项目 Plugin 已安装" : result.message);
@@ -1663,7 +1700,9 @@ function App() {
     setLastProjectPluginResult(result);
     await refreshProjectPluginPanel();
     if (projectSkillPanelOpen) {
-      setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
+      if (projectSkillState) {
+        setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
+      }
       setProjectLocalSkillState(await client.projectLocalSkills(selectedProjectId, projectLocalSkillTargetRoot ?? undefined));
     }
     setMessage(result.blocked ? result.message : "项目 Plugin 已同步");
@@ -1680,7 +1719,9 @@ function App() {
     setLastProjectPluginResult(result);
     await refreshProjectPluginPanel();
     if (projectSkillPanelOpen) {
-      setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
+      if (projectSkillState) {
+        setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
+      }
       setProjectLocalSkillState(await client.projectLocalSkills(selectedProjectId, projectLocalSkillTargetRoot ?? undefined));
     }
     setMessage("项目 Plugin 已卸载");
@@ -1689,7 +1730,10 @@ function App() {
   async function saveProjectMcpServerTargets(serverId: string, toolIds: McpHubTargetToolId[]) {
     if (!selectedProjectId) return;
     const targetRootPath = projectMcpTargetRoot ?? undefined;
-    const supportedToolIds = new Set((projectMcpState?.targets ?? []).filter((target) => target.enabled && target.supported).map((target) => target.toolId));
+    const supportedToolIds = new Set<McpHubTargetToolId>();
+    for (const target of projectMcpState?.targets ?? []) {
+      if (target.enabled && target.supported && isMcpHubTargetToolId(target.toolId)) supportedToolIds.add(target.toolId);
+    }
     const requestedToolIds = uniqueMcpTargetToolIds(toolIds.filter((toolId) => supportedToolIds.has(toolId)));
     const currentToolIds = uniqueMcpTargetToolIds(
       (projectMcpState?.bindings ?? []).filter((binding) => binding.serverId === serverId).map((binding) => binding.toolId)
@@ -1815,7 +1859,7 @@ function App() {
     if (!selectedProjectId) return;
     setSkillHubUpdates(null);
     setProjectLocalSkillState(await client.projectLocalSkills(selectedProjectId, targetRootPath));
-    if (projectSkillPanelOpen) {
+    if (projectSkillPanelOpen && projectSkillState) {
       setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
     }
     if (view === "skillhub") await loadSkillHub();
@@ -1874,12 +1918,17 @@ function App() {
 
   async function disableProjectAgent(bindingId: string, mode: AgentHubDisableMode | null = null) {
     if (!selectedProjectId) return;
+    const hasAgentHubState = projectAgentHubLoaded;
     let result = await client.disableProjectAgent(selectedProjectId, bindingId, projectAgentTargetRoot ?? undefined, mode);
     if (result.requiresConfirmation) {
       const keep = window.confirm("项目 Agent 已 drifted。确定保留文件并仅移除 binding？取消则备份后删除文件。");
       result = await client.disableProjectAgent(selectedProjectId, bindingId, projectAgentTargetRoot ?? undefined, keep ? "keep-file" : "delete-with-backup");
     }
-    await refreshProjectAgentPanel();
+    if (hasAgentHubState) {
+      await refreshProjectAgentPanel();
+    } else {
+      await refreshProjectLocalAgentPanel();
+    }
     setMessage(result.deletedFile ? "AgentHub target 已禁用并删除项目文件" : "AgentHub binding 已移除，项目文件保留");
   }
 
@@ -1901,7 +1950,13 @@ function App() {
         { slug: result.conflicts[0].slug, action: "overwrite" }
       );
     }
-    await Promise.all([refreshProjectAgentPanel(), loadAgentHub()]);
+    const hasAgentHubState = projectAgentHubLoaded;
+    if (hasAgentHubState) {
+      await refreshProjectAgentPanel();
+    } else {
+      await refreshProjectLocalAgentPanel();
+    }
+    if (view === "agenthub") await loadAgentHub();
     setMessage(result.action === "overwritten" ? "本地 Agent 已覆盖 AgentHub 并接管" : "本地 Agent 已迁移到 AgentHub");
   }
 
@@ -1910,7 +1965,9 @@ function App() {
     await client.updateProjectToolTargets(selectedProjectId, toolIds);
     setProjectToolTargets(await client.projectToolTargets(selectedProjectId));
     if (projectSkillPanelOpen) {
-      setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
+      if (projectSkillState) {
+        setProjectSkillState(await client.projectSkillTargets(selectedProjectId, projectSkillTargetRoot ?? undefined));
+      }
       setProjectLocalSkillState(await client.projectLocalSkills(selectedProjectId, projectLocalSkillTargetRoot ?? undefined));
     }
     if (projectMcpPanelOpen) {
@@ -1923,12 +1980,22 @@ function App() {
       setProjectPluginState(await client.projectPlugins(selectedProjectId, projectPluginTargetRoot ?? undefined));
     }
     if (projectAgentPanelOpen) {
-      setProjectAgentState(await client.projectAgents(selectedProjectId, projectAgentTargetRoot ?? undefined));
+      if (projectAgentHubLoaded) {
+        setProjectAgentState(await client.projectAgents(selectedProjectId, projectAgentTargetRoot ?? undefined));
+        setProjectAgentHubLoaded(true);
+      } else {
+        setProjectAgentState(await client.projectLocalAgents(selectedProjectId, projectAgentTargetRoot ?? undefined));
+        setProjectAgentHubLoaded(false);
+      }
     }
     setMessage("项目使用工具已更新");
   }
 
-  async function saveProjectSkillTargets(skillId: string, toolIds: ToolId[]) {
+  async function saveProjectSkillTargets(
+    skillId: string,
+    toolIds: ToolId[],
+    options: { refreshSkillState?: boolean; refreshLocalSkillState?: boolean } = {}
+  ) {
     if (!selectedProjectId) return;
     const targetRootPath = projectSkillTargetRoot ?? undefined;
     let result = await client.updateProjectSkillTargets(selectedProjectId, skillId, toolIds, false, targetRootPath);
@@ -1939,7 +2006,12 @@ function App() {
       }
     }
     setLastProjectSkillResult(result);
-    setProjectSkillState(await client.projectSkillTargets(selectedProjectId, targetRootPath));
+    if (options.refreshSkillState !== false) {
+      setProjectSkillState(await client.projectSkillTargets(selectedProjectId, targetRootPath));
+    }
+    if (options.refreshLocalSkillState !== false) {
+      setProjectLocalSkillState(await client.projectLocalSkills(selectedProjectId, projectLocalSkillTargetRoot ?? targetRootPath));
+    }
     if (result.failures.length > 0) {
       setMessage(`技能 link 更新完成，但有 ${result.failures.length} 个失败项`);
     } else if (result.requiresConfirmation) {
@@ -2140,10 +2212,7 @@ function NewProjectDialog({
   const trimmedName = projectName.trim();
   const trimmedParentPath = parentPath.trim();
   const projectPathPreview = trimmedParentPath && trimmedName ? joinDisplayPath(trimmedParentPath, trimmedName) : "";
-
-  useEffect(() => {
-    setSelectedToolIds(selectableTools.map((tool) => tool.toolId));
-  }, [selectableTools]);
+  const selectableToolIds = useMemo(() => new Set(selectableTools.map((tool) => tool.toolId)), [selectableTools]);
 
   async function chooseProjectDirectory() {
     setPicking(true);
@@ -2161,7 +2230,11 @@ function NewProjectDialog({
   function submitProject(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy || picking || !trimmedName || !trimmedParentPath) return;
-    onCreate(trimmedName, trimmedParentPath, selectedToolIds);
+    onCreate(
+      trimmedName,
+      trimmedParentPath,
+      selectedToolIds.filter((toolId) => selectableToolIds.has(toolId))
+    );
   }
 
   function toggleTool(toolId: ToolId, checked: boolean) {
@@ -2203,9 +2276,9 @@ function NewProjectDialog({
               <span>创建位置</span>
               <code aria-live="polite">{projectPathPreview || "待生成"}</code>
             </div>
-            <div className="tool-refresh-list compact" aria-label="新项目 agent tools">
+            <div className="tool-refresh-list compact new-project-tool-list" role="group" aria-label="项目工具 CLI">
               {selectableTools.map((tool) => (
-                <label className="tool-refresh-row" key={tool.toolId}>
+                <label className="tool-refresh-row new-project-tool-row" key={tool.toolId}>
                   <input
                     type="checkbox"
                     checked={selectedToolIds.includes(tool.toolId)}
@@ -2890,7 +2963,8 @@ function ProjectDetailView({
   onOpenProjectHooks?: (targetRootPath: string) => void;
 }) {
   const toolMap = useMemo(() => new Map(tools.map((tool) => [tool.toolId, tool])), [tools]);
-  const projectTools = useMemo(() => tools.filter(isLaunchableProjectTool), [tools]);
+  const enabledProjectToolIds = useMemo(() => new Set(projectToolTargets.filter((target) => target.enabled).map((target) => target.toolId)), [projectToolTargets]);
+  const projectTools = useMemo(() => tools.filter((tool) => isLaunchableProjectTool(tool) && enabledProjectToolIds.has(tool.toolId)), [enabledProjectToolIds, tools]);
   const repairSignals = useMemo(
     () => buildRepairSignals(project, detail, warnings, repairCandidates),
     [detail, project, repairCandidates, warnings]
@@ -3408,6 +3482,7 @@ function SessionGroup({
               <span>{tool.sessionCount}</span>
             </summary>
             <div className="tool-session-list">
+              {tool.sessions.length === 0 && tool.sessionCount > 0 ? <div className="muted compact">会话详情加载中...</div> : null}
               {tool.sessions.map((session) => (
                 <details className="session-card" key={session.id}>
                   <summary>

@@ -170,7 +170,7 @@ describe("McpHub", () => {
     fs.writeFileSync(path.join(projectRoot, ".mcp.json"), JSON.stringify({ mcpServers: {} }, null, 2), "utf8");
     fs.writeFileSync(path.join(projectRoot, ".codex", "config.toml"), "", "utf8");
     const project = db.addProject(projectRoot).project;
-    db.replaceProjectToolTargets(project.id, ["claude", "codex"]);
+    db.replaceProjectToolTargets(project.id, ["claude", "codex", "qwen"]);
     const server = db.upsertMcpHubServer({
       serverId: "docs",
       name: "docs",
@@ -206,7 +206,7 @@ describe("McpHub", () => {
     const projectRoot = path.join(directory, "repo");
     fs.mkdirSync(projectRoot, { recursive: true });
     const project = db.addProject(projectRoot).project;
-    db.replaceProjectToolTargets(project.id, ["claude", "codex"]);
+    db.replaceProjectToolTargets(project.id, ["claude", "codex", "qwen"]);
     const server = db.upsertMcpHubServer({
       serverId: "docs",
       name: "docs",
@@ -221,12 +221,10 @@ describe("McpHub", () => {
     });
 
     const state = listProjectMcpState(db, project);
-    expect(state.targets.map((target) => ({ toolId: target.toolId, enabled: target.enabled }))).toEqual([
-      { toolId: "claude", enabled: true },
-      { toolId: "codex", enabled: true },
-      { toolId: "opencode", enabled: false },
-      { toolId: "cursor", enabled: false },
-      { toolId: "antigravity", enabled: false }
+    expect(state.targets.map((target) => ({ toolId: target.toolId, enabled: target.enabled, supported: target.supported, reason: target.reason }))).toEqual([
+      { toolId: "claude", enabled: true, supported: true, reason: null },
+      { toolId: "codex", enabled: true, supported: true, reason: null },
+      { toolId: "qwen", enabled: true, supported: false, reason: "尚未支持" }
     ]);
 
     expect(() => applyProjectMcpServer(db, project, "opencode", server.serverId)).toThrow("该工具未在项目中启用");
@@ -251,6 +249,7 @@ describe("McpHub", () => {
       "utf8"
     );
     const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["claude", "codex", "opencode"]);
     const beforeFiles = [
       fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8"),
       fs.readFileSync(path.join(projectRoot, ".codex", "config.toml"), "utf8"),

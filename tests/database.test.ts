@@ -124,7 +124,7 @@ describe("AppDatabase", () => {
       locker.exec("BEGIN EXCLUSIVE;");
 
       expect(() => new AppDatabase(directory as string, { busyTimeoutMs: 1 })).toThrow(
-        /Database is locked: .*index\.sqlite.*Another github-repo-manager process/
+        /Database is locked: .*index\.sqlite.*Another Local AI Workbench process/
       );
     } finally {
       locker.exec("ROLLBACK;");

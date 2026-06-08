@@ -34,6 +34,7 @@ const clientMock = vi.hoisted(() => ({
   eventsUrl: vi.fn(),
   projects: vi.fn(),
   detail: vi.fn(),
+  detailSummary: vi.fn(),
   tools: vi.fn(),
   warnings: vi.fn(),
   setDataDir: vi.fn(),
@@ -95,6 +96,7 @@ const clientMock = vi.hoisted(() => ({
   projectLocalSkills: vi.fn(),
   migrateProjectLocalSkill: vi.fn(),
   projectAgents: vi.fn(),
+  projectLocalAgents: vi.fn(),
   applyProjectAgent: vi.fn(),
   syncProjectAgent: vi.fn(),
   syncProjectAgents: vi.fn(),
@@ -144,13 +146,16 @@ describe("HomePage", () => {
     vi.clearAllMocks();
     clientMock.bootstrap.mockResolvedValue({
       initialized: true,
-      dataDir: "C:\\tmp\\github-repo-manager",
-      defaultDataDir: "C:\\tmp\\github-repo-manager",
+      dataDir: "C:\\tmp\\local-ai-workbench",
+      defaultDataDir: "C:\\tmp\\local-ai-workbench",
       overriddenByArg: true
     });
     clientMock.eventsUrl.mockReturnValue("/api/events?token=test");
     clientMock.projects.mockResolvedValue([]);
     clientMock.detail.mockResolvedValue(detailFixture(projectFixture("E:\\old")));
+    clientMock.detailSummary.mockImplementation((projectId: string, search: string) =>
+      clientMock.detail(projectId, search).then((detail: ProjectDetail) => detailWithoutSessionRows(detail))
+    );
     clientMock.tools.mockResolvedValue([]);
     clientMock.warnings.mockResolvedValue([]);
     clientMock.config.mockResolvedValue(appConfigFixture());
@@ -158,17 +163,17 @@ describe("HomePage", () => {
       Promise.resolve(appConfigFixture(config.terminal?.mode ?? "new-window", config.skillhub?.rootDir))
     );
     clientMock.skillhub.mockResolvedValue({
-      config: { rootDir: "C:\\tmp\\github-repo-manager\\skillhub", libraryDir: "C:\\tmp\\github-repo-manager\\skillhub\\library" },
+      config: { rootDir: "C:\\tmp\\local-ai-workbench\\skillhub", libraryDir: "C:\\tmp\\local-ai-workbench\\skillhub\\library" },
       sources: [],
       skills: []
     });
     clientMock.checkSkillHubUpdates.mockResolvedValue({ previews: [] });
-    clientMock.openSkillHubSkill.mockResolvedValue({ opened: true, path: "C:\\tmp\\github-repo-manager\\skillhub\\library\\review\\SKILL.md" });
+    clientMock.openSkillHubSkill.mockResolvedValue({ opened: true, path: "C:\\tmp\\local-ai-workbench\\skillhub\\library\\review\\SKILL.md" });
     clientMock.agenthub.mockResolvedValue(agentHubListFixture());
     clientMock.refreshAgentHubDiscovery.mockResolvedValue(agentHubListFixture());
     clientMock.importBuiltInAgencyAgents.mockResolvedValue({ source: agentHubSourceFixture(), imported: [], updated: [], skipped: [], conflicts: [], requiresConfirmation: false });
     clientMock.importLocalAgents.mockResolvedValue({ source: agentHubSourceFixture(), imported: [], updated: [], skipped: [], conflicts: [], requiresConfirmation: false });
-    clientMock.openAgentHubAgent.mockResolvedValue({ opened: true, path: "C:\\tmp\\github-repo-manager\\agenthub\\library\\agency-agents\\engineering\\code-reviewer.md" });
+    clientMock.openAgentHubAgent.mockResolvedValue({ opened: true, path: "C:\\tmp\\local-ai-workbench\\agenthub\\library\\agency-agents\\engineering\\code-reviewer.md" });
     clientMock.reparseAgentHubAgent.mockResolvedValue(agentHubAgentFixture());
     clientMock.deleteAgentHubAgent.mockResolvedValue({ agent: agentHubAgentFixture(), targetsDeleted: [] });
     clientMock.deleteAgentHubSource.mockResolvedValue({ sourceId: "agency-agents", agentsDeleted: [] });
@@ -183,7 +188,7 @@ describe("HomePage", () => {
     clientMock.updateCliHubCli.mockResolvedValue(cliHubListFixture().clis[0]);
     clientMock.launchCliHubUpdate.mockResolvedValue({
       launched: true,
-      command: { command: "npm", args: ["update", "-g", "@openai/codex"], cwd: "C:\\tmp\\github-repo-manager" },
+      command: { command: "npm", args: ["update", "-g", "@openai/codex"], cwd: "C:\\tmp\\local-ai-workbench" },
       host: "powershell",
       reason: null
     });
@@ -267,6 +272,7 @@ describe("HomePage", () => {
     clientMock.projectSkillTargets.mockResolvedValue({ projectId: "project-1", toolTargets: [], skillTargets: [], skills: [] });
     clientMock.projectLocalSkills.mockResolvedValue({ projectId: "project-1", toolTargets: [], migrationSources: [], skills: [] });
     clientMock.projectAgents.mockResolvedValue(projectAgentStateFixture(projectFixture("E:\\old")));
+    clientMock.projectLocalAgents.mockResolvedValue(projectAgentStateFixture(projectFixture("E:\\old")));
     clientMock.applyProjectAgent.mockResolvedValue(projectAgentApplyResultFixture(projectFixture("E:\\old")));
     clientMock.syncProjectAgent.mockResolvedValue(projectAgentApplyResultFixture(projectFixture("E:\\old")));
     clientMock.syncProjectAgents.mockResolvedValue({ projectId: "project-1", targetRootPath: "E:\\old", updated: [], skipped: [] });
@@ -431,8 +437,8 @@ describe("HomePage", () => {
     clientMock.createDirectory.mockResolvedValue({ path: "E:\\picked\\demo-project" });
     clientMock.setDataDir.mockResolvedValue({
       initialized: true,
-      dataDir: "C:\\tmp\\github-repo-manager-next",
-      defaultDataDir: "C:\\tmp\\github-repo-manager",
+      dataDir: "C:\\tmp\\local-ai-workbench-next",
+      defaultDataDir: "C:\\tmp\\local-ai-workbench",
       overriddenByArg: true
     });
     clientMock.startScan.mockResolvedValue({ scanRunId: "scan-1", candidates: [] });
@@ -1087,7 +1093,7 @@ describe("HomePage", () => {
     const githubSource = skillHubSourceFixture("source-github", "owner/repo", "github");
     const pluginSource = skillHubSourceFixture("source-plugin", "team-plugin", "plugin");
     clientMock.skillhub.mockResolvedValue({
-      config: { rootDir: "C:\\tmp\\github-repo-manager\\skillhub", libraryDir: "C:\\tmp\\github-repo-manager\\skillhub\\library" },
+      config: { rootDir: "C:\\tmp\\local-ai-workbench\\skillhub", libraryDir: "C:\\tmp\\local-ai-workbench\\skillhub\\library" },
       sources: [localSource, githubSource, pluginSource],
       skills: [
         skillHubSkillFixture(localSource, "skill-1", "review", "Review code"),
@@ -1147,7 +1153,7 @@ describe("HomePage", () => {
     const githubSource = skillHubSourceFixture("source-github", "owner/repo", "github");
     const updatePreview = skillHubUpdatePreviewFixture(githubSource);
     clientMock.skillhub.mockResolvedValue({
-      config: { rootDir: "C:\\tmp\\github-repo-manager\\skillhub", libraryDir: "C:\\tmp\\github-repo-manager\\skillhub\\library" },
+      config: { rootDir: "C:\\tmp\\local-ai-workbench\\skillhub", libraryDir: "C:\\tmp\\local-ai-workbench\\skillhub\\library" },
       sources: [githubSource],
       skills: [skillHubSkillFixture(githubSource, "skill-2", "triage", "Triage issues")]
     });
@@ -1237,18 +1243,18 @@ describe("HomePage", () => {
   });
 
   it("opens settings instead of showing the working directory in the topbar", async () => {
-    clientMock.pickDirectory.mockResolvedValueOnce({ path: "C:\\tmp\\github-repo-manager-next", cancelled: false });
+    clientMock.pickDirectory.mockResolvedValueOnce({ path: "C:\\tmp\\local-ai-workbench-next", cancelled: false });
     render(<App />);
 
     await screen.findByText("还没有项目");
-    expect(screen.queryByText("C:\\tmp\\github-repo-manager")).not.toBeInTheDocument();
+    expect(screen.queryByText("C:\\tmp\\local-ai-workbench")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
 
     const dialog = screen.getByRole("dialog", { name: "应用设置" });
     expect(dialog).toBeInTheDocument();
     expect(within(dialog).getByText("当前工作目录")).toBeInTheDocument();
-    expect(screen.getAllByText("C:\\tmp\\github-repo-manager").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("C:\\tmp\\local-ai-workbench").length).toBeGreaterThan(0);
 
     expect(within(dialog).queryByText("设置")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("新的工作目录")).not.toBeInTheDocument();
@@ -1256,7 +1262,7 @@ describe("HomePage", () => {
 
     fireEvent.click(within(dialog).getByRole("button", { name: "更换工作目录" }));
 
-    await waitFor(() => expect(clientMock.setDataDir).toHaveBeenCalledWith("C:\\tmp\\github-repo-manager-next"));
+    await waitFor(() => expect(clientMock.setDataDir).toHaveBeenCalledWith("C:\\tmp\\local-ai-workbench-next"));
     expect(await screen.findByText("工作目录已更新")).toBeInTheDocument();
   });
 
@@ -1345,6 +1351,36 @@ describe("HomePage", () => {
     const dialog = screen.getByRole("dialog", { name: "新建项目" });
     expect(within(dialog).getAllByText("codex").length).toBeGreaterThan(0);
     expect(within(dialog).queryAllByText("qwen")).toHaveLength(0);
+  });
+
+  it("leaves CLI tools unselected by default when creating a project", async () => {
+    clientMock.tools.mockResolvedValue([
+      toolStatusFixture("codex"),
+      {
+        ...toolStatusFixture("opencode"),
+        command: "C:\\Users\\brand\\AppData\\Roaming\\npm\\opencode.cmd --very-long-command-preview"
+      }
+    ]);
+
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "新建项目" }));
+
+    const dialog = screen.getByRole("dialog", { name: "新建项目" });
+    const toolList = within(dialog).getByRole("group", { name: "项目工具 CLI" });
+    expect(toolList).toHaveClass("new-project-tool-list");
+    expect(within(toolList).getByRole("checkbox", { name: /codex/i })).not.toBeChecked();
+    expect(within(toolList).getByRole("checkbox", { name: /opencode/i })).not.toBeChecked();
+
+    fireEvent.change(within(dialog).getByLabelText("项目名称"), { target: { value: "demo-project" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "选择目录" }));
+
+    await waitFor(() => expect(clientMock.pickDirectory).toHaveBeenCalled());
+    fireEvent.click(within(dialog).getByRole("button", { name: "创建项目" }));
+
+    await waitFor(() => expect(clientMock.createDirectory).toHaveBeenCalledWith("E:\\picked", "demo-project"));
+    expect(clientMock.addProject.mock.calls.at(-1)).toEqual(["E:\\picked\\demo-project"]);
   });
 
   it("scans the selected drive without confirming candidates", async () => {
@@ -1545,6 +1581,7 @@ describe("HomePage", () => {
             reason: "未找到命令：qwen"
           }
         ]}
+        projectToolTargets={[projectToolTargetFixture(project, "codex", true), projectToolTargetFixture(project, "qwen", true)]}
         query=""
         warnings={[]}
         busy={false}
@@ -1564,6 +1601,37 @@ describe("HomePage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "codex" }));
     expect(onLaunch).toHaveBeenCalledWith("codex", project.rootPath);
+  });
+
+  it("only shows project enabled tools in the new session picker", () => {
+    const project = projectFixture("E:\\old");
+    const onLaunch = vi.fn();
+
+    render(
+      <ProjectDetailView
+        project={project}
+        detail={detailFixture(project)}
+        tools={[toolStatusFixture("codex"), toolStatusFixture("qwen")]}
+        projectToolTargets={[
+          projectToolTargetFixture(project, "codex", true),
+          projectToolTargetFixture(project, "qwen", false)
+        ]}
+        query=""
+        warnings={[]}
+        busy={false}
+        setQuery={vi.fn()}
+        onLaunch={onLaunch}
+        onResume={vi.fn()}
+        onDeleteSession={vi.fn()}
+        repairCandidates={[]}
+        onRepairProject={vi.fn()}
+        onRelocateProject={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "新会话" }));
+    expect(screen.getByRole("button", { name: "codex" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "qwen" })).not.toBeInTheDocument();
   });
 
   it("keeps project tool target editing out of the skill panel and only shows enabled tools inside a skill", async () => {
@@ -1586,7 +1654,7 @@ describe("HomePage", () => {
           toolId: "codex",
           skillId: "skill-1",
           linkPath: `${project.rootPath}\\.codex\\skills\\review`,
-          targetPath: "C:\\tmp\\github-repo-manager\\skillhub\\library\\review",
+          targetPath: "C:\\tmp\\local-ai-workbench\\skillhub\\library\\review",
           createdAt: "2026-06-01T00:00:00Z",
           updatedAt: "2026-06-01T00:00:00Z"
         }
@@ -1600,7 +1668,7 @@ describe("HomePage", () => {
           skillName: "Review",
           description: "Review code",
           libraryRelativePath: "local/review",
-          libraryPath: "C:\\tmp\\github-repo-manager\\skillhub\\library\\local\\review",
+          libraryPath: "C:\\tmp\\local-ai-workbench\\skillhub\\library\\local\\review",
           sourceRelativePath: "review",
           contentHash: "hash",
           createdAt: "2026-06-01T00:00:00Z",
@@ -1619,6 +1687,8 @@ describe("HomePage", () => {
 
     const panel = await screen.findByRole("complementary", { name: "项目技能管理" });
     expect(within(panel).queryByText("目标工具")).not.toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole("tab", { name: "SkillHub技能" }));
+    await within(panel).findByText("local-source");
 
     const sourceDetails = panel.querySelector("details.project-skill-source-group") as HTMLDetailsElement;
     expect(sourceDetails).not.toBeNull();
@@ -1742,6 +1812,64 @@ describe("HomePage", () => {
     expect(await screen.findByText("本地技能已换成 SkillHub link")).toBeInTheDocument();
   });
 
+  it("opens project skills on local data only and can cancel a SkillHub skill from the local tab", async () => {
+    const project = projectFixture("E:\\old");
+    const source = skillHubSourceFixture("source-1", "skills", "local");
+    const skill = skillHubSkillFixture(source, "skill-1", "triage", "SkillHub triage");
+    const initialLocalSkills: ProjectLocalSkillsState = {
+      projectId: project.id,
+      toolTargets: [projectToolTargetFixture(project, "codex", true)],
+      migrationSources: [source],
+      skills: [
+        {
+          projectId: project.id,
+          toolId: "codex",
+          type: "skillhub",
+          folderName: "triage",
+          skillName: "Triage",
+          description: "SkillHub triage",
+          skillPath: `${project.rootPath}\\.codex\\skills\\triage`,
+          skillHubSkill: skill,
+          pluginBinding: null,
+          plugin: null,
+          migratable: false,
+          reason: null
+        }
+      ]
+    };
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.projectToolTargets.mockResolvedValue([projectToolTargetFixture(project, "codex", true)]);
+    clientMock.projectLocalSkills.mockResolvedValueOnce(initialLocalSkills).mockResolvedValueOnce({ ...initialLocalSkills, skills: [] });
+    clientMock.updateProjectSkillTargets.mockResolvedValue({
+      projectId: project.id,
+      skillId: skill.id,
+      targets: [],
+      removed: [],
+      conflicts: [],
+      failures: [],
+      requiresConfirmation: false
+    });
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByRole("button", { name: "技能" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目技能管理" });
+    const skillHubSection = within(panel).getByRole("region", { name: "SkillHub 技能" });
+    expect(await within(skillHubSection).findByText("triage")).toBeInTheDocument();
+    expect(clientMock.projectSkillTargets).not.toHaveBeenCalled();
+
+    fireEvent.click(within(skillHubSection).getByRole("checkbox", { name: "取消 triage" }));
+
+    await waitFor(() => expect(clientMock.updateProjectSkillTargets).toHaveBeenCalledWith(project.id, skill.id, [], false, project.rootPath));
+    expect(await within(panel).findByText("没有发现项目技能")).toBeInTheDocument();
+    expect(clientMock.projectSkillTargets).not.toHaveBeenCalled();
+  });
+
   it("opens the project Plugin panel and installs a complete plugin", async () => {
     const project = projectFixture("E:\\old");
     clientMock.projects.mockResolvedValue([project]);
@@ -1760,6 +1888,8 @@ describe("HomePage", () => {
     expect(within(panel).getByRole("region", { name: "安装 Plugin" })).toBeInTheDocument();
     expect(within(panel).getByRole("region", { name: "已安装 Plugin" })).toBeInTheDocument();
     expect(within(panel).getAllByText("python-development").length).toBeGreaterThan(0);
+    expect(within(panel).getByRole("radio", { name: "codex" })).toBeChecked();
+    expect(within(panel).queryByRole("radio", { name: "qwen" })).not.toBeInTheDocument();
 
     fireEvent.click(within(panel).getByRole("button", { name: "安装" }));
 
@@ -1767,7 +1897,7 @@ describe("HomePage", () => {
     expect(await screen.findByText("项目 Plugin 已安装")).toBeInTheDocument();
   });
 
-  it("shows plugin-owned skills as readonly and groups them in the Plugin tab", async () => {
+  it("shows plugin-owned skills as readonly and groups them in the local Plugin section", async () => {
     const project = projectFixture("E:\\old");
     const source = skillHubSourceFixture("source-local", "local-source", "local");
     const skill = skillHubSkillFixture(source, "skill-1", "review", "Review code");
@@ -1821,17 +1951,19 @@ describe("HomePage", () => {
     fireEvent.click(screen.getByRole("button", { name: "技能" }));
 
     const panel = await screen.findByRole("complementary", { name: "项目技能管理" });
-    const skillRow = within(panel).getByText("review").closest("details") as HTMLElement;
+    expect(within(panel).queryByRole("tab", { name: "Plugin" })).not.toBeInTheDocument();
+    const pluginSection = within(panel).getByRole("region", { name: "Plugin 技能" });
+    expect(within(pluginSection).getByText("review")).toBeInTheDocument();
+    expect(within(pluginSection).getByText("python-development")).toBeInTheDocument();
+    expect(within(pluginSection).getAllByText("Plugin").length).toBeGreaterThan(0);
+
+    fireEvent.click(within(panel).getByRole("tab", { name: "SkillHub技能" }));
+    const skillRow = (await within(panel).findByText("review")).closest("details") as HTMLElement;
     expect(within(skillRow).getByText("Plugin managed")).toBeInTheDocument();
     for (const checkbox of within(skillRow).getAllByRole("checkbox")) {
       expect(checkbox).toBeDisabled();
     }
     expect(within(skillRow).getByText("该技能由项目 Plugin 管理，请从 Plugin 入口卸载或同步。")).toBeInTheDocument();
-
-    fireEvent.click(within(panel).getByRole("tab", { name: "Plugin" }));
-
-    expect(within(panel).getByRole("region", { name: "python-development 技能" })).toBeInTheDocument();
-    expect(within(panel).getAllByText("Plugin").length).toBeGreaterThan(0);
   });
 
   it("lets a project local skill migrate into a new local source directory", async () => {
@@ -1985,8 +2117,10 @@ describe("HomePage", () => {
     const childGroup = childHeading.closest(".session-group") as HTMLElement;
 
     fireEvent.click(within(childGroup).getByRole("button", { name: "技能" }));
-    await waitFor(() => expect(clientMock.projectSkillTargets).toHaveBeenLastCalledWith(project.id, childRoot));
     await waitFor(() => expect(clientMock.projectLocalSkills).toHaveBeenLastCalledWith(project.id, childRoot));
+    const skillPanel = await screen.findByRole("complementary", { name: "项目技能管理" });
+    fireEvent.click(within(skillPanel).getByRole("tab", { name: "SkillHub技能" }));
+    await waitFor(() => expect(clientMock.projectSkillTargets).toHaveBeenLastCalledWith(project.id, childRoot));
 
     fireEvent.click(within(childGroup).getByRole("button", { name: "MCP" }));
     await waitFor(() => expect(clientMock.projectMcp).toHaveBeenLastCalledWith(project.id, childRoot));
@@ -2010,6 +2144,7 @@ describe("HomePage", () => {
     clientMock.projects.mockResolvedValue([project]);
     clientMock.detail.mockResolvedValue(detailWithChildGroup(project, childRoot));
     clientMock.projectAgents.mockResolvedValue(state);
+    clientMock.projectLocalAgents.mockResolvedValue({ ...state, agents: [], targets: [] });
     clientMock.applyProjectAgent.mockResolvedValueOnce(conflictResult).mockResolvedValueOnce(appliedResult);
     clientMock.migrateProjectLocalAgent.mockResolvedValue(migratedResult);
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -2023,8 +2158,10 @@ describe("HomePage", () => {
     fireEvent.click(within(childGroup).getByRole("button", { name: "Agent" }));
 
     const panel = await screen.findByRole("complementary", { name: "项目 Agent 管理" });
-    await waitFor(() => expect(clientMock.projectAgents).toHaveBeenLastCalledWith(project.id, childRoot));
+    await waitFor(() => expect(clientMock.projectLocalAgents).toHaveBeenLastCalledWith(project.id, childRoot));
     expect(within(panel).getByText(childRoot)).toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole("tab", { name: "AgentHub Agent" }));
+    await waitFor(() => expect(clientMock.projectAgents).toHaveBeenLastCalledWith(project.id, childRoot));
     fireEvent.click(within(panel).getByText("agency-agents").closest("summary") as HTMLElement);
     fireEvent.click(within(panel).getByText("Code Reviewer").closest("summary") as HTMLElement);
     expect(within(panel).getByRole("checkbox", { name: /codex/ })).toBeInTheDocument();
@@ -2043,6 +2180,54 @@ describe("HomePage", () => {
       expect(clientMock.migrateProjectLocalAgent).toHaveBeenCalledWith(project.id, "codex", localAgent.outputPath, { type: "existing-source", sourceId: "project-local-agents" }, childRoot)
     );
     expect(await screen.findByText("本地 Agent 已迁移到 AgentHub")).toBeInTheDocument();
+  });
+
+  it("opens project Agents on local data only and can cancel a managed AgentHub agent from the local tab", async () => {
+    const project = projectFixture("E:\\old");
+    const state = projectAgentStateFixture(project);
+    const binding = projectAgentBindingFixture(project);
+    const managedLocalState: ProjectAgentState = {
+      ...state,
+      agents: [],
+      targets: [],
+      localAgents: [
+        {
+          ...projectLocalAgentFixture(project),
+          type: "managed",
+          outputPath: binding.outputPath,
+          slug: binding.agent?.slug ?? "code-reviewer",
+          name: binding.agent?.name ?? "Code Reviewer",
+          description: binding.agent?.description ?? "Review code",
+          status: "current",
+          binding,
+          agent: binding.agent,
+          migratable: false,
+          reason: "该文件已由 AgentHub 管理"
+        }
+      ]
+    };
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.projectToolTargets.mockResolvedValue([projectToolTargetFixture(project, "codex", true)]);
+    clientMock.projectLocalAgents.mockResolvedValueOnce(managedLocalState).mockResolvedValueOnce({ ...managedLocalState, localAgents: [] });
+    clientMock.disableProjectAgent.mockResolvedValue({ ...projectAgentDisableResultFixture(project), binding, deletedFile: true });
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByRole("button", { name: "Agent" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目 Agent 管理" });
+    expect(await within(panel).findByText("Code Reviewer")).toBeInTheDocument();
+    expect(clientMock.projectAgents).not.toHaveBeenCalled();
+
+    fireEvent.click(within(panel).getByRole("checkbox", { name: "取消 Code Reviewer" }));
+
+    await waitFor(() => expect(clientMock.disableProjectAgent).toHaveBeenCalledWith(project.id, binding.id, project.rootPath, null));
+    expect(await within(panel).findByText("没有发现本地 Agent")).toBeInTheDocument();
+    expect(clientMock.projectAgents).not.toHaveBeenCalled();
   });
 
   it("applies a McpHub server from the project MCP panel", async () => {
@@ -2156,13 +2341,13 @@ describe("HomePage", () => {
         updatedAt: "2026-06-01T00:00:00Z"
       },
       {
-        toolId: "opencode",
-        label: "OpenCode",
-        enabled: false,
+        toolId: "qwen",
+        label: "Qwen",
+        enabled: true,
         inferred: false,
-        supported: true,
-        configPath: `${project.rootPath}\\opencode.json`,
-        reason: null,
+        supported: false,
+        configPath: "",
+        reason: "尚未支持",
         updatedAt: "2026-06-01T00:00:00Z"
       }
     ];
@@ -2176,7 +2361,7 @@ describe("HomePage", () => {
     };
     const appliedProjectMcp = {
       ...initialProjectMcp,
-      bindings: targets.map((target) => ({
+      bindings: targets.filter((target) => target.supported).map((target) => ({
         projectId: project.id,
         targetRootPath: project.rootPath,
         toolId: target.toolId,
@@ -2190,6 +2375,7 @@ describe("HomePage", () => {
     clientMock.projects.mockResolvedValue([project]);
     clientMock.detail.mockResolvedValue(detailFixture(project));
     clientMock.projectMcp.mockResolvedValueOnce(initialProjectMcp).mockResolvedValueOnce(appliedProjectMcp);
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => undefined);
 
     render(<App />);
 
@@ -2205,8 +2391,12 @@ describe("HomePage", () => {
     await waitFor(() => expect(clientMock.applyProjectMcp).toHaveBeenCalledTimes(2));
     expect(clientMock.applyProjectMcp).toHaveBeenCalledWith(project.id, "context7", "claude", project.rootPath);
     expect(clientMock.applyProjectMcp).toHaveBeenCalledWith(project.id, "context7", "codex", project.rootPath);
-    expect(clientMock.applyProjectMcp).not.toHaveBeenCalledWith(project.id, "context7", "opencode", project.rootPath);
-    expect(within(panel).queryByRole("checkbox", { name: "opencode" })).not.toBeInTheDocument();
+    expect(clientMock.applyProjectMcp).not.toHaveBeenCalledWith(project.id, "context7", "qwen", project.rootPath);
+    const qwenCheckbox = within(panel).getByRole("checkbox", { name: "qwen" });
+    expect(qwenCheckbox).toBeDisabled();
+    fireEvent.click(qwenCheckbox.closest("label") as HTMLElement);
+    expect(alertSpy).toHaveBeenCalledWith("尚未支持");
+    alertSpy.mockRestore();
     expect(await screen.findByText("MCP 已应用到 2 个工具")).toBeInTheDocument();
   });
 
@@ -2325,6 +2515,7 @@ describe("HomePage", () => {
   it("refreshes project detail after repairing and resuming a Qwen source mismatch", async () => {
     const project = { ...projectFixture("E:\\ai-working-space\\old-project"), sessionCount: 1 };
     clientMock.projects.mockResolvedValue([project]);
+    clientMock.detailSummary.mockResolvedValue(detailWithoutSessionRows(detailWithQwenSourceMismatch(project)));
     clientMock.detail
       .mockResolvedValueOnce(detailWithQwenSourceMismatch(project))
       .mockResolvedValue(detailWithQwenReady(project));
@@ -2694,6 +2885,33 @@ describe("HomePage", () => {
     expect(screen.getByText("3 个会话")).toBeInTheDocument();
   });
 
+  it("shows project detail summary before full session details finish loading", async () => {
+    const project = { ...projectFixture("E:\\new-ai-game"), sessionCount: 3 };
+    let resolveDetail!: (value: ProjectDetail) => void;
+    const fullDetail = new Promise<ProjectDetail>((resolve) => {
+      resolveDetail = resolve;
+    });
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detailSummary.mockResolvedValue(detailSummaryWithSessionCounts(project));
+    clientMock.detail.mockReturnValue(fullDetail);
+    clientMock.repairCandidates.mockResolvedValue([]);
+
+    render(<App />);
+
+    await screen.findByText("new-ai-game");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+
+    expect(await screen.findByText("会话详情加载中...")).toBeInTheDocument();
+    expect(screen.getByText("3 个会话")).toBeInTheDocument();
+    expect(screen.queryByText("开罗小游戏，主题是骑士对决")).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveDetail(detailWithSession(project));
+    });
+    expect(await screen.findByText("开罗小游戏，主题是骑士对决")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("会话详情加载中...")).not.toBeInTheDocument());
+  });
+
   it("deletes a session from project detail after confirmation and refreshes detail", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const project = { ...projectFixture("E:\\new-ai-game"), sessionCount: 1 };
@@ -2861,6 +3079,23 @@ function detailWithSession(project: Project): ProjectDetail {
         ]
       }
     ]
+  };
+}
+
+function detailSummaryWithSessionCounts(project: Project): ProjectDetail {
+  return detailWithoutSessionRows(detailWithSession(project));
+}
+
+function detailWithoutSessionRows(detail: ProjectDetail): ProjectDetail {
+  return {
+    ...detail,
+    groups: detail.groups.map((group) => ({
+      ...group,
+      tools: group.tools.map((tool) => ({
+        ...tool,
+        sessions: []
+      }))
+    }))
   };
 }
 
@@ -3072,7 +3307,7 @@ function cliHubListFixture(updateStatus: CliHubList["clis"][number]["updateStatu
   };
 }
 
-function projectToolTargetFixture(project: Project, toolId: ToolId, enabled: boolean): ProjectToolTarget {
+function projectToolTargetFixture(project: Project, toolId: ToolId, enabled: boolean, overrides: Partial<ProjectToolTarget> = {}): ProjectToolTarget {
   return {
     projectId: project.id,
     toolId,
@@ -3081,7 +3316,8 @@ function projectToolTargetFixture(project: Project, toolId: ToolId, enabled: boo
     supported: true,
     skillDirectory: `${project.rootPath}\\.${toolId}\\skills`,
     reason: null,
-    updatedAt: "2026-06-01T00:00:00Z"
+    updatedAt: "2026-06-01T00:00:00Z",
+    ...overrides
   };
 }
 
@@ -3091,7 +3327,7 @@ function agentHubSourceFixture(): AgentHubList["sources"][number] {
     type: "builtin",
     label: "agency-agents",
     inputPath: null,
-    resolvedPath: "C:\\tmp\\github-repo-manager\\builtin-agents\\agency-agents",
+    resolvedPath: "C:\\tmp\\local-ai-workbench\\builtin-agents\\agency-agents",
     sourceTruthTool: "claude",
     importedAt: "2026-06-01T00:00:00Z",
     metadata: {},
@@ -3114,7 +3350,7 @@ function agentHubAgentFixture(overrides: Partial<AgentHubAgent> = {}): AgentHubA
     slug,
     name,
     description: overrides.description ?? "Review code changes",
-    nativePath: overrides.nativePath ?? `C:\\tmp\\github-repo-manager\\agenthub\\library\\agency-agents\\engineering\\${slug}.md`,
+    nativePath: overrides.nativePath ?? `C:\\tmp\\local-ai-workbench\\agenthub\\library\\agency-agents\\engineering\\${slug}.md`,
     libraryRelativePath: overrides.libraryRelativePath ?? `agency-agents\\engineering\\${slug}.md`,
     sourceRelativePath: overrides.sourceRelativePath ?? `engineering\\${slug}.md`,
     category: overrides.category ?? "engineering",
@@ -3137,8 +3373,8 @@ function agentHubListFixture(): AgentHubList {
   const source = agentHubSourceFixture();
   return {
     config: {
-      rootDir: "C:\\tmp\\github-repo-manager\\agenthub",
-      libraryDir: "C:\\tmp\\github-repo-manager\\agenthub\\library"
+      rootDir: "C:\\tmp\\local-ai-workbench\\agenthub",
+      libraryDir: "C:\\tmp\\local-ai-workbench\\agenthub\\library"
     },
     sources: [source],
     agents: [agentHubAgentFixture({ source })]
@@ -3491,7 +3727,7 @@ function projectPluginStateFixture(project: Project): ProjectPluginState {
         type: "skill" as const,
         componentId: "skill-1",
         toolId: "codex" as const,
-        targetPath: "C:\\tmp\\github-repo-manager\\skillhub\\library\\source\\review",
+        targetPath: "C:\\tmp\\local-ai-workbench\\skillhub\\library\\source\\review",
         linkPath: `${project.rootPath}\\.codex\\skills\\review`,
         ownerState: "managed" as const,
         required: false,
@@ -3515,6 +3751,7 @@ function projectPluginStateFixture(project: Project): ProjectPluginState {
   return {
     projectId: project.id,
     targetRootPath: project.rootPath,
+    toolTargets: [projectToolTargetFixture(project, "codex", true)],
     plugins: pluginHubListFixture().plugins,
     bindings: [binding],
     syncRequiredPluginIds: []
@@ -3561,7 +3798,7 @@ function skillHubSkillFixture(source: SkillHubSource, id: string, folderName: st
     skillName: folderName,
     description,
     libraryRelativePath: `${source.id}/${folderName}`,
-    libraryPath: `C:\\tmp\\github-repo-manager\\skillhub\\library\\${source.id}\\${folderName}`,
+    libraryPath: `C:\\tmp\\local-ai-workbench\\skillhub\\library\\${source.id}\\${folderName}`,
     sourceRelativePath: folderName,
     contentHash: `${id}-hash`,
     createdAt: "2026-06-01T00:00:00Z",
@@ -3592,7 +3829,7 @@ function skillHubUpdatePreviewFixture(source: SkillHubSource): SkillHubSourceUpd
   };
 }
 
-function appConfigFixture(mode: AppConfig["terminal"]["mode"] = "new-window", skillHubRoot = "C:\\tmp\\github-repo-manager\\skillhub"): AppConfig {
+function appConfigFixture(mode: AppConfig["terminal"]["mode"] = "new-window", skillHubRoot = "C:\\tmp\\local-ai-workbench\\skillhub"): AppConfig {
   return {
     version: 1,
     tools: {

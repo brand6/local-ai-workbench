@@ -103,6 +103,7 @@ import {
   importLocalAgentFolder,
   listAgentHub,
   listProjectAgentState,
+  listProjectLocalAgentState,
   migrateProjectLocalAgent,
   openAgentHubAgent,
   refreshAgentHubDiscovery,
@@ -876,7 +877,9 @@ export function installApi(app: Express, context: AppContext): void {
   });
 
   app.get("/api/projects/:id/detail", (request, response) => {
-    const detail = context.database().createProjectDetail(request.params.id, String(request.query.query ?? ""));
+    const detail = context.database().createProjectDetail(request.params.id, String(request.query.query ?? ""), {
+      includeSessions: request.query.includeSessions !== "false"
+    });
     if (!detail) {
       response.status(404).json({ error: "project-not-found" });
       return;
@@ -980,7 +983,7 @@ export function installApi(app: Express, context: AppContext): void {
     }
     try {
       seedDefaultPluginHubSources(context.database(), context.config(), dataDir);
-      response.json(installProjectPlugin(context.database(), project, request.params.pluginId, toolId, { conflictMode: pluginHubConflictModeBody(request) }));
+      response.json(installProjectPlugin(context.database(), project, request.params.pluginId, toolId, dataDir, { conflictMode: pluginHubConflictModeBody(request) }));
     } catch (error) {
       response.status(400).json({ error: "project-plugin-install-failed", reason: error instanceof Error ? error.message : "project-plugin-install-failed" });
     }
@@ -993,7 +996,7 @@ export function installApi(app: Express, context: AppContext): void {
     if (!project) return;
     try {
       seedDefaultPluginHubSources(context.database(), context.config(), dataDir);
-      response.json(syncProjectPluginBinding(context.database(), project, request.params.bindingId, { conflictMode: pluginHubConflictModeBody(request) }));
+      response.json(syncProjectPluginBinding(context.database(), project, request.params.bindingId, dataDir, { conflictMode: pluginHubConflictModeBody(request) }));
     } catch (error) {
       response.status(400).json({ error: "project-plugin-sync-failed", reason: error instanceof Error ? error.message : "project-plugin-sync-failed" });
     }
@@ -1166,6 +1169,12 @@ export function installApi(app: Express, context: AppContext): void {
     const project = projectSkillScopeFromRequest(context, request, response);
     if (!dataDir || !project) return;
     response.json(listProjectAgentState(context.database(), dataDir, project, String(request.query.query ?? "")));
+  });
+
+  app.get("/api/projects/:id/local-agents", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
+    response.json(listProjectLocalAgentState(context.database(), project));
   });
 
   app.post("/api/projects/:id/agents/sync", (request, response) => {

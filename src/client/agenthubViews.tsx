@@ -10,7 +10,7 @@ import type {
   ProjectLocalAgentMigrationTarget,
   SkillHubOpenTarget
 } from "../shared/types.js";
-import { agentHubToolIds } from "../shared/types.js";
+import { agentHubToolIds, isAgentHubToolId } from "../shared/types.js";
 
 type AgentHubSource = AgentHubList["sources"][number];
 type ProjectAgentsTab = "agenthub" | "local";
@@ -212,9 +212,11 @@ export function AgentHubAgentRow({
 
 export function ProjectAgentsPanel({
   state,
+  agentHubLoaded,
   busy,
   lastApply,
   onClose,
+  onLoadAgentHub,
   onApplyAgent,
   onSyncBinding,
   onDisableBinding,
@@ -222,16 +224,23 @@ export function ProjectAgentsPanel({
   onMigrateLocalAgent
 }: {
   state: ProjectAgentState | null;
+  agentHubLoaded: boolean;
   busy: boolean;
   lastApply: ProjectAgentApplyResult | null;
   onClose: () => void;
+  onLoadAgentHub: () => void;
   onApplyAgent: (agentId: string, toolId: AgentHubToolId, conflictMode?: "overwrite" | "migrate-then-overwrite" | "replace-managed" | null) => void;
   onSyncBinding: (bindingId: string) => void;
   onDisableBinding: (bindingId: string, mode?: "keep-file" | "delete-with-backup" | null) => void;
   onSyncAll: () => void;
   onMigrateLocalAgent: (localAgent: ProjectLocalAgent, target: ProjectLocalAgentMigrationTarget) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<ProjectAgentsTab>("agenthub");
+  const [activeTab, setActiveTab] = useState<ProjectAgentsTab>("local");
+
+  function selectTab(tab: ProjectAgentsTab) {
+    setActiveTab(tab);
+    if (tab === "agenthub" && !agentHubLoaded) onLoadAgentHub();
+  }
 
   return (
     <aside className="side-panel project-agents-panel" aria-label="项目 Agent 管理">
@@ -246,10 +255,10 @@ export function ProjectAgentsPanel({
       </header>
       {state ? <p className="path-line">{state.targetRootPath}</p> : null}
       <div className="segmented-tabs project-skill-tabs" role="tablist" aria-label="Agent 类型">
-        <button className={activeTab === "agenthub" ? "active" : ""} type="button" role="tab" aria-selected={activeTab === "agenthub"} onClick={() => setActiveTab("agenthub")}>
+        <button className={activeTab === "agenthub" ? "active" : ""} type="button" role="tab" aria-selected={activeTab === "agenthub"} onClick={() => selectTab("agenthub")}>
           AgentHub Agent
         </button>
-        <button className={activeTab === "local" ? "active" : ""} type="button" role="tab" aria-selected={activeTab === "local"} onClick={() => setActiveTab("local")}>
+        <button className={activeTab === "local" ? "active" : ""} type="button" role="tab" aria-selected={activeTab === "local"} onClick={() => selectTab("local")}>
           本地 Agent
         </button>
       </div>
@@ -264,7 +273,7 @@ export function ProjectAgentsPanel({
           onSyncAll={onSyncAll}
         />
       ) : (
-        <ProjectLocalAgentTab state={state} busy={busy} onMigrateLocalAgent={onMigrateLocalAgent} />
+        <ProjectLocalAgentTab state={state} busy={busy} onDisableBinding={onDisableBinding} onMigrateLocalAgent={onMigrateLocalAgent} />
       )}
     </aside>
   );
@@ -377,16 +386,28 @@ function ProjectAgentRow({
       <p>{agent.description ?? "无描述"}</p>
       <div className="tool-chip-list">
         {targets.map((target) => {
+          const supportedToolId = isAgentHubToolId(target.toolId) ? target.toolId : null;
           const checked = Boolean(target.binding);
           return (
-            <label className="tool-target-chip" key={`${agent.id}:${target.toolId}`} title={target.reason ?? target.outputPath}>
+            <label
+              className="tool-target-chip"
+              key={`${agent.id}:${target.toolId}`}
+              title={target.status === "unsupported" ? "尚未支持" : (target.reason ?? target.outputPath)}
+              onClick={(event) => {
+                if (!busy && target.status === "unsupported") {
+                  event.preventDefault();
+                  window.alert("尚未支持");
+                }
+              }}
+            >
               <input
                 type="checkbox"
                 checked={checked}
-                disabled={busy}
+                disabled={busy || target.status === "unsupported" || !supportedToolId}
                 onChange={(event) => {
+                  if (!supportedToolId) return;
                   if (event.target.checked) {
-                    onApplyAgent(agent.id, target.toolId);
+                    onApplyAgent(agent.id, supportedToolId);
                     return;
                   }
                   if (target.binding) onDisableBinding(target.binding.id);
@@ -432,10 +453,12 @@ function ProjectAgentRow({
 function ProjectLocalAgentTab({
   state,
   busy,
+  onDisableBinding,
   onMigrateLocalAgent
 }: {
   state: ProjectAgentState | null;
   busy: boolean;
+  onDisableBinding: (bindingId: string, mode?: "keep-file" | "delete-with-backup" | null) => void;
   onMigrateLocalAgent: (localAgent: ProjectLocalAgent, target: ProjectLocalAgentMigrationTarget) => void;
 }) {
   const [targetSourceId, setTargetSourceId] = useState("project-local-agents");
@@ -463,6 +486,18 @@ function ProjectLocalAgentTab({
           {state.localAgents.map((localAgent) => (
             <details className="project-local-skill-row skillhub-skill-row" key={localAgent.id}>
               <summary>
+                {localAgent.binding ? (
+                  <input
+                    aria-label={`取消 ${localAgent.name ?? localAgent.slug}`}
+                    type="checkbox"
+                    checked={true}
+                    disabled={busy}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => {
+                      if (!event.target.checked && localAgent.binding) onDisableBinding(localAgent.binding.id);
+                    }}
+                  />
+                ) : null}
                 <span className="skillhub-skill-title">{localAgent.name ?? localAgent.slug}</span>
                 <span className="metric-pill">{localAgent.toolId}</span>
                 <span className={statusClass(localAgent.status)}>{localAgent.status}</span>
@@ -472,14 +507,20 @@ function ProjectLocalAgentTab({
                 <small>{localAgent.outputPath}</small>
                 {localAgent.reason ? <div className="inline-warning">{localAgent.reason}</div> : null}
                 <div className="card-actions">
-                  <button
-                    className="primary"
-                    type="button"
-                    disabled={busy || !localAgent.migratable}
-                    onClick={() => onMigrateLocalAgent(localAgent, migrationTarget(targetSourceId))}
-                  >
-                    迁移到 AgentHub
-                  </button>
+                  {localAgent.binding ? (
+                    <button className="danger" type="button" disabled={busy} onClick={() => localAgent.binding && onDisableBinding(localAgent.binding.id)}>
+                      禁用 {localAgent.toolId}
+                    </button>
+                  ) : (
+                    <button
+                      className="primary"
+                      type="button"
+                      disabled={busy || !localAgent.migratable}
+                      onClick={() => onMigrateLocalAgent(localAgent, migrationTarget(targetSourceId))}
+                    >
+                      迁移到 AgentHub
+                    </button>
+                  )}
                 </div>
               </div>
             </details>

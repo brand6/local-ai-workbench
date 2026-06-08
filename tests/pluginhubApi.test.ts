@@ -25,10 +25,16 @@ describe("PluginHub API", () => {
     expect(cached.body.plugins).toEqual([]);
 
     const refreshed = await request(app).post("/api/pluginhub/discovery/refresh").set("x-local-api-token", context.token).expect(200);
-    expect(refreshed.body.sources).toEqual([expect.objectContaining({ id: "pluginhub-source-superpowers" })]);
-    expect(refreshed.body.plugins).toEqual([expect.objectContaining({ name: "superpowers" })]);
+    expect(refreshed.body.sources).toEqual([
+      expect.objectContaining({ id: "pluginhub-source-caveman" }),
+      expect.objectContaining({ id: "pluginhub-source-superpowers" })
+    ]);
+    expect(refreshed.body.plugins).toEqual([expect.objectContaining({ name: "caveman" }), expect.objectContaining({ name: "superpowers" })]);
 
     const afterRefresh = await request(app).get("/api/pluginhub").set("x-local-api-token", context.token).expect(200);
-    expect(afterRefresh.body.sources).toEqual([expect.objectContaining({ id: "pluginhub-source-superpowers" })]);
-  });
+    expect(afterRefresh.body.sources).toEqual([
+      expect.objectContaining({ id: "pluginhub-source-caveman" }),
+      expect.objectContaining({ id: "pluginhub-source-superpowers" })
+    ]);
+  }, 20000);
 });

@@ -37,6 +37,7 @@ import { backupProjectLocalTarget } from "../core/projectBackups.js";
 import { displayPath, isPathInsideOrEqual, normalizeFsPath } from "../core/pathUtils.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";
+import { listProjectToolTargets } from "../skillhub/projectSkills.js";
 
 interface AgentHubAdapter {
   toolId: AgentHubToolId;
@@ -76,6 +77,31 @@ interface ImportOptions {
 
 interface AgentHubListOptions {
   seedDefaultSources?: boolean;
+}
+
+interface PluginHubAgentRoot {
+  rootPath: string;
+  sourceRelativePrefix: string;
+}
+
+interface PluginHubAgentImportInput {
+  sourceId: string;
+  label: string;
+  inputPath: string | null;
+  resolvedPath: string | null;
+  roots: PluginHubAgentRoot[];
+}
+
+export interface PluginHubAgentImportResult extends AgentHubImportResult {
+  agents: AgentHubAgent[];
+}
+
+export interface RenderAgentForToolResult {
+  agent: AgentHubAgent;
+  toolId: AgentHubToolId;
+  content: string;
+  preservedNativeFields: string[];
+  ignoredNativeFields: string[];
 }
 
 interface ApplyOptions {
@@ -265,6 +291,39 @@ export function importLocalAgentFolder(
   return commitDiscoveredAgents(database, config.libraryDir, source, discoveries, skipped, options);
 }
 
+export function importPluginHubAgentRoots(database: AppDatabase, dataDir: string, input: PluginHubAgentImportInput): PluginHubAgentImportResult {
+  const config = ensureAgentHub(dataDir);
+  const source = database.upsertAgentHubSource({
+    id: input.sourceId,
+    type: "local-import",
+    label: input.label,
+    inputPath: input.inputPath,
+    resolvedPath: input.resolvedPath,
+    sourceTruthTool: "claude",
+    importedAt: nowIso(),
+    metadata: { pluginhubSource: true }
+  });
+  const discoveries: DiscoveredAgent[] = [];
+  const skipped: AgentHubImportSkipped[] = [];
+
+  for (const root of input.roots) {
+    if (!fs.existsSync(root.rootPath) || !fs.statSync(root.rootPath).isDirectory()) continue;
+    const discovered = discoverAgentFiles(root.rootPath, "claude");
+    skipped.push(...discovered.skipped);
+    discoveries.push(
+      ...discovered.discoveries.map((discovery) => ({
+        ...discovery,
+        sourceRelativePath: normalizeRelativePath(path.join(root.sourceRelativePrefix, discovery.sourceRelativePath ?? path.basename(discovery.sourcePath)))
+      }))
+    );
+  }
+
+  const result = commitDiscoveredAgents(database, config.libraryDir, source, discoveries, skipped, { overwriteConflicts: true });
+  const keepPaths = new Set(discoveries.map((discovery) => discovery.sourceRelativePath).filter(isString));
+  pruneStaleSourceAgents(database, source.id, keepPaths);
+  return { ...result, agents: database.listAgentHubAgentsForSource(source.id) };
+}
+
 export function openAgentHubAgent(database: AppDatabase, agentId: string, target: "document" | "folder"): LocalOpenResponse {
   const agent = database.getAgentHubAgent(agentId);
   if (!agent) throw new Error("AgentHub agent 不存在");
@@ -290,7 +349,13 @@ export function listProjectAgentState(database: AppDatabase, dataDir: string, pr
   seedDefaultAgentHubSources(database, dataDir);
   const toolTargets = listAgentToolTargets(database, project);
   const agents = database.listAgentHubAgents(query);
-  const targets = agents.flatMap((agent) => toolTargets.map((toolTarget) => projectAgentTargetState(database, project, agent, toolTarget.toolId as AgentHubToolId)));
+  const targets = agents.flatMap((agent) =>
+    toolTargets.map((toolTarget) =>
+      isAgentHubToolId(toolTarget.toolId) && toolTarget.supported
+        ? projectAgentTargetState(database, project, agent, toolTarget.toolId)
+        : unsupportedProjectAgentTargetState(project, agent, toolTarget)
+    )
+  );
   return {
     projectId: project.id,
     targetRootPath: project.rootPath,
@@ -298,6 +363,18 @@ export function listProjectAgentState(database: AppDatabase, dataDir: string, pr
     sources: database.listAgentHubSources(),
     agents,
     targets,
+    localAgents: listProjectLocalAgents(database, project)
+  };
+}
+
+export function listProjectLocalAgentState(database: AppDatabase, project: Project): ProjectAgentState {
+  return {
+    projectId: project.id,
+    targetRootPath: project.rootPath,
+    toolTargets: listAgentToolTargets(database, project),
+    sources: database.listAgentHubSources().filter((source) => source.type === "local-import"),
+    agents: [],
+    targets: [],
     localAgents: listProjectLocalAgents(database, project)
   };
 }
@@ -636,6 +713,18 @@ export function conversionPreview(agent: AgentHubAgent, targetToolId: AgentHubTo
   };
 }
 
+export function renderAgentForTool(database: AppDatabase, agentId: string, targetToolId: AgentHubToolId, targetRootPath: string): RenderAgentForToolResult {
+  const agent = requireAgent(database, agentId);
+  const rendered = renderAgent(agent, targetToolId, targetRootPath);
+  return {
+    agent,
+    toolId: targetToolId,
+    content: rendered.content,
+    preservedNativeFields: rendered.preservedNativeFields,
+    ignoredNativeFields: rendered.ignoredNativeFields
+  };
+}
+
 function projectAgentTargetState(database: AppDatabase, project: Project, agent: AgentHubAgent, toolId: AgentHubToolId): ProjectAgentTargetState {
   try {
     const preview = conversionPreview(agent, toolId, project.rootPath, "sync");
@@ -923,27 +1012,45 @@ function shouldSkipBuiltInAgencyFile(relativePath: string): boolean {
 }
 
 function listAgentToolTargets(database: AppDatabase, project: Project): ProjectToolTarget[] {
-  const stored = new Map(database.listStoredProjectToolTargets(project.id).map((target) => [target.toolId, target]));
-  return agentHubToolIds
-    .map((toolId) => {
-      const row = stored.get(toolId);
+  return listProjectToolTargets(database, project)
+    .filter((target) => target.enabled)
+    .map((target) => {
+      if (!isAgentHubToolId(target.toolId)) {
+        return {
+          ...target,
+          supported: false,
+          skillDirectory: null,
+          reason: "尚未支持"
+        };
+      }
       return {
-        projectId: project.id,
-        toolId,
-        enabled: row?.enabled ?? false,
-        inferred: row?.inferred ?? false,
+        ...target,
         supported: true,
-        skillDirectory: path.dirname(adapters[toolId].targetPath(project.rootPath, "_agenthub")),
+        skillDirectory: path.dirname(adapters[target.toolId].targetPath(project.rootPath, "_agenthub")),
         reason: null,
-        updatedAt: row?.updatedAt ?? new Date(0).toISOString()
       };
-    })
-    .filter((target) => target.enabled);
+    });
 }
 
 function ensureAgentToolEnabled(database: AppDatabase, project: Project, toolId: AgentHubToolId): void {
   const target = listAgentToolTargets(database, project).find((item) => item.toolId === toolId);
-  if (!target) throw new Error("该工具未在项目中启用或不支持 AgentHub");
+  if (!target?.enabled) throw new Error("该工具未在项目中启用");
+  if (!target.supported) throw new Error(target.reason ?? "尚未支持");
+}
+
+function unsupportedProjectAgentTargetState(project: Project, agent: AgentHubAgent, toolTarget: ProjectToolTarget): ProjectAgentTargetState {
+  return {
+    projectId: project.id,
+    targetRootPath: project.rootPath,
+    toolId: toolTarget.toolId,
+    agent,
+    binding: null,
+    outputPath: "",
+    status: "unsupported",
+    preview: null,
+    reason: toolTarget.reason ?? "尚未支持",
+    error: null
+  };
 }
 
 function requireAgent(database: AppDatabase, agentId: string): AgentHubAgent {

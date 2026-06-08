@@ -197,22 +197,22 @@ describe("tool adapters and terminal launcher", () => {
 
   it("targets stable Windows Terminal windows for the configured launch mode", () => {
     expect(terminalWindowTarget("new-window", { toolId: "codex", cwd: "E:\\repo" })).toBe("new");
-    expect(terminalWindowTarget("per-tool", { toolId: "claude", cwd: "E:\\repo" })).toBe("grm-tool-claude");
-    expect(terminalWindowTarget("per-project", { toolId: "codex", projectRootPath: "E:\\tools\\github-repo-manager" })).toMatch(
-      /^grm-project-github-repo-manager-[a-f0-9]{12}$/
+    expect(terminalWindowTarget("per-tool", { toolId: "claude", cwd: "E:\\repo" })).toBe("aiw-tool-claude");
+    expect(terminalWindowTarget("per-project", { toolId: "codex", projectRootPath: "E:\\tools\\local-ai-workbench" })).toMatch(
+      /^aiw-project-local-ai-workbench-[a-f0-9]{12}$/
     );
 
     const host = buildTerminalHost(
-      { command: "codex", args: [], cwd: "E:\\tools\\github-repo-manager\\src" },
-      { platform: "win32", windowsTerminalAvailable: true, windowTarget: "grm-project-github-repo-manager-123456789abc" }
+      { command: "codex", args: [], cwd: "E:\\tools\\local-ai-workbench\\src" },
+      { platform: "win32", windowsTerminalAvailable: true, windowTarget: "aiw-project-local-ai-workbench-123456789abc" }
     );
 
     expect(host.args.slice(0, 5)).toEqual([
       "-w",
-      "grm-project-github-repo-manager-123456789abc",
+      "aiw-project-local-ai-workbench-123456789abc",
       "new-tab",
       "-d",
-      "E:\\tools\\github-repo-manager\\src"
+      "E:\\tools\\local-ai-workbench\\src"
     ]);
   });
 });

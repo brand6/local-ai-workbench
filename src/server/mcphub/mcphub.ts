@@ -17,9 +17,10 @@ import type {
   ProjectMcpDisableResult,
   ProjectMcpState,
   ProjectMcpTarget,
-  ProjectToolTarget
+  ProjectToolTarget,
+  ToolId
 } from "../../shared/types.js";
-import { mcpHubTargetToolIds } from "../../shared/types.js";
+import { isMcpHubTargetToolId } from "../../shared/types.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";
 import { listProjectToolTargets } from "../skillhub/projectSkills.js";
@@ -29,6 +30,8 @@ interface ServerCandidate {
   patch: ServerPatch;
   complete: boolean;
 }
+
+const mcpTargetSortOrder: McpHubTargetToolId[] = ["claude", "codex", "opencode", "cursor", "antigravity"];
 
 interface ExtractedServerCandidates {
   candidates: ServerCandidate[];
@@ -49,8 +52,6 @@ interface ServerPatch {
 
 type JsonRecord = Record<string, unknown>;
 type PersistableMcpHubServer = Omit<McpHubServer, "createdAt" | "updatedAt" | "builtin">;
-
-const supportedTargets: McpHubTargetToolId[] = [...mcpHubTargetToolIds];
 
 const builtInMcpServers: PersistableMcpHubServer[] = loadBuiltInMcpServers();
 
@@ -320,19 +321,21 @@ function discoverProjectLocalMcp(database: AppDatabase, project: Project): Proje
   );
   const entries: ProjectLocalMcpEntry[] = [];
 
-  for (const target of mcpTargetsForRoot(project.rootPath)) {
+  for (const target of mcpTargetsForRoot(project.rootPath, listProjectToolTargets(database, project))) {
+    if (!target.supported || !isMcpHubTargetToolId(target.toolId)) continue;
+    const toolId = target.toolId;
     if (!fs.existsSync(target.configPath)) continue;
     try {
-      const discovered = readLocalConfig(target.toolId, target.configPath);
+      const discovered = readLocalConfig(toolId, target.configPath);
       for (const item of discovered) {
         if (item.server) {
           entries.push({
             projectId: project.id,
             targetRootPath: project.rootPath,
-            toolId: target.toolId,
+            toolId,
             serverId: item.server.serverId,
             filePath: target.configPath,
-            status: bindings.has(`${target.toolId}:${item.server.serverId}`) ? "managed" : "unmanaged",
+            status: bindings.has(`${toolId}:${item.server.serverId}`) ? "managed" : "unmanaged",
             server: item.server,
             reason: null
           });
@@ -340,7 +343,7 @@ function discoverProjectLocalMcp(database: AppDatabase, project: Project): Proje
           entries.push({
             projectId: project.id,
             targetRootPath: project.rootPath,
-            toolId: target.toolId,
+            toolId,
             serverId: item.serverId,
             filePath: target.configPath,
             status: "invalid",
@@ -353,8 +356,8 @@ function discoverProjectLocalMcp(database: AppDatabase, project: Project): Proje
       entries.push({
         projectId: project.id,
         targetRootPath: project.rootPath,
-        toolId: target.toolId,
-        serverId: `invalid:${target.toolId}`,
+        toolId,
+        serverId: `invalid:${toolId}`,
         filePath: target.configPath,
         status: "invalid",
         server: null,
@@ -746,8 +749,15 @@ function tomlValue(value: unknown): string {
 }
 
 function mcpTargetsForRoot(rootPath: string, toolTargets: ProjectToolTarget[] = []): ProjectMcpTarget[] {
-  const projectToolTargets = new Map(toolTargets.map((target) => [target.toolId, target]));
-  return supportedTargets.map((toolId) => mcpTargetForRoot(rootPath, toolId, projectToolTargets.get(toolId)));
+  return toolTargets
+    .filter((target) => target.enabled)
+    .map((target) => projectMcpTargetForRoot(rootPath, target))
+    .sort((left, right) => mcpToolSortKey(left.toolId).localeCompare(mcpToolSortKey(right.toolId)));
+}
+
+function mcpToolSortKey(toolId: ToolId): string {
+  const index = mcpTargetSortOrder.findIndex((item) => item === toolId);
+  return `${index === -1 ? 999 : index}:${toolId}`;
 }
 
 function mcpTargetForRoot(rootPath: string, toolId: McpHubTargetToolId, toolTarget?: ProjectToolTarget): ProjectMcpTarget {
@@ -770,6 +780,30 @@ function mcpTargetForRoot(rootPath: string, toolId: McpHubTargetToolId, toolTarg
   }
   const exhaustive: never = toolId;
   return { ...base, toolId: exhaustive, label: exhaustive, supported: false, configPath: rootPath, reason: "未知 MCP 目标" };
+}
+
+function projectMcpTargetForRoot(rootPath: string, toolTarget: ProjectToolTarget): ProjectMcpTarget {
+  if (isMcpHubTargetToolId(toolTarget.toolId)) return mcpTargetForRoot(rootPath, toolTarget.toolId, toolTarget);
+  return {
+    toolId: toolTarget.toolId,
+    label: toolLabel(toolTarget.toolId),
+    enabled: toolTarget.enabled,
+    inferred: toolTarget.inferred,
+    supported: false,
+    configPath: "",
+    reason: "尚未支持",
+    updatedAt: toolTarget.updatedAt
+  };
+}
+
+function toolLabel(toolId: ToolId): string {
+  if (toolId === "qwen") return "Qwen";
+  if (toolId === "qoder") return "Qoder";
+  if (toolId === "opencode") return "OpenCode";
+  if (toolId === "codebuddy") return "CodeBuddy Code";
+  if (toolId === "deepcode") return "Deep Code";
+  if (toolId === "reasonix") return "Reasonix";
+  return `${toolId.charAt(0).toUpperCase()}${toolId.slice(1)}`;
 }
 
 function parseLooseJson(input: string): unknown {

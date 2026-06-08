@@ -49,6 +49,17 @@ describe("API", () => {
       .expect(201);
 
     const projectId = added.body.project.id as string;
+    context.database().upsertSession(sessionEntry({
+      id: "codex:api-project-summary",
+      toolId: "codex",
+      nativeSessionId: "api-project-summary",
+      originalCwd: projectRoot,
+      normalizedCwd: projectRoot.toLowerCase(),
+      sourceFile: path.join(directory, "codex-summary.jsonl"),
+      sourceFormat: "codex-jsonl",
+      title: "首包测试"
+    }));
+
     const list = await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(200);
     expect(list.body).toHaveLength(1);
 
@@ -57,6 +68,18 @@ describe("API", () => {
       .set("x-local-api-token", context.token)
       .expect(200);
     expect(detail.body.groups[0].isRoot).toBe(true);
+    expect(detail.body.groups[0].tools[0].sessions).toHaveLength(1);
+
+    const summary = await request(app)
+      .get(`/api/projects/${projectId}/detail?includeSessions=false`)
+      .set("x-local-api-token", context.token)
+      .expect(200);
+    expect(summary.body.groups[0].sessionCount).toBe(1);
+    expect(summary.body.groups[0].tools[0]).toMatchObject({
+      toolId: "codex",
+      sessionCount: 1,
+      sessions: []
+    });
   });
 
   it("only returns installed CLI tools from project tool targets", async () => {
@@ -560,7 +583,7 @@ describe("API", () => {
 
   it("filters parser warnings to the selected project", async () => {
     directory = testDir("api-project-warnings");
-    const projectRoot = path.join(directory, "github-repo-manager");
+    const projectRoot = path.join(directory, "local-ai-workbench");
     const otherRoot = path.join(directory, "ai-game-space");
     fs.mkdirSync(projectRoot, { recursive: true });
     fs.mkdirSync(otherRoot, { recursive: true });

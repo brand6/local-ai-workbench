@@ -122,7 +122,7 @@ describe("AgentHub", () => {
     const projectRoot = path.join(directory, "repo");
     fs.mkdirSync(projectRoot, { recursive: true });
     const project = db.addProject(projectRoot).project;
-    db.replaceProjectToolTargets(project.id, ["claude", "codex", "opencode", "cursor", "qwen"]);
+    db.replaceProjectToolTargets(project.id, ["claude", "codex", "opencode", "cursor", "qwen", "kilo"]);
     for (const toolId of ["claude", "codex", "opencode", "cursor", "qwen"] as const) {
       const preview = conversionPreview(reparsed, toolId, projectRoot, "create");
       expect(preview.targetPath).toContain(reparsed.slug);
@@ -131,7 +131,13 @@ describe("AgentHub", () => {
       expect(applied.action).toBe("applied");
       expect(fs.existsSync(applied.preview.targetPath)).toBe(true);
     }
-    expect(listProjectAgentState(db, directory, project).targets.filter((target) => target.binding && target.status === "current")).toHaveLength(5);
+    const projectAgentState = listProjectAgentState(db, directory, project);
+    expect(projectAgentState.targets.filter((target) => target.binding && target.status === "current")).toHaveLength(5);
+    expect(projectAgentState.toolTargets.find((target) => target.toolId === "kilo")).toMatchObject({ enabled: true, supported: false, reason: "尚未支持" });
+    expect(projectAgentState.targets.find((target) => target.agent.id === reparsed.id && target.toolId === "kilo")).toMatchObject({
+      status: "unsupported",
+      reason: "尚未支持"
+    });
 
     const replacementRoot = path.join(directory, "replacement-agents");
     fs.mkdirSync(replacementRoot, { recursive: true });

@@ -66,10 +66,10 @@ export function terminalWindowTarget(
   context: { toolId: ToolId; cwd?: string | null; projectRootPath?: string | null }
 ): string {
   if (mode === "new-window") return "new";
-  if (mode === "per-tool") return `grm-tool-${context.toolId}`;
+  if (mode === "per-tool") return `aiw-tool-${context.toolId}`;
   const projectKey = context.projectRootPath?.trim() || context.cwd?.trim() || context.toolId;
   const label = slug(lastPathSegment(projectKey)) || "project";
-  return `grm-project-${label}-${shortHash(projectKey)}`;
+  return `aiw-project-${label}-${shortHash(projectKey)}`;
 }
 
 export function isExecutableAvailable(command: string, platform: NodeJS.Platform = process.platform): boolean {
