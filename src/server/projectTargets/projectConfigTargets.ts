@@ -49,7 +49,7 @@ const projectTraceMap: Partial<Record<ProjectConfigTargetId, string[]>> = {
   copilot: [".github/copilot-instructions.md", ".github/skills"],
   cursor: [".cursor", ".cursorrules"],
   antigravity: [".agents/mcp_config.json"],
-  trae: [".traecli", "trae_config.yaml", "trae_config.yml", "trae_config.json"],
+  trae: [".traecli"],
   deepcode: [],
   reasonix: [],
   zcode: [".zcode"],

@@ -466,19 +466,6 @@ describe("SkillHub", () => {
     expect(copilot).toMatchObject({ enabled: true, inferred: true });
   });
 
-  it("infers TRAE CLI from open-source Trae Agent config files", () => {
-    directory = testDir("skillhub-project-tool-targets-trae-config");
-    const db = new AppDatabase(directory);
-    const projectRoot = path.join(directory, "repo");
-    fs.mkdirSync(projectRoot, { recursive: true });
-    fs.writeFileSync(path.join(projectRoot, "trae_config.yaml"), "agents:\n  trae_agent:\n    model: trae_agent_model\n", "utf8");
-    const project = db.addProject(projectRoot).project;
-
-    const trae = listProjectToolTargets(db, project).find((target) => target.toolId === "trae");
-
-    db.close();
-    expect(trae).toMatchObject({ enabled: true, inferred: true });
-  });
 
   it("supports SkillHub links for all built-in project CLI skill targets", () => {
     directory = testDir("skillhub-built-in-project-cli-targets");

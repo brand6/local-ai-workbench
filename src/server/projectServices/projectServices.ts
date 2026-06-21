@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Project, ProjectService, ProjectServiceList, ProjectServiceStartResult, ProjectServiceStopResult } from "../../shared/types.js";
+import { commandAvailable } from "../core/commandAvailability.js";
 import { displayPath, isPathInsideOrEqual, normalizeFsPath, relativeLabel } from "../core/pathUtils.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";
@@ -29,6 +30,7 @@ interface RunningProjectService {
   stoppedByUser: boolean;
   commandText: string;
   cwd: string;
+  exitStatusPath: string | null;
 }
 
 interface PersistedProjectServiceProcess {
@@ -37,6 +39,11 @@ interface PersistedProjectServiceProcess {
   startedAt: string;
   commandText: string;
   cwd: string;
+}
+
+interface ProjectServiceExitStatus {
+  exitCode: number | null;
+  stoppedAt: string | null;
 }
 
 export class ProjectServiceError extends Error {
@@ -77,7 +84,8 @@ export class ProjectServiceRuntime {
         exitCode: null,
         stoppedByUser: false,
         commandText: service.commandText,
-        cwd: service.cwd
+        cwd: service.cwd,
+        exitStatusPath: null
       });
       return { service: this.withRuntimeStatus(service), alreadyRunning: false, startedAt };
     }
@@ -85,7 +93,7 @@ export class ProjectServiceRuntime {
     const running = launchProjectServiceProcess(database, service, serviceId, startedAt);
     const child = running.child;
     const registryPath = runtimeRegistryPath(database);
-    child.once("exit", (code) => {
+    child?.once("exit", (code) => {
       running.exitCode = code ?? null;
       running.stoppedAt = running.stoppedAt ?? nowIso();
       writeRuntimeRegistryPath(registryPath, this.persistedRecords());
@@ -107,7 +115,8 @@ export class ProjectServiceRuntime {
     const service = findProjectService(database, serviceId);
     const existing = this.processes.get(serviceId);
     const stoppedAt = nowIso();
-    if (existing) this.refreshExitState(existing);\r\n    if (!existing || !this.isRunning(existing)) {
+    if (existing) this.refreshExitState(existing);
+    if (!existing || !this.isRunning(existing)) {
       return { service: this.withRuntimeStatus(service), stoppedAt };
     }
 
@@ -120,6 +129,7 @@ export class ProjectServiceRuntime {
 
   stopAll(database?: AppDatabase): void {
     for (const running of this.processes.values()) {
+      this.refreshExitState(running);
       if (!this.isRunning(running)) continue;
       running.stoppedByUser = true;
       running.stoppedAt = nowIso();
@@ -131,6 +141,7 @@ export class ProjectServiceRuntime {
   private withRuntimeStatus(service: ProjectService): ProjectService {
     const running = this.processes.get(service.serviceId);
     if (!running) return service;
+    this.refreshExitState(running);
     if (this.isRunning(running)) {
       return {
         ...service,
@@ -163,7 +174,8 @@ export class ProjectServiceRuntime {
         exitCode: null,
         stoppedByUser: false,
         commandText: record.commandText,
-        cwd: record.cwd
+        cwd: record.cwd,
+        exitStatusPath: serviceExitStatusPath(database, record.serviceId)
       });
     }
   }
@@ -174,7 +186,8 @@ export class ProjectServiceRuntime {
 
   private persistedRecords(): PersistedProjectServiceProcess[] {
     return [...this.processes.values()].flatMap((running) => {
-      this.refreshExitState(running);\r\n      if (!this.isRunning(running) || !running.pid || !isProcessAlive(running.pid)) return [];
+      this.refreshExitState(running);
+      if (!this.isRunning(running) || !running.pid || !isProcessAlive(running.pid)) return [];
       return [
         {
           serviceId: running.serviceId,
@@ -185,6 +198,14 @@ export class ProjectServiceRuntime {
         }
       ];
     });
+  }
+
+  private refreshExitState(service: RunningProjectService): void {
+    if (service.stoppedByUser || service.stoppedAt !== null || service.child || service.pid === null) return;
+    if (isProcessAlive(service.pid)) return;
+    const status = service.exitStatusPath ? readExitStatus(service.exitStatusPath) : null;
+    service.exitCode = status?.exitCode ?? service.exitCode;
+    service.stoppedAt = status?.stoppedAt ?? service.stoppedAt ?? nowIso();
   }
 
   private isRunning(service: RunningProjectService): boolean {
@@ -494,6 +515,179 @@ function formatCommandLine(parts: string[]): string {
   return parts.map((part) => (/\s/.test(part) ? `"${part.replaceAll("\"", "\\\"")}"` : part)).join(" ");
 }
 
+const pidPollIntervalMs = 100;
+const pidPollTimeoutMs = 3000;
+
+function launchProjectServiceProcess(database: AppDatabase, service: ProjectService, serviceId: string, startedAt: string): RunningProjectService {
+  if (process.platform === "win32" && commandAvailable("wt.exe")) {
+    return launchProjectServiceInWindowsTerminal(database, service, serviceId, startedAt);
+  }
+
+  const child = spawn(service.commandText, {
+    cwd: service.cwd,
+    shell: true,
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true
+  });
+  return {
+    serviceId,
+    child,
+    pid: child.pid ?? null,
+    startedAt,
+    stoppedAt: null,
+    exitCode: null,
+    stoppedByUser: false,
+    commandText: service.commandText,
+    cwd: service.cwd,
+    exitStatusPath: null
+  };
+}
+
+function projectServiceWindowTarget(): string {
+  return process.env.WT_SESSION ? "0" : "last";
+}
+
+function launchProjectServiceInWindowsTerminal(database: AppDatabase, service: ProjectService, serviceId: string, startedAt: string): RunningProjectService {
+  const pidFilePath = servicePidPath(database, serviceId);
+  const exitStatusPath = serviceExitStatusPath(database, serviceId);
+  removeFileIfExists(pidFilePath);
+  removeFileIfExists(exitStatusPath);
+
+  const launcher = spawn(
+    "wt.exe",
+    [
+      "-w",
+      projectServiceWindowTarget(),
+      "new-tab",
+      "--title",
+      projectServiceTabTitle(service),
+      "-d",
+      service.cwd,
+      "powershell.exe",
+      "-NoExit",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-EncodedCommand",
+      encodePowerShellCommand(projectServiceTerminalScript(service, pidFilePath, exitStatusPath))
+    ],
+    {
+      cwd: service.cwd,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false
+    }
+  );
+  launcher.unref();
+
+  const pid = waitForPidFile(pidFilePath, pidPollTimeoutMs);
+  if (!pid) {
+    throw new ProjectServiceError("已请求 Windows Terminal 打开页签，但未能确认服务进程 PID", "project-service-pid-not-confirmed", 500);
+  }
+
+  return {
+    serviceId,
+    child: null,
+    pid,
+    startedAt,
+    stoppedAt: null,
+    exitCode: null,
+    stoppedByUser: false,
+    commandText: service.commandText,
+    cwd: service.cwd,
+    exitStatusPath
+  };
+}
+
+function projectServiceTerminalScript(service: ProjectService, pidFilePath: string, exitStatusPath: string): string {
+  const title = projectServiceTabTitle(service);
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `try { $host.UI.RawUI.WindowTitle = ${quotePowerShell(title)} } catch { }`,
+    `Set-Location -LiteralPath ${quotePowerShell(service.cwd)}`,
+    `Remove-Item -LiteralPath ${quotePowerShell(pidFilePath)} -Force -ErrorAction SilentlyContinue`,
+    `Remove-Item -LiteralPath ${quotePowerShell(exitStatusPath)} -Force -ErrorAction SilentlyContinue`,
+    `Write-Host ${quotePowerShell(`[github-repo-manager] 启动 ${service.commandText}`)}`,
+    "try {",
+    `  $process = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/d','/s','/c',${quotePowerShell(service.commandText)}) -WorkingDirectory ${quotePowerShell(service.cwd)} -NoNewWindow -PassThru`,
+    `  Set-Content -LiteralPath ${quotePowerShell(pidFilePath)} -Value $process.Id -Encoding ascii`,
+    "  $process.WaitForExit()",
+    "  $exitCode = $process.ExitCode",
+    "} catch {",
+    "  $exitCode = 1",
+    "  Write-Host ('[github-repo-manager] 服务启动失败：' + $_.Exception.Message)",
+    "}",
+    "if ($null -eq $exitCode) { $exitCode = 0 }",
+    "$payload = @{ exitCode = $exitCode; stoppedAt = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress",
+    `Set-Content -LiteralPath ${quotePowerShell(exitStatusPath)} -Value $payload -Encoding utf8`,
+    "Write-Host ('[github-repo-manager] 服务已退出，退出码 ' + $exitCode)"
+  ].join("\r\n");
+}
+
+function projectServiceTabTitle(service: ProjectService): string {
+  return `${service.projectLabel} ${service.scriptName}`.slice(0, 80);
+}
+
+function servicePidPath(database: AppDatabase, serviceId: string): string {
+  return path.join(database.dataDirectory(), `project-service-${shortHash(serviceId)}.pid`);
+}
+
+function serviceExitStatusPath(database: AppDatabase, serviceId: string): string {
+  return path.join(database.dataDirectory(), `project-service-${shortHash(serviceId)}.exit.json`);
+}
+
+function waitForPidFile(filePath: string, timeoutMs: number): number | null {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const pid = readPidFile(filePath);
+    if (pid) return pid;
+    sleepSync(Math.min(pidPollIntervalMs, Math.max(1, deadline - Date.now())));
+  }
+  return readPidFile(filePath);
+}
+
+function readPidFile(filePath: string): number | null {
+  try {
+    const pid = Number(fs.readFileSync(filePath, "utf8").trim());
+    return Number.isFinite(pid) && pid > 0 ? Math.trunc(pid) : null;
+  } catch {
+    return null;
+  }
+}
+
+function readExitStatus(filePath: string): ProjectServiceExitStatus | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    const exitCode = typeof record.exitCode === "number" && Number.isFinite(record.exitCode) ? Math.trunc(record.exitCode) : null;
+    const stoppedAt = typeof record.stoppedAt === "string" ? record.stoppedAt : null;
+    return { exitCode, stoppedAt };
+  } catch {
+    return null;
+  }
+}
+
+function removeFileIfExists(filePath: string): void {
+  try {
+    fs.rmSync(filePath, { force: true });
+  } catch {
+    // Runtime marker cleanup is best-effort.
+  }
+}
+
+function sleepSync(milliseconds: number): void {
+  if (milliseconds <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function encodePowerShellCommand(script: string): string {
+  return Buffer.from(script, "utf16le").toString("base64");
+}
+
+function quotePowerShell(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
 const runtimeRegistryFileName = "project-services-runtime.json";
 
 function runtimeRegistryPath(database: AppDatabase): string {

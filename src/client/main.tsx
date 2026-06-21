@@ -3708,13 +3708,14 @@ function ProjectDetailView({
   onOpenProjectHooks?: (targetRootPath: string) => void;
 }) {
   const toolMap = useMemo(() => new Map(tools.map((tool) => [tool.toolId, tool])), [tools]);
-  const enabledProjectToolIds = useMemo(() => new Set(projectToolTargets.filter((target) => target.enabled).map((target) => target.toolId)), [projectToolTargets]);
+  const visibleProjectToolTargets = useMemo(() => filterVisibleProjectToolTargets(projectToolTargets, tools), [projectToolTargets, tools]);
+  const enabledProjectToolIds = useMemo(() => new Set(visibleProjectToolTargets.filter((target) => target.enabled).map((target) => target.toolId)), [visibleProjectToolTargets]);
   const projectTools = useMemo(() => tools.filter((tool) => isLaunchableProjectTool(tool) && enabledProjectToolIds.has(tool.toolId)), [enabledProjectToolIds, tools]);
   const repairSignals = useMemo(
     () => buildRepairSignals(project, detail, warnings, repairCandidates),
     [detail, project, repairCandidates, warnings]
   );
-  const enabledToolCount = projectToolTargets.filter((target) => target.enabled).length;
+  const enabledToolCount = visibleProjectToolTargets.filter((target) => target.enabled).length;
   return (
     <section className="content">
       <div className="toolbar-panel compact detail-command-panel">
@@ -3741,12 +3742,12 @@ function ProjectDetailView({
         <summary>
           <span className="detail-management-title">项目配置</span>
           <span className="detail-management-summary">
-            {projectToolTargets.length > 0 ? <span className="metric-pill">{enabledToolCount}/{projectToolTargets.length} 工具</span> : null}
+            {visibleProjectToolTargets.length > 0 ? <span className="metric-pill">{enabledToolCount}/{visibleProjectToolTargets.length} 工具</span> : null}
           </span>
         </summary>
         <div className="detail-management-body">
           <ProjectToolTargetSelector
-            targets={projectToolTargets}
+            targets={visibleProjectToolTargets}
             tools={tools}
             busy={busy}
             onUpdate={onUpdateProjectTools}
@@ -3912,6 +3913,14 @@ function RepairSignalPanel({ signals }: { signals: RepairSignal[] }) {
   );
 }
 
+function filterVisibleProjectToolTargets(targets: ProjectToolTarget[], tools: ToolStatus[]): ProjectToolTarget[] {
+  const toolStatuses = new Map(tools.map((tool) => [tool.toolId, tool]));
+  return targets.filter((target) => {
+    const status = toolStatuses.get(target.toolId as ToolId);
+    if (!status) return true;
+    return status.supported && status.visibleInProjectUi && status.available;
+  });
+}
 function ProjectToolTargetSelector({
   targets,
   tools = [],
@@ -3923,7 +3932,7 @@ function ProjectToolTargetSelector({
   busy: boolean;
   onUpdate: (toolIds: ProjectConfigTargetId[]) => void;
 }) {
-  const visibleTargets = useMemo(() => targets, [targets, tools]);
+  const visibleTargets = useMemo(() => filterVisibleProjectToolTargets(targets, tools), [targets, tools]);
   const enabledToolIds = visibleTargets.filter((target) => target.enabled).map((target) => target.toolId);
 
   if (visibleTargets.length === 0) return null;

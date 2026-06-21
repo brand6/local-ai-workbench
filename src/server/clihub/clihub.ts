@@ -392,7 +392,7 @@ const builtInClis: BuiltInCli[] = [
           "irm https://trae.cn/trae-cli/install.ps1 | iex"
         ]),
         updateCommand: ["traecli", "update"],
-        metadata: { docsUrl: "https://docs.trae.cn/cli_get-started-with-trae-cli", sourceRepo: "https://github.com/bytedance/trae-agent" }
+        metadata: { docsUrl: "https://docs.trae.cn/cli_get-started-with-trae-cli" }
       }
     ]
   },
