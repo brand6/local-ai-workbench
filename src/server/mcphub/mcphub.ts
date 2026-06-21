@@ -186,6 +186,7 @@ export function applyProjectMcpServer(
     throw new Error("同名 MCP entry 已存在且不属于 McpHub，未覆盖本地配置");
   }
   ensureMcpBindingCurrent(database, target.configPath, existingBinding);
+  const backup = backupProjectLocalTarget(project.rootPath, target.configPath, "McpHub", "mcp");
   writeRenderedConfig(target.configPath, toolId, server.serverId, rendered);
   const timestamp = nowIso();
   const binding = database.upsertProjectMcpBinding({
@@ -205,6 +206,7 @@ export function applyProjectMcpServer(
     server: withBuiltInFlag(server),
     binding,
     configPath: target.configPath,
+    backup,
     warnings: missingRequiredEnvWarnings(server)
   };
 }
@@ -229,11 +231,13 @@ export function disableProjectMcpServer(
       removedBinding: false,
       modified: false,
       configPath: target.configPath,
+      backup: null,
       reason: "没有 McpHub ownership 记录，未修改本地配置"
     };
   }
 
   ensureMcpBindingCurrent(database, target.configPath, binding);
+  const backup = backupProjectLocalTarget(project.rootPath, target.configPath, "McpHub", "mcp");
   const removal = removeRenderedConfigEntry(target.configPath, toolId, serverId);
   database.deleteProjectMcpBinding(project.id, project.rootPath, toolId, serverId);
   return {
@@ -244,6 +248,7 @@ export function disableProjectMcpServer(
     removedBinding: true,
     modified: removal.modified,
     configPath: target.configPath,
+    backup,
     reason: removal.reason
   };
 }
@@ -255,11 +260,14 @@ export function deleteMcpHubServer(database: AppDatabase, serverId: string): Mcp
   const modifiedFiles = new Set<string>();
   const skippedMissingFiles = new Set<string>();
   const failures: Array<{ path: string; reason: string }> = [];
+  const backups: ProjectLocalFileBackup[] = [];
 
   for (const binding of bindings) {
     const configPath = mcpTargetForRoot(binding.targetRootPath, binding.toolId).configPath;
     try {
       ensureMcpBindingCurrent(database, configPath, binding);
+      const backup = backupProjectLocalTarget(binding.targetRootPath, configPath, "McpHub", "mcp");
+      if (backup) backups.push(backup);
       const removal = removeRenderedConfigEntry(configPath, binding.toolId, binding.serverId);
       if (removal.modified) modifiedFiles.add(configPath);
       if (removal.missing) skippedMissingFiles.add(configPath);
@@ -277,6 +285,7 @@ export function deleteMcpHubServer(database: AppDatabase, serverId: string): Mcp
     bindingsRemoved: removedBindings,
     modifiedFiles: [...modifiedFiles],
     skippedMissingFiles: [...skippedMissingFiles],
+    backups,
     failures
   };
 }

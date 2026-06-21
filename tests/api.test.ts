@@ -205,6 +205,7 @@ describe("API", () => {
       .expect(409)
       .expect((response) => expect(response.body).toMatchObject({ error: "tool-disabled-for-project" }));
   });
+
   it("serves the production index without local API token injection", async () => {
     directory = testDir("api-index-no-token");
     context = new AppContext(directory);
@@ -447,9 +448,7 @@ describe("API", () => {
     context.config().tools.codex.sessionSources = [codexSource];
     context.config().tools.claude.sessionSources = [path.join(directory, "missing-claude-sessions")];
     context.config().tools.opencode.sessionSources = [opencodeDb];
-    context.config().tools.qwen.sessionSources = [path.join(directory, "missing-qwen-sessions")];
-    context.config().tools.qoder.sessionSources = [path.join(directory, "missing-qoder-sessions")];
-    context.config().tools.copilot.sessionSources = [path.join(directory, "missing-copilot-sessions")];
+    pointMvpBToolsAtMissingSources(context, directory, ["codex", "claude", "opencode"]);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
 
     const refreshed = await request(app)
@@ -524,10 +523,11 @@ describe("API", () => {
     pointMvpBToolsAtMissingSources(context, directory);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     context.database().addProject(projectRoot, true);
-    await request(app).post("/api/sessions/refresh").expect(200);
+    await request(app).post("/api/sessions/refresh").send({ mode: "full", toolIds: ["codex"] }).expect(200);
 
-    const session = context.database().listSessions()[0];
-    expect(session?.id).toBe("codex:codex-delete-1");
+    const session = context.database().getSession("codex:codex-delete-1");
+    if (!session) throw new Error("Expected codex test session to be indexed");
+    expect(session.id).toBe("codex:codex-delete-1");
 
     await request(app)
       .delete(`/api/sessions/${encodeURIComponent(session.id)}`)
@@ -854,9 +854,7 @@ describe("API", () => {
     context.config().tools.codex.sessionSources = [path.join(directory, "missing-codex-sessions")];
     context.config().tools.claude.sessionSources = [path.join(directory, "missing-claude-sessions")];
     context.config().tools.opencode.sessionSources = [opencodeDb];
-    context.config().tools.qwen.sessionSources = [path.join(directory, "missing-qwen-sessions")];
-    context.config().tools.qoder.sessionSources = [path.join(directory, "missing-qoder-sessions")];
-    context.config().tools.copilot.sessionSources = [path.join(directory, "missing-copilot-sessions")];
+    pointMvpBToolsAtMissingSources(context, directory, ["codex", "claude", "opencode"]);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const sourceProject = context.database().addProject(oldRoot, false).project;
     const targetProject = context.database().addProject(newRoot, true).project;
@@ -945,9 +943,7 @@ describe("API", () => {
     context.config().tools.codex.sessionSources = [path.join(directory, "missing-codex-sessions")];
     context.config().tools.claude.sessionSources = [path.join(directory, "missing-claude-sessions")];
     context.config().tools.opencode.sessionSources = [opencodeDb];
-    context.config().tools.qwen.sessionSources = [path.join(directory, "missing-qwen-sessions")];
-    context.config().tools.qoder.sessionSources = [path.join(directory, "missing-qoder-sessions")];
-    context.config().tools.copilot.sessionSources = [path.join(directory, "missing-copilot-sessions")];
+    pointMvpBToolsAtMissingSources(context, directory, ["codex", "claude", "opencode"]);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const sourceProject = context.database().addProject(oldRoot, false).project;
     const targetProject = context.database().addProject(newRoot, true).project;
@@ -1001,9 +997,7 @@ describe("API", () => {
     context.config().tools.codex.sessionSources = [path.join(directory, "missing-codex-sessions")];
     context.config().tools.claude.sessionSources = [path.join(directory, "missing-claude-sessions")];
     context.config().tools.opencode.sessionSources = [opencodeDb];
-    context.config().tools.qwen.sessionSources = [path.join(directory, "missing-qwen-sessions")];
-    context.config().tools.qoder.sessionSources = [path.join(directory, "missing-qoder-sessions")];
-    context.config().tools.copilot.sessionSources = [path.join(directory, "missing-copilot-sessions")];
+    pointMvpBToolsAtMissingSources(context, directory, ["codex", "claude", "opencode"]);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const sourceProject = context.database().addProject(oldRoot, false).project;
     const targetProject = context.database().addProject(targetRoot, true).project;
@@ -1055,9 +1049,7 @@ describe("API", () => {
     context.config().tools.codex.sessionSources = [path.join(directory, "missing-codex-sessions")];
     context.config().tools.claude.sessionSources = [path.join(directory, "missing-claude-sessions")];
     context.config().tools.opencode.sessionSources = [opencodeDb];
-    context.config().tools.qwen.sessionSources = [path.join(directory, "missing-qwen-sessions")];
-    context.config().tools.qoder.sessionSources = [path.join(directory, "missing-qoder-sessions")];
-    context.config().tools.copilot.sessionSources = [path.join(directory, "missing-copilot-sessions")];
+    pointMvpBToolsAtMissingSources(context, directory, ["codex", "claude", "opencode"]);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const sourceProject = context.database().addProject(oldRoot, false).project;
     const parentProject = context.database().addProject(parentRoot, true).project;
@@ -1135,11 +1127,12 @@ function encodeQwenProjectPath(input: string): string {
   return normalized.replace(/[^a-zA-Z0-9]/g, "-");
 }
 
-function pointMvpBToolsAtMissingSources(appContext: AppContext, root: string): void {
-  appContext.config().tools.opencode.sessionSources = [path.join(root, "missing-opencode-sessions")];
-  appContext.config().tools.qwen.sessionSources = [path.join(root, "missing-qwen-sessions")];
-  appContext.config().tools.qoder.sessionSources = [path.join(root, "missing-qoder-sessions")];
-  appContext.config().tools.copilot.sessionSources = [path.join(root, "missing-copilot-sessions")];
+function pointMvpBToolsAtMissingSources(appContext: AppContext, root: string, keepTools: string[] = ["codex", "claude"]): void {
+  const keep = new Set(keepTools);
+  for (const toolId of toolIds) {
+    if (keep.has(toolId)) continue;
+    appContext.config().tools[toolId].sessionSources = [path.join(root, `missing-${toolId}-sessions`)];
+  }
 }
 
 function writeCodexSession(sourceFile: string, cwd: string, id: string, title: string): void {

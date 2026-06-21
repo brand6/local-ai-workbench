@@ -26,7 +26,7 @@ ZCode 是非 CLI/非会话型 Project Config Target。官方 Skill 文档明确�
 
 GitHub 来源支持手动检查更新。SkillHub 页面提供“检查更新”按钮，检查所有 GitHub sources。更新按 source 执行，不支持同一个 source 下只更新部分技能；UI 按 source 展示新增、变更、删除、目录迁移的技能，以及受影响项目和工具。GitHub 目录迁移优先通过 Git rename 检测；检测到迁移时保留 `skillId`，更新 library 里的真实技能目录和路径映射。项目 link 仍指向稳定的 SkillHub library 目录，通常不需要重建。若更新会删除已分发技能，必须作为破坏性更新展示并确认；确认后删除对应项目 link，避免断链。
 
-规则同步是独立的 Project Group 级功能，不参与技能发现。项目详情页每个 Root Group 或 Subproject Group 的“新会话”旁边提供“规则”入口，点击后在当前 group 内显示规则同步内容。MVP 只维护当前 `targetRootPath` 下的 `AGENTS.md` 和 `CLAUDE.md` 两个文件。用户选择同步方向：`AGENTS.md -> CLAUDE.md` 或 `CLAUDE.md -> AGENTS.md`。源文件不存在时对应方向禁用；两个文件都不存在时只显示文件状态，不提供创建规则文件。目标文件存在且内容不同并位于 Git 仓库内时，若目标规则文件有未提交内容，系统只 stage/commit 该规则文件，commit 信息为 `chore: 同步规则前备份 <file>`，然后静默覆盖。目标文件在 Git 仓库内但无未提交内容时静默覆盖。目录没有 Git 管理但 `git` 可用时，询问用户是否初始化 Git 并提交规则文件；`git` 不可用时询问用户是否直接覆盖。
+规则同步是独立的 Project Group 级功能，不参与技能发现。项目详情页每个 Root Group 或 Subproject Group 的“新会话”旁边提供“规则”入口，点击后在当前 group 内显示规则同步内容。MVP 只维护当前 `targetRootPath` 下的 `AGENTS.md` 和 `CLAUDE.md` 两个文件。用户选择同步方向：`AGENTS.md -> CLAUDE.md` 或 `CLAUDE.md -> AGENTS.md`。源文件不存在时对应方向禁用；两个文件都不存在时同步方向全部禁用，但提供带预览的默认 `CLAUDE.md` 模板创建入口，作为用户主动创建规则入口。目标文件存在且内容不同并位于 Git 仓库内时，若目标规则文件有未提交内容，系统只 stage/commit 该规则文件，commit 信息为 `chore: 同步规则前备份 <file>`，然后静默覆盖。目标文件在 Git 仓库内但无未提交内容时静默覆盖。目录没有 Git 管理但 `git` 可用时，询问用户是否初始化 Git 并提交规则文件；`git` 不可用时询问用户是否直接覆盖。
 
 ## User Stories
 

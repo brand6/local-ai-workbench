@@ -105,6 +105,14 @@ describe("tool adapters and terminal launcher", () => {
     expect(adapterFor("reasonix").buildResumeCommand(config, { ...session, toolId: "reasonix" }).args).toEqual(["code", "--session", "s1"]);
     expect(adapterFor("reasonix").buildNewSessionCommand(config, "E:\\repo").args).toEqual(["code"]);
     expect(adapterFor("trae").buildNewSessionCommand(config, "E:\\repo")).toEqual({ command: "traecli", args: [], cwd: "E:\\repo" });
+    config.tools.trae.command = "trae-cli";
+    expect(adapterFor("trae").buildNewSessionCommand(config, "E:\\repo")).toEqual({ command: "trae-cli", args: ["interactive"], cwd: "E:\\repo" });
+    config.tools.trae.command = path.join("C:\\tools", "trae-cli.exe");
+    expect(adapterFor("trae").buildNewSessionCommand(config, "E:\\repo")).toEqual({
+      command: path.join("C:\\tools", "trae-cli.exe"),
+      args: ["interactive"],
+      cwd: "E:\\repo"
+    });
     expect(adapterFor("trae").capabilities).toMatchObject({ launchNew: true, scanHistory: false, resume: false });
     expect(adapterFor("trae").defaultSessionSources()).toEqual([]);
     expect(() => adapterFor("trae").buildResumeCommand(config, { ...session, toolId: "trae" })).toThrow("Trae CLI resume is not supported");

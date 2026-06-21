@@ -83,6 +83,10 @@ export class AppDatabase {
     this.db.close();
   }
 
+  dataDirectory(): string {
+    return this.dataDir;
+  }
+
   migrate(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS schema_metadata (

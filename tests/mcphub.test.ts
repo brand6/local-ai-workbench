@@ -99,6 +99,10 @@ describe("McpHub", () => {
     const opencode = applyProjectMcpServer(db, project, "opencode", server.serverId);
 
     expect(claude.warnings).toEqual(["缺少环境变量：DOCS_TOKEN"]);
+    expect(claude.backup).toMatchObject({ hub: "McpHub", targetResourceType: "mcp", originalPath: path.join(projectRoot, ".mcp.json") });
+    expect(codex.backup).toMatchObject({ hub: "McpHub", targetResourceType: "mcp", originalPath: path.join(projectRoot, ".codex", "config.toml") });
+    expect(opencode.backup).toMatchObject({ hub: "McpHub", targetResourceType: "mcp", originalPath: path.join(projectRoot, "opencode.json") });
+    expect(fs.existsSync(claude.backup!.backupPath)).toBe(true);
     expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8"))).toMatchObject({
       keep: true,
       mcpServers: {
@@ -116,7 +120,8 @@ describe("McpHub", () => {
     expect(db.listProjectMcpBindings(project.id, project.rootPath).every((binding) => binding.appliedFingerprint.length > 0)).toBe(true);
 
     const disabled = disableProjectMcpServer(db, project, "codex", "docs");
-    expect(disabled).toMatchObject({ removedBinding: true, modified: true });
+    expect(disabled).toMatchObject({ removedBinding: true, modified: true, backup: expect.objectContaining({ originalPath: path.join(projectRoot, ".codex", "config.toml") }) });
+    expect(fs.readFileSync(disabled.backup!.backupPath, "utf8")).toContain("[mcp_servers.docs]");
     const codexText = fs.readFileSync(path.join(projectRoot, ".codex", "config.toml"), "utf8");
     expect(codexText).toContain("[mcp_servers.keep]");
     expect(codexText).not.toContain("[mcp_servers.docs]");
@@ -389,6 +394,8 @@ describe("McpHub", () => {
 
     expect(deleted.deleted).toBe(false);
     expect(deleted.failures).toEqual([expect.objectContaining({ path: path.join(projectRoot, ".mcp.json") })]);
+    expect(deleted.backups).toEqual([expect.objectContaining({ hub: "McpHub", targetResourceType: "mcp", originalPath: path.join(projectRoot, ".codex", "config.toml") })]);
+    expect(fs.existsSync(deleted.backups[0]!.backupPath)).toBe(true);
     expect(deleted.bindingsRemoved.map((binding) => binding.toolId)).toEqual(["codex"]);
     expect(db.getMcpHubServer(server.serverId)).not.toBeNull();
     expect(db.getProjectMcpBinding(project.id, project.rootPath, "claude", server.serverId)).not.toBeNull();
@@ -494,8 +501,9 @@ describe("McpHub", () => {
     const disabled = disableProjectMcpServer(db, project, "claude", "docs");
     const deleted = deleteMcpHubServer(db, "docs");
 
-    expect(disabled).toMatchObject({ removedBinding: false, modified: false });
+    expect(disabled).toMatchObject({ removedBinding: false, modified: false, backup: null });
     expect(deleted.modifiedFiles).toEqual([]);
+    expect(deleted.backups).toEqual([]);
     expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8")).mcpServers.docs).toMatchObject({ command: "node" });
     db.close();
   });

@@ -8,17 +8,17 @@ Status: ready-for-human
 
 ## What to build
 
-Add project-level manual rule sync for `AGENTS.md` and `CLAUDE.md`. The project detail toolbar gets a “规则同步” button that opens a modal, shows file status, lets users choose one direction, and applies the defined Git protection flow before overwriting target content.
+Add Project Group-level manual rule sync for `AGENTS.md` and `CLAUDE.md`. Each Root Group or Subproject Group exposes a “规则” action beside “新会话”; it expands the current group-scoped rule panel, shows file status, lets users choose one direction, supports preview-based `CLAUDE.md` template creation when no rule file exists, and applies the defined Git protection flow before overwriting target content.
 
 ## Acceptance criteria
 
-- [ ] Project detail has a “规则同步” button in the same top action area as “刷新项目” and “技能”.
-- [ ] The rule sync UI is a modal, not a side panel.
-- [ ] The modal only covers `AGENTS.md` and `CLAUDE.md`.
-- [ ] The modal shows each file's existence, last modified time, Git management state, and whether that file has uncommitted changes when Git data is available.
+- [ ] Each Root Group and Subproject Group has a “规则” action beside “新会话”.
+- [ ] The rule sync UI expands inline for the current Project Group instead of using a global modal or side panel.
+- [ ] The rule sync UI only covers `AGENTS.md` and `CLAUDE.md`.
+- [ ] The rule sync UI shows each file's existence, last modified time, Git management state, and whether that file has uncommitted changes when Git data is available.
 - [ ] `AGENTS.md -> CLAUDE.md` is disabled when `AGENTS.md` does not exist.
 - [ ] `CLAUDE.md -> AGENTS.md` is disabled when `CLAUDE.md` does not exist.
-- [ ] When both files do not exist, both directions are disabled and no create-rule action is shown.
+- [ ] When both files do not exist, both directions are disabled and a preview-based `CLAUDE.md` template create action is shown.
 - [ ] If the target file does not exist, sync writes it directly.
 - [ ] If the target file exists with identical content, sync is a no-op.
 - [ ] If the target file is Git-managed and has uncommitted content, sync silently stages and commits only that target rule file with `chore: 同步规则前备份 <file>`, then overwrites it.

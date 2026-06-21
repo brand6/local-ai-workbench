@@ -83,6 +83,15 @@ function configuredCommand(config: AppConfig, toolId: ToolId): string {
   return config.tools[toolId]?.command ?? defaultCommands[toolId];
 }
 
+function configuredCommandName(command: string): string {
+  const normalized = command.trim().replace(/^["']|["']$/g, "");
+  return (normalized.split(/[\\/]/).pop() ?? normalized).replace(/\.(cmd|exe|ps1|bat)$/i, "").toLowerCase();
+}
+
+function isOpenSourceTraeCliCommand(command: string): boolean {
+  return configuredCommandName(command) === "trae-cli";
+}
+
 const defaultCommands: Record<ToolId, string> = {
   codex: "codex",
   claude: "claude",
@@ -454,7 +463,8 @@ export const traeAdapter: ToolAdapter = {
     return status(this, config);
   },
   buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
-    return { command: configuredCommand(config, "trae"), args: [], cwd };
+    const command = configuredCommand(config, "trae");
+    return { command, args: isOpenSourceTraeCliCommand(command) ? ["interactive"] : [], cwd };
   },
   buildResumeCommand(): LaunchCommand {
     throw new Error("Trae CLI resume is not supported because the session history format is not documented");

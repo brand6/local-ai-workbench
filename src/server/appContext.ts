@@ -107,7 +107,7 @@ export class AppContext {
   }
 
   private initializeDataDir(dataDir: string, persistBootstrap: boolean): void {
-    this.projectServiceRuntime.stopAll();
+    if (this.databaseInstance) this.projectServiceRuntime.stopAll(this.databaseInstance);
     this.sessionIndexService?.stop();
     this.databaseInstance?.close();
     this.configInstance = ensureConfigFiles(dataDir);

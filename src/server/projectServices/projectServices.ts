@@ -27,6 +27,16 @@ interface RunningProjectService {
   stoppedAt: string | null;
   exitCode: number | null;
   stoppedByUser: boolean;
+  commandText: string;
+  cwd: string;
+}
+
+interface PersistedProjectServiceProcess {
+  serviceId: string;
+  pid: number;
+  startedAt: string;
+  commandText: string;
+  cwd: string;
 }
 
 export class ProjectServiceError extends Error {
@@ -43,10 +53,13 @@ export class ProjectServiceRuntime {
   private readonly processes = new Map<string, RunningProjectService>();
 
   list(database: AppDatabase): ProjectServiceList {
+    this.hydrate(database);
+    this.writeRuntimeRegistry(database);
     return { services: discoverProjectServices(database).map((service) => this.withRuntimeStatus(service)) };
   }
 
   start(database: AppDatabase, serviceId: string, options: { dryRun?: boolean } = {}): ProjectServiceStartResult {
+    this.hydrate(database);
     const service = findProjectService(database, serviceId);
     const existing = this.processes.get(serviceId);
     if (existing && this.isRunning(existing)) {
@@ -62,62 +75,57 @@ export class ProjectServiceRuntime {
         startedAt,
         stoppedAt: null,
         exitCode: null,
-        stoppedByUser: false
+        stoppedByUser: false,
+        commandText: service.commandText,
+        cwd: service.cwd
       });
       return { service: this.withRuntimeStatus(service), alreadyRunning: false, startedAt };
     }
 
-    const child = spawn(service.commandText, {
-      cwd: service.cwd,
-      shell: true,
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true
-    });
-    const running: RunningProjectService = {
-      serviceId,
-      child,
-      pid: child.pid ?? null,
-      startedAt,
-      stoppedAt: null,
-      exitCode: null,
-      stoppedByUser: false
-    };
+    const running = launchProjectServiceProcess(database, service, serviceId, startedAt);
+    const child = running.child;
+    const registryPath = runtimeRegistryPath(database);
     child.once("exit", (code) => {
       running.exitCode = code ?? null;
       running.stoppedAt = running.stoppedAt ?? nowIso();
+      writeRuntimeRegistryPath(registryPath, this.persistedRecords());
     });
-    child.once("error", () => {
+    child?.once("error", () => {
       running.exitCode = 1;
       running.stoppedAt = running.stoppedAt ?? nowIso();
+      writeRuntimeRegistryPath(registryPath, this.persistedRecords());
     });
-    child.unref();
+    child?.unref();
     this.processes.set(serviceId, running);
+    this.writeRuntimeRegistry(database);
 
     return { service: this.withRuntimeStatus(service), alreadyRunning: false, startedAt };
   }
 
   stop(database: AppDatabase, serviceId: string): ProjectServiceStopResult {
+    this.hydrate(database);
     const service = findProjectService(database, serviceId);
     const existing = this.processes.get(serviceId);
     const stoppedAt = nowIso();
-    if (!existing || !this.isRunning(existing)) {
+    if (existing) this.refreshExitState(existing);\r\n    if (!existing || !this.isRunning(existing)) {
       return { service: this.withRuntimeStatus(service), stoppedAt };
     }
 
     existing.stoppedByUser = true;
     existing.stoppedAt = stoppedAt;
     stopChildProcess(existing.child, existing.pid);
+    this.writeRuntimeRegistry(database);
     return { service: this.withRuntimeStatus(service), stoppedAt };
   }
 
-  stopAll(): void {
+  stopAll(database?: AppDatabase): void {
     for (const running of this.processes.values()) {
       if (!this.isRunning(running)) continue;
       running.stoppedByUser = true;
       running.stoppedAt = nowIso();
       stopChildProcess(running.child, running.pid);
     }
+    if (database) this.writeRuntimeRegistry(database);
   }
 
   private withRuntimeStatus(service: ProjectService): ProjectService {
@@ -143,9 +151,46 @@ export class ProjectServiceRuntime {
     };
   }
 
+  private hydrate(database: AppDatabase): void {
+    for (const record of readRuntimeRegistry(database)) {
+      if (!isProcessAlive(record.pid) || this.processes.has(record.serviceId)) continue;
+      this.processes.set(record.serviceId, {
+        serviceId: record.serviceId,
+        child: null,
+        pid: record.pid,
+        startedAt: record.startedAt,
+        stoppedAt: null,
+        exitCode: null,
+        stoppedByUser: false,
+        commandText: record.commandText,
+        cwd: record.cwd
+      });
+    }
+  }
+
+  private writeRuntimeRegistry(database: AppDatabase): void {
+    writeRuntimeRegistryPath(runtimeRegistryPath(database), this.persistedRecords());
+  }
+
+  private persistedRecords(): PersistedProjectServiceProcess[] {
+    return [...this.processes.values()].flatMap((running) => {
+      this.refreshExitState(running);\r\n      if (!this.isRunning(running) || !running.pid || !isProcessAlive(running.pid)) return [];
+      return [
+        {
+          serviceId: running.serviceId,
+          pid: running.pid,
+          startedAt: running.startedAt,
+          commandText: running.commandText,
+          cwd: running.cwd
+        }
+      ];
+    });
+  }
+
   private isRunning(service: RunningProjectService): boolean {
-    if (!service.child) return !service.stoppedByUser && service.stoppedAt === null;
-    return !service.stoppedByUser && service.child.exitCode === null && !service.child.killed && service.stoppedAt === null;
+    if (service.stoppedByUser || service.stoppedAt !== null) return false;
+    if (!service.child) return service.pid === null || isProcessAlive(service.pid);
+    return service.child.exitCode === null && !service.child.killed;
   }
 }
 
@@ -449,10 +494,57 @@ function formatCommandLine(parts: string[]): string {
   return parts.map((part) => (/\s/.test(part) ? `"${part.replaceAll("\"", "\\\"")}"` : part)).join(" ");
 }
 
+const runtimeRegistryFileName = "project-services-runtime.json";
+
+function runtimeRegistryPath(database: AppDatabase): string {
+  return path.join(database.dataDirectory(), runtimeRegistryFileName);
+}
+
+function readRuntimeRegistry(database: AppDatabase): PersistedProjectServiceProcess[] {
+  const filePath = runtimeRegistryPath(database);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    const services = (parsed as { services?: unknown }).services;
+    if (!Array.isArray(services)) return [];
+    return services.flatMap((entry): PersistedProjectServiceProcess[] => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+      const record = entry as Record<string, unknown>;
+      const serviceId = typeof record.serviceId === "string" ? record.serviceId : "";
+      const pid = typeof record.pid === "number" && Number.isFinite(record.pid) ? Math.trunc(record.pid) : 0;
+      const startedAt = typeof record.startedAt === "string" ? record.startedAt : "";
+      const commandText = typeof record.commandText === "string" ? record.commandText : "";
+      const cwd = typeof record.cwd === "string" ? record.cwd : "";
+      return serviceId && pid > 0 && startedAt && commandText && cwd ? [{ serviceId, pid, startedAt, commandText, cwd }] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function writeRuntimeRegistryPath(filePath: string, services: PersistedProjectServiceProcess[]): void {
+  try {
+    if (services.length === 0) {
+      fs.rmSync(filePath, { force: true });
+      return;
+    }
+    fs.writeFileSync(filePath, JSON.stringify({ services }, null, 2));
+  } catch {
+    // Best-effort runtime state only; the process can still be controlled in memory.
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "EPERM");
+  }
+}
 function stopChildProcess(child: ChildProcess | null, pid: number | null): void {
-  if (!child) return;
   if (!pid) {
-    child.kill();
+    child?.kill();
     return;
   }
   if (process.platform === "win32") {
@@ -462,6 +554,6 @@ function stopChildProcess(child: ChildProcess | null, pid: number | null): void 
   try {
     process.kill(-pid, "SIGTERM");
   } catch {
-    child.kill("SIGTERM");
+    child?.kill("SIGTERM");
   }
 }

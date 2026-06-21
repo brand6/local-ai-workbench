@@ -104,6 +104,51 @@ describe("Project Services API", () => {
     const afterStop = await request(app).get("/api/project-services").expect(200);
     expect(afterStop.body.services.find((service: { serviceId: string }) => service.serviceId === rootService.serviceId)).toMatchObject({ status: "stopped" });
   });
+  it("remembers running services after the manager restarts", async () => {
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), "project-services-persist-api-"));
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({ name: "persisted-service", scripts: { dev: "next dev" } }));
+
+    context = new AppContext(directory);
+    let app = await createHttpApp(context, { dev: false, serveClient: false });
+    await request(app)
+      .post("/api/projects")
+      .send({ rootPath: projectRoot, includeSubdirectories: false })
+      .expect(201);
+    const listed = await request(app).get("/api/project-services").expect(200);
+    const service = listed.body.services.find((candidate: { packageName: string }) => candidate.packageName === "persisted-service");
+    fs.writeFileSync(
+      path.join(directory, "project-services-runtime.json"),
+      JSON.stringify({
+        services: [
+          {
+            serviceId: service.serviceId,
+            pid: process.pid,
+            startedAt: "2026-06-01T00:00:00Z",
+            commandText: service.commandText,
+            cwd: service.cwd
+          }
+        ]
+      })
+    );
+
+    context.close();
+    context = new AppContext(directory);
+    app = await createHttpApp(context, { dev: false, serveClient: false });
+
+    const restored = await request(app).get("/api/project-services").expect(200);
+    expect(restored.body.services.find((candidate: { serviceId: string }) => candidate.serviceId === service.serviceId)).toMatchObject({
+      status: "running",
+      pid: process.pid
+    });
+
+    const startedAgain = await request(app)
+      .post(`/api/project-services/${encodeURIComponent(service.serviceId)}/start`)
+      .send({})
+      .expect(200);
+    expect(startedAgain.body).toMatchObject({ alreadyRunning: true, service: { serviceId: service.serviceId, status: "running", pid: process.pid } });
+  });
   it("lists project root batch launchers when no package script is available", async () => {
     directory = fs.mkdtempSync(path.join(os.tmpdir(), "project-services-bat-api-"));
     const projectRoot = path.join(directory, "flask-app");

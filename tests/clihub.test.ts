@@ -171,7 +171,7 @@ describe("CliHub", () => {
           provider: "installer-command",
           installCommand: ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://trae.cn/trae-cli/install.ps1 | iex"],
           updateCommand: ["traecli", "update"],
-          metadata: { docsUrl: "https://docs.trae.cn/cli_get-started-with-trae-cli" }
+          metadata: { docsUrl: "https://docs.trae.cn/cli_get-started-with-trae-cli", sourceRepo: "https://github.com/bytedance/trae-agent" }
         })
       ])
     );
