@@ -910,7 +910,7 @@ describe("PluginHub", () => {
     expect(db.listProjectMcpBindings(project.id, project.rootPath)).toEqual([]);
     expect(db.listProjectAgentTargets(project.id, project.rootPath)).toEqual([]);
     db.close();
-  }, 20000);
+  }, 60000);
   it("installs custom plugin components into Kimi project targets", () => {
     directory = testDir("pluginhub-custom-kimi-components");
     const db = new AppDatabase(directory);

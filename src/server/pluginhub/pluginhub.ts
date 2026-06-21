@@ -2765,7 +2765,7 @@ function removePluginHooksSection(toolId: ToolId, configPath: string): void {
     return;
   }
   delete base.hooks;
-  if (Object.keys(base).length === 0) {
+  if (isEffectivelyEmptyPluginJsonConfig(base)) {
     removeAnyPath(configPath);
     return;
   }
@@ -2922,6 +2922,12 @@ function isEmptyHooks(hooks: unknown): boolean {
 
 function hooksFingerprint(hooks: unknown): string {
   return crypto.createHash("sha256").update(stableJson(hooks)).digest("hex");
+}
+
+function isEffectivelyEmptyPluginJsonConfig(value: Record<string, unknown>): boolean {
+  const entries = Object.entries(value);
+  if (entries.length === 0) return true;
+  return entries.every(([key, item]) => ["mcpServers", "servers"].includes(key) && isRecord(item) && Object.keys(item).length === 0);
 }
 
 function stripJsonComments(input: string): string {
