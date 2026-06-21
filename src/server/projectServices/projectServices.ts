@@ -720,6 +720,67 @@ function encodePowerShellCommand(script: string): string {
 function quotePowerShell(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
+
+interface ExternalNodeProcess {
+  pid: number;
+  commandLine: string;
+}
+
+let externalNodeProcessSnapshot: { checkedAt: number; processes: ExternalNodeProcess[] } | null = null;
+const externalNodeProcessSnapshotTtlMs = 2000;
+
+function findExternalNextDevPid(service: ProjectService): number | null {
+  if (!isNextDevService(service)) return null;
+  const nextPackagePath = path.join(service.cwd, "node_modules", "next");
+  if (!fs.existsSync(nextPackagePath)) return null;
+
+  const needle = processCommandText(nextPackagePath);
+  for (const processInfo of listExternalNodeProcesses()) {
+    if (!isProcessAlive(processInfo.pid)) continue;
+    if (processCommandText(processInfo.commandLine).includes(needle)) return processInfo.pid;
+  }
+  return null;
+}
+
+function isNextDevService(service: ProjectService): boolean {
+  return /\bnext\s+dev\b/i.test(service.scriptCommand) || /\bnext\s+dev\b/i.test(service.commandText);
+}
+
+function listExternalNodeProcesses(): ExternalNodeProcess[] {
+  const now = Date.now();
+  if (externalNodeProcessSnapshot && now - externalNodeProcessSnapshot.checkedAt < externalNodeProcessSnapshotTtlMs) return externalNodeProcessSnapshot.processes;
+  const processes = process.platform === "win32" ? listWindowsNodeProcesses() : [];
+  externalNodeProcessSnapshot = { checkedAt: now, processes };
+  return processes;
+}
+
+function listWindowsNodeProcesses(): ExternalNodeProcess[] {
+  const script = "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process -Filter \"Name = 'node.exe'\" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress";
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-Command", script], {
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+    timeout: 3000,
+    windowsHide: true
+  });
+  if (result.status !== 0 || !result.stdout.trim()) return [];
+  try {
+    const parsed = JSON.parse(result.stdout) as unknown;
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    return entries.flatMap((entry): ExternalNodeProcess[] => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+      const record = entry as Record<string, unknown>;
+      const pid = typeof record.ProcessId === "number" && Number.isFinite(record.ProcessId) ? Math.trunc(record.ProcessId) : 0;
+      const commandLine = typeof record.CommandLine === "string" ? record.CommandLine : "";
+      return pid > 0 && commandLine ? [{ pid, commandLine }] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function processCommandText(value: string): string {
+  return value.replaceAll("/", "\\").toLowerCase();
+}
 const runtimeRegistryFileName = "project-services-runtime.json";
 
 function runtimeRegistryPath(database: AppDatabase): string {
