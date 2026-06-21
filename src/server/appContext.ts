@@ -102,7 +102,6 @@ export class AppContext {
   }
 
   close(): void {
-    this.projectServiceRuntime.stopAll();
     this.sessionIndexService?.stop();
     this.databaseInstance?.close();
   }

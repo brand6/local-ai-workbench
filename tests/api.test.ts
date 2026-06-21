@@ -145,6 +145,66 @@ describe("API", () => {
     expect(projects.body).toEqual([]);
   });
 
+  it("launches new sessions only for registered project group targets with enabled tools", async () => {
+    directory = testDir("api-launch-new-project-scope");
+    const projectRoot = path.join(directory, "repo");
+    const childRoot = path.join(projectRoot, "package-a");
+    fs.mkdirSync(childRoot, { recursive: true });
+    context = new AppContext(directory);
+    configureOnlyCodexAvailable(context);
+    const project = context.database().addProject(projectRoot, true).project;
+    context.database().replaceProjectToolTargets(project.id, ["codex"]);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+
+    const launched = await request(app)
+      .post("/api/launch/new")
+      .send({ toolId: "codex", cwd: childRoot, projectRootPath: projectRoot, dryRun: true })
+      .expect(200);
+
+    expect(launched.body).toMatchObject({ launched: true, command: { command: "node", cwd: childRoot }, reason: null });
+  });
+
+  it("rejects new sessions outside registered project scope", async () => {
+    directory = testDir("api-launch-new-project-boundary");
+    const projectRoot = path.join(directory, "repo");
+    const outsideRoot = path.join(directory, "outside");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.mkdirSync(outsideRoot, { recursive: true });
+    context = new AppContext(directory);
+    configureOnlyCodexAvailable(context);
+    const project = context.database().addProject(projectRoot, true).project;
+    context.database().replaceProjectToolTargets(project.id, ["codex"]);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+
+    await request(app)
+      .post("/api/launch/new")
+      .send({ toolId: "codex", cwd: outsideRoot, projectRootPath: projectRoot, dryRun: true })
+      .expect(400)
+      .expect((response) => expect(response.body).toMatchObject({ error: "targetRootPath-outside-project" }));
+
+    await request(app)
+      .post("/api/launch/new")
+      .send({ toolId: "codex", cwd: outsideRoot, projectRootPath: outsideRoot, dryRun: true })
+      .expect(404)
+      .expect((response) => expect(response.body).toMatchObject({ error: "project-not-found" }));
+  });
+
+  it("rejects new sessions when the tool is not enabled for the project", async () => {
+    directory = testDir("api-launch-new-disabled-tool");
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    context = new AppContext(directory);
+    configureOnlyCodexAvailable(context);
+    const project = context.database().addProject(projectRoot, true).project;
+    context.database().replaceProjectToolTargets(project.id, []);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+
+    await request(app)
+      .post("/api/launch/new")
+      .send({ toolId: "codex", cwd: projectRoot, projectRootPath: projectRoot, dryRun: true })
+      .expect(409)
+      .expect((response) => expect(response.body).toMatchObject({ error: "tool-disabled-for-project" }));
+  });
   it("serves the production index without local API token injection", async () => {
     directory = testDir("api-index-no-token");
     context = new AppContext(directory);

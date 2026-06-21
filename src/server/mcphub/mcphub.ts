@@ -15,6 +15,7 @@ import type {
   ProjectLocalMcpEntry,
   ProjectLocalMcpMigrationMode,
   ProjectLocalMcpMigrationResult,
+  ProjectLocalFileBackup,
   ProjectMcpApplyResult,
   ProjectMcpBinding,
   ProjectMcpDisableResult,
@@ -24,6 +25,7 @@ import type {
   ProjectConfigTargetId
 } from "../../shared/types.js";
 import { isMcpHubTargetToolId } from "../../shared/types.js";
+import { backupProjectLocalTarget } from "../core/projectBackups.js";
 import { openLocalPath } from "../core/localFilesystem.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";

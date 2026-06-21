@@ -1013,6 +1013,7 @@ export interface ProjectMcpApplyResult {
   server: McpHubServer;
   binding: ProjectMcpBinding;
   configPath: string;
+  backup: ProjectLocalFileBackup | null;
   warnings: string[];
 }
 
@@ -1024,6 +1025,7 @@ export interface ProjectMcpDisableResult {
   removedBinding: boolean;
   modified: boolean;
   configPath: string;
+  backup: ProjectLocalFileBackup | null;
   reason: string | null;
 }
 
@@ -1033,6 +1035,7 @@ export interface McpHubCleanupReport {
   bindingsRemoved: ProjectMcpBinding[];
   modifiedFiles: string[];
   skippedMissingFiles: string[];
+  backups: ProjectLocalFileBackup[];
   failures: Array<{ path: string; reason: string }>;
 }
 

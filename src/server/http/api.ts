@@ -1822,21 +1822,32 @@ export function installApi(app: Express, context: AppContext): void {
     const toolId = request.body?.toolId as ToolId;
     const cwd = stringBody(request, "cwd");
     const projectRootPath = stringBody(request, "projectRootPath");
-    if (!isToolId(toolId) || !cwd) {
-      response.status(400).json({ error: "toolId and cwd are required" });
+    if (!isToolId(toolId) || !cwd || !projectRootPath) {
+      response.status(400).json({ error: "toolId, cwd, and projectRootPath are required" });
       return;
     }
     const config = context.config();
+    const launchScope = projectLaunchScopeFromRequest(context, cwd, projectRootPath, response);
+    if (!launchScope) return;
+    const toolTarget = listProjectToolTargets(context.database(), launchScope.project, config).find((target) => target.toolId === toolId);
+    if (!toolTarget?.enabled) {
+      response.status(409).json({ error: "tool-disabled-for-project", reason: "该工具未在项目中启用" });
+      return;
+    }
     const status = adapterFor(toolId).detect(config);
+    if (!status.visibleInProjectUi || !status.capabilities.launchNew) {
+      response.status(409).json({ error: "tool-unavailable", reason: "该工具不支持项目新会话启动" });
+      return;
+    }
     if (!status.available) {
       response.status(409).json({ error: "tool-unavailable", reason: status.reason });
       return;
     }
-    const command = adapterFor(toolId).buildNewSessionCommand(config, cwd);
+    const command = adapterFor(toolId).buildNewSessionCommand(config, launchScope.targetRootPath);
     response.json(
       launchInTerminal(command, {
         dryRun: Boolean(request.body?.dryRun),
-        windowTarget: terminalWindowTarget(config.terminal.mode, { toolId, cwd, projectRootPath })
+        windowTarget: terminalWindowTarget(config.terminal.mode, { toolId, cwd: launchScope.targetRootPath, projectRootPath: launchScope.project.rootPath })
       })
     );
   });
@@ -2164,6 +2175,31 @@ function localSkillMigrationTargetBody(request: Request): ProjectLocalSkillMigra
   }
 
   return undefined;
+}
+
+function projectLaunchScopeFromRequest(context: AppContext, cwd: string, projectRootPath: string, response: Response) {
+  const project = context.database().getProjectByNormalizedPath(normalizeFsPath(projectRootPath));
+  if (!project) {
+    response.status(404).json({ error: "project-not-found" });
+    return null;
+  }
+
+  const normalizedCwd = normalizeFsPath(cwd);
+  if (!isPathInsideOrEqual(project.normalizedRootPath, normalizedCwd)) {
+    response.status(400).json({ error: "targetRootPath-outside-project" });
+    return null;
+  }
+
+  if (normalizedCwd !== project.normalizedRootPath && !project.includeSubdirectories) {
+    response.status(400).json({ error: "targetRootPath-requires-subdirectories" });
+    return null;
+  }
+
+  return {
+    project,
+    targetRootPath: displayPath(cwd),
+    normalizedTargetRootPath: normalizedCwd
+  };
 }
 
 function projectSkillScopeFromRequest(context: AppContext, request: Request, response: Response) {

@@ -70,7 +70,7 @@ export class ProjectServiceRuntime {
     const child = spawn(service.commandText, {
       cwd: service.cwd,
       shell: true,
-      detached: process.platform !== "win32",
+      detached: true,
       stdio: "ignore",
       windowsHide: true
     });
