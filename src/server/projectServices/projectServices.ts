@@ -61,16 +61,23 @@ export class ProjectServiceRuntime {
 
   list(database: AppDatabase): ProjectServiceList {
     this.hydrate(database);
+    const services = discoverProjectServices(database);
+    for (const service of services) this.adoptExternalService(database, service);
     this.writeRuntimeRegistry(database);
-    return { services: discoverProjectServices(database).map((service) => this.withRuntimeStatus(service)) };
+    return { services: services.map((service) => this.withRuntimeStatus(service)) };
   }
 
   start(database: AppDatabase, serviceId: string, options: { dryRun?: boolean } = {}): ProjectServiceStartResult {
     this.hydrate(database);
     const service = findProjectService(database, serviceId);
     const existing = this.processes.get(serviceId);
+    if (existing) this.refreshExitState(existing);
     if (existing && this.isRunning(existing)) {
       return { service: this.withRuntimeStatus(service), alreadyRunning: true, startedAt: existing.startedAt };
+    }
+    const adopted = this.adoptExternalService(database, service);
+    if (adopted && this.isRunning(adopted)) {
+      return { service: this.withRuntimeStatus(service), alreadyRunning: true, startedAt: adopted.startedAt };
     }
 
     const startedAt = nowIso();
@@ -182,6 +189,31 @@ export class ProjectServiceRuntime {
 
   private writeRuntimeRegistry(database: AppDatabase): void {
     writeRuntimeRegistryPath(runtimeRegistryPath(database), this.persistedRecords());
+  }
+
+  private adoptExternalService(database: AppDatabase, service: ProjectService): RunningProjectService | null {
+    const existing = this.processes.get(service.serviceId);
+    if (existing) {
+      this.refreshExitState(existing);
+      if (this.isRunning(existing)) return existing;
+    }
+
+    const pid = findExternalNextDevPid(service);
+    if (!pid) return null;
+    const running: RunningProjectService = {
+      serviceId: service.serviceId,
+      child: null,
+      pid,
+      startedAt: nowIso(),
+      stoppedAt: null,
+      exitCode: null,
+      stoppedByUser: false,
+      commandText: service.commandText,
+      cwd: service.cwd,
+      exitStatusPath: serviceExitStatusPath(database, service.serviceId)
+    };
+    this.processes.set(service.serviceId, running);
+    return running;
   }
 
   private persistedRecords(): PersistedProjectServiceProcess[] {
