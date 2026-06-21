@@ -269,9 +269,13 @@ function packageScripts(packageJson: PackageJson): Record<string, string> {
 }
 
 function startScriptNames(scripts: Record<string, string>): string[] {
-  return Object.keys(scripts)
-    .filter(isStartScriptName)
-    .sort((left, right) => scriptRank(left) - scriptRank(right) || left.localeCompare(right));
+  const scriptNames = Object.keys(scripts).filter(isStartScriptName);
+  const visibleScripts = scriptNames.includes("dev") ? scriptNames.filter((scriptName) => !isScriptFamily(scriptName, "start")) : scriptNames;
+  return visibleScripts.sort((left, right) => scriptRank(left) - scriptRank(right) || left.localeCompare(right));
+}
+
+function isScriptFamily(scriptName: string, family: string): boolean {
+  return scriptName === family || scriptName.startsWith(`${family}:`);
 }
 
 function isStartScriptName(scriptName: string): boolean {

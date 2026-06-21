@@ -26,7 +26,7 @@ describe("Project Services API", () => {
     fs.mkdirSync(appRoot, { recursive: true });
     fs.writeFileSync(
       path.join(projectRoot, "package.json"),
-      JSON.stringify({ name: "root-service", workspaces: ["packages/*"], scripts: { dev: devScript, test: "vitest" } })
+      JSON.stringify({ name: "root-service", workspaces: ["packages/*"], scripts: { dev: devScript, start: "node dist/server.js", test: "vitest" } })
     );
     fs.writeFileSync(
       path.join(appRoot, "package.json"),
@@ -60,6 +60,14 @@ describe("Project Services API", () => {
           commandText: "pnpm run start",
           cwd: appRoot,
           status: "stopped"
+        })
+      ])
+    );
+    expect(listed.body.services).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          packageName: "root-service",
+          scriptName: "start"
         })
       ])
     );
