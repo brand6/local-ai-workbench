@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultAppConfig } from "../src/server/core/bootstrap.js";
+import { clearCommandAvailabilityCache } from "../src/server/core/commandAvailability.js";
 import { buildTerminalHost, launchInTerminal, terminalWindowTarget } from "../src/server/launch/terminal.js";
 import {
   adapterFor,
@@ -22,6 +23,7 @@ let directory: string | null = null;
 afterEach(() => {
   if (directory) cleanup(directory);
   directory = null;
+  clearCommandAvailabilityCache();
 });
 
 describe("tool adapters and terminal launcher", () => {
@@ -104,11 +106,42 @@ describe("tool adapters and terminal launcher", () => {
     expect(adapterFor("deepcode").buildResumeCommand(config, { ...session, toolId: "deepcode" }).args).toEqual(["-p", "/resume s1"]);
     expect(adapterFor("reasonix").buildResumeCommand(config, { ...session, toolId: "reasonix" }).args).toEqual(["code", "--session", "s1"]);
     expect(adapterFor("reasonix").buildNewSessionCommand(config, "E:\\repo").args).toEqual(["code"]);
-    expect(adapterFor("trae").buildNewSessionCommand(config, "E:\\repo")).toEqual({ command: "traecli", args: [], cwd: "E:\\repo" });
+    const traeNewSession = adapterFor("trae").buildNewSessionCommand(config, "E:\\repo");
+    expect(path.basename(traeNewSession.command).toLowerCase()).toMatch(/^traecli(\.exe)?$/);
+    expect(traeNewSession).toMatchObject({ args: [], cwd: "E:\\repo" });
 
-    expect(adapterFor("trae").capabilities).toMatchObject({ launchNew: true, scanHistory: false, resume: false });
+    expect(adapterFor("trae").buildResumeCommand(config, { ...session, toolId: "trae" }).args).toEqual(["--resume", "s1"]);
+    expect(adapterFor("trae").capabilities).toMatchObject({ launchNew: true, scanHistory: false, resume: true });
     expect(adapterFor("trae").defaultSessionSources()).toEqual([]);
-    expect(() => adapterFor("trae").buildResumeCommand(config, { ...session, toolId: "trae" })).toThrow("Trae CLI resume is not supported");
+  });
+
+  it("resolves TRAE CLI from the official Windows install directory when PATH is stale", () => {
+    if (process.platform !== "win32") return;
+    directory = testDir("launch-trae-official-install");
+    const binDir = path.join(directory, "trae-cli", "bin");
+    const executable = path.join(binDir, "trae-cli.exe");
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(executable, "", "utf8");
+    const originalLocalAppData = process.env.LOCALAPPDATA;
+    const originalPath = process.env.PATH;
+    const originalPathCase = process.env.Path;
+    process.env.LOCALAPPDATA = directory;
+    process.env.PATH = "";
+    process.env.Path = "";
+    clearCommandAvailabilityCache();
+
+    try {
+      const config = defaultAppConfig();
+      config.tools.trae.command = "trae-cli";
+      expect(adapterFor("trae").detect(config)).toMatchObject({ available: true, command: executable });
+      expect(adapterFor("trae").buildNewSessionCommand(config, "E:\\repo")).toEqual({ command: executable, args: [], cwd: "E:\\repo" });
+    } finally {
+      process.env.LOCALAPPDATA = originalLocalAppData;
+      process.env.PATH = originalPath;
+      if (originalPathCase === undefined) delete process.env.Path;
+      else process.env.Path = originalPathCase;
+      clearCommandAvailabilityCache();
+    }
   });
 
   it("exposes project-visible tools from adapter capabilities instead of hard-coded ids", () => {

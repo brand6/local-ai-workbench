@@ -80,9 +80,34 @@ export function preferredProjectSkillDirectory(toolId: ToolId, projectRoot: stri
 }
 
 function configuredCommand(config: AppConfig, toolId: ToolId): string {
-  return config.tools[toolId]?.command ?? defaultCommands[toolId];
+  const command = config.tools[toolId]?.command ?? defaultCommands[toolId];
+  if (toolId === "trae") return resolveTraeCommand(command);
+  return command;
 }
 
+function resolveTraeCommand(command: string): string {
+  if (commandAvailable(command)) return command;
+  if (process.platform !== "win32") return command;
+  const name = commandName(command);
+  if (!["trae", "trae-cli", "traecli", "ta", "trae-agent"].includes(name)) return command;
+  const localAppData = process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local");
+  const binDir = path.join(localAppData, "trae-cli", "bin");
+  const preferredNames = uniqueStrings([`${name}.exe`, "traecli.exe", "trae-cli.exe", "ta.exe", "trae-agent.exe"]);
+  for (const fileName of preferredNames) {
+    const candidate = path.join(binDir, fileName);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return command;
+}
+
+function commandName(command: string): string {
+  const normalized = command.trim().replace(/^["']|["']$/g, "");
+  return (normalized.split(/[\\/]/).pop() ?? normalized).replace(/\.(cmd|exe|ps1|bat)$/i, "").toLowerCase();
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
+}
 
 const defaultCommands: Record<ToolId, string> = {
   codex: "codex",
@@ -443,7 +468,7 @@ export const traeAdapter: ToolAdapter = {
   id: "trae",
   parserVersion: "trae-cli-undocumented-v1",
   sourceFormat: "trae-cli-undocumented",
-  capabilities: { launchNew: true, scanHistory: false, resume: false },
+  capabilities: { launchNew: true, scanHistory: false, resume: true },
   visibleInProjectUi: true,
   defaultSessionSources(): string[] {
     return [];
@@ -457,8 +482,10 @@ export const traeAdapter: ToolAdapter = {
   buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
     return { command: configuredCommand(config, "trae"), args: [], cwd };
   },
-  buildResumeCommand(): LaunchCommand {
-    throw new Error("Trae CLI resume is not supported because the session history format is not documented");
+  buildResumeCommand(config: AppConfig, session: SessionEntry): LaunchCommand {
+    if (!session.nativeSessionId) throw new Error("Trae CLI session is missing native session id");
+    if (!session.originalCwd) throw new Error("Trae CLI session is missing cwd");
+    return { command: configuredCommand(config, "trae"), args: ["--resume", session.nativeSessionId], cwd: session.originalCwd };
   }
 };
 
