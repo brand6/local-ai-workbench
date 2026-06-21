@@ -52,7 +52,7 @@ import { applyProjectMcpServer, disableProjectMcpServer, importMcpHubJson, listM
 
 type SessionProjectToolTarget = ProjectToolTarget & { toolId: ToolId };
 type PluginMcpTargetToolId = Extract<McpHubTargetToolId, ToolId>;
-type NativePluginToolId = Extract<ToolId, "claude" | "codex" | "qwen">;
+type NativePluginToolId = Extract<ToolId, "claude" | "codex">;
 
 interface DiscoveredPlugin {
   name: string;
@@ -1728,8 +1728,7 @@ function nativePackageInstallPlans(
 
 function nativePluginPackageRoot(projectRoot: string, toolId: NativePluginToolId, pluginName: string): string {
   if (toolId === "claude") return path.join(projectRoot, ".pluginhub", "claude-marketplace", "plugins", pluginName);
-  if (toolId === "codex") return path.join(projectRoot, "plugins", pluginName);
-  return path.join(projectRoot, ".qwen", "extensions", pluginName);
+  return path.join(projectRoot, "plugins", pluginName);
 }
 
 function nativePluginMarketplacePath(projectRoot: string, toolId: "claude" | "codex"): string {
@@ -1746,7 +1745,7 @@ function materializeNativePluginPackage(database: AppDatabase, project: Project,
   writePluginMcpToNativePackage(database, plugin, plan);
   writePluginHooksToNativePackage(database, plugin, plan);
   ensureNativePluginManifest(plugin, plan);
-  if (plan.toolId !== "qwen") upsertNativePluginMarketplace(plugin, plan);
+  upsertNativePluginMarketplace(plugin, plan);
   if (plan.toolId === "claude") upsertClaudeProjectPluginSettings(plan);
 }
 
@@ -1778,18 +1777,6 @@ function nativePackageFileSelection(plugin: PluginPackagePathPlugin, toolId: Nat
     return selection;
   }
 
-  if (toolId === "qwen") {
-    const manifestPath = "qwen-extension.json";
-    addNativePackageReference(selection, manifestPath);
-    addManifestReferences(plugin, selection, manifestPath);
-    addNativePackagePrefix(selection, "commands/");
-    if (nativeHookPayloadForTool(null, plugin, "qwen") !== null) addNativePackagePrefix(selection, "hooks/");
-    addToolRootReferences(plugin, selection, "CLAUDE_PLUGIN_ROOT");
-    addToolRootReferences(plugin, selection, "CODEX_PLUGIN_ROOT");
-    addToolRootReferences(plugin, selection, "QWEN_EXTENSION_ROOT");
-    addToolRootReferences(plugin, selection, "extensionPath");
-    return selection;
-  }
 
   const manifestPath = ".codex-plugin/plugin.json";
   addNativePackagePrefix(selection, ".codex-plugin/");
@@ -1927,7 +1914,7 @@ function copyPluginSkillsToNativePackage(database: AppDatabase, plugin: PluginHu
 }
 
 function copyPluginAgentsToNativePackage(database: AppDatabase, project: Project, plugin: PluginHubPlugin, plan: NativePackageInstallPlan): void {
-  if (plan.toolId !== "claude" && plan.toolId !== "qwen") return;
+  if (plan.toolId !== "claude") return;
   for (const ref of plugin.componentRefs.filter((item) => item.type === "agent")) {
     const rendered = renderAgentForTool(database, ref.componentId, plan.toolId, project.rootPath);
     const targetPath = safeJoin(plan.packageRoot, path.join("agents", `${rendered.agent.slug}.md`));
@@ -1958,10 +1945,9 @@ function writePluginMcpToNativePackage(database: AppDatabase, plugin: PluginHubP
 }
 
 function nativePackageMcpConfigPath(plan: NativePackageInstallPlan): string {
-  return plan.toolId === "qwen" ? safeJoin(plan.packageRoot, "qwen-extension.json") : safeJoin(plan.packageRoot, ".mcp.json");
+  return safeJoin(plan.packageRoot, ".mcp.json");
 }
 function writePluginHooksToNativePackage(database: AppDatabase, plugin: PluginHubPlugin, plan: NativePackageInstallPlan): void {
-  if (plan.toolId === "qwen") return;
   if (!isHookHubSupportedToolId(plan.toolId)) return;
   const hooks = plugin.componentRefs.flatMap((ref) => {
     if (ref.type !== "hook") return [];
@@ -1988,17 +1974,6 @@ function ensureNativePluginManifest(plugin: PluginHubPlugin, plan: NativePackage
     return;
   }
 
-  if (plan.toolId === "qwen") {
-    const manifestPath = safeJoin(plan.packageRoot, "qwen-extension.json");
-    const existing = readJsonObject(manifestPath);
-    writeJsonObject(manifestPath, {
-      ...existing,
-      name: plan.pluginName,
-      version: stringValue(existing.version) ?? "1.0.0",
-      description: stringValue(existing.description) ?? plugin.description ?? plugin.displayName
-    });
-    return;
-  }
 
   const manifestPath = safeJoin(plan.packageRoot, path.join(".codex-plugin", "plugin.json"));
   const existing = readJsonObject(manifestPath);
@@ -2058,24 +2033,8 @@ function upsertClaudeProjectPluginSettings(plan: NativePackageInstallPlan): void
   writeJsonObject(plan.settingsPath, { ...settings, extraKnownMarketplaces, enabledPlugins });
 }
 
-function mcpServerPluginPayloadForTool(server: McpHubServer, toolId: NativePluginToolId): Record<string, unknown> {
-  if (toolId !== "qwen") return mcpServerPluginPayload(server);
-  if (server.transport === "http") {
-    return {
-      ...(server.name ? { name: server.name } : {}),
-      ...(server.description ? { description: server.description } : {}),
-      ...(server.url ? { httpUrl: server.url } : {}),
-      ...(Object.keys(server.headers).length > 0 ? { headers: server.headers } : {}),
-      ...(Object.keys(server.env).length > 0 ? { env: server.env } : {})
-    };
-  }
-  return {
-    ...(server.name ? { name: server.name } : {}),
-    ...(server.description ? { description: server.description } : {}),
-    command: server.command,
-    args: server.args,
-    ...(Object.keys(server.env).length > 0 ? { env: server.env } : {})
-  };
+function mcpServerPluginPayloadForTool(server: McpHubServer, _toolId: NativePluginToolId): Record<string, unknown> {
+  return mcpServerPluginPayload(server);
 }
 function mcpServerPluginPayload(server: McpHubServer): Record<string, unknown> {
   if (server.transport === "http") {
@@ -2458,7 +2417,6 @@ function mcpOwnershipItem(
 function nativePackageComponentOwnership(database: AppDatabase, plugin: PluginHubPlugin, plan: NativePackageInstallPlan): ProjectPluginComponentOwnership[] {
   return plugin.componentRefs.flatMap((ref) => {
     if (plan.toolId === "codex" && ref.type === "agent") return [];
-    if (plan.toolId === "qwen" && ref.type === "hook") return [];
     const targetPath = nativePackageComponentTargetPath(database, ref, plan);
     if (!targetPath) return [];
     return [
