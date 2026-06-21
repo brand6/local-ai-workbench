@@ -35,24 +35,20 @@ describe("Project CLI API", () => {
 
     const added = await request(app)
       .post("/api/projects")
-      .set("x-local-api-token", context.token)
       .send({ rootPath: projectRoot, includeSubdirectories: true })
       .expect(201);
 
     await request(app)
       .post("/api/clihub/discovery/refresh")
-      .set("x-local-api-token", context.token)
       .send({ cliId: "git", includeDetails: false })
       .expect(200);
     await request(app)
       .post("/api/clihub/discovery/refresh")
-      .set("x-local-api-token", context.token)
       .send({ cliId: "gh", includeDetails: false })
       .expect(200);
 
     const listed = await request(app)
       .get(`/api/projects/${added.body.project.id}/cli-actions`)
-      .set("x-local-api-token", context.token)
       .expect(200);
 
     expect(listed.body.groups).toEqual(
@@ -119,7 +115,6 @@ describe("Project CLI API", () => {
 
     const ran = await request(app)
       .post(`/api/projects/${added.body.project.id}/cli-actions/commands/${encodeURIComponent("git")}/execute`)
-      .set("x-local-api-token", context.token)
       .send({ commandId: "status", argsText: "--ignored", dryRun: true })
       .expect(200);
     expect(ran.body).toMatchObject({
@@ -136,7 +131,7 @@ describe("Project CLI API", () => {
       launch: {
         launched: true,
         host: expectedProjectCliTerminalHost(),
-        command: { command: "git", args: ["status", "--short", "--ignored"], cwd: projectRoot }
+        command: { command: gitPath, args: ["status", "--short", "--ignored"], cwd: projectRoot }
       }
     });
     expect(runner.executed).toEqual([]);
@@ -154,20 +149,17 @@ describe("Project CLI API", () => {
 
     const added = await request(app)
       .post("/api/projects")
-      .set("x-local-api-token", context.token)
       .send({ rootPath: projectRoot, includeSubdirectories: true })
       .expect(201);
 
     const empty = await request(app)
       .get(`/api/projects/${added.body.project.id}/cli-actions`)
       .query({ targetRootPath: childRoot })
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(empty.body.groups).toEqual([]);
 
     const customCodeGraph = await request(app)
       .post("/api/clihub/custom/install-command")
-      .set("x-local-api-token", context.token)
       .send({ installCommand: "npm install -g @colbymchenry/codegraph", displayName: "CodeGraph" })
       .expect(201);
     expect(customCodeGraph.body).toMatchObject({
@@ -179,7 +171,6 @@ describe("Project CLI API", () => {
     const unavailable = await request(app)
       .get(`/api/projects/${added.body.project.id}/cli-actions`)
       .query({ targetRootPath: childRoot })
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(unavailable.body.groups[0].availability).toMatchObject({
       state: "unavailable",
@@ -190,14 +181,12 @@ describe("Project CLI API", () => {
     runner.runs[`${codegraphPath} --version`] = { exitCode: 0, stdout: "codegraph 0.4.0", stderr: "" };
     await request(app)
       .post("/api/clihub/discovery/refresh")
-      .set("x-local-api-token", context.token)
       .send({ cliId: customCodeGraph.body.cliId })
       .expect(200);
 
     const listed = await request(app)
       .get(`/api/projects/${added.body.project.id}/cli-actions`)
       .query({ targetRootPath: childRoot })
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(listed.body).toMatchObject({
       projectId: added.body.project.id,
@@ -232,7 +221,6 @@ describe("Project CLI API", () => {
 
     const status = await request(app)
       .post(`/api/projects/${added.body.project.id}/cli-actions/${encodeURIComponent("codegraph:status")}/execute`)
-      .set("x-local-api-token", context.token)
       .send({ targetRootPath: childRoot, dryRun: true })
       .expect(200);
     expect(status.body).toMatchObject({
@@ -244,13 +232,12 @@ describe("Project CLI API", () => {
       launch: {
         launched: true,
         host: expectedProjectCliTerminalHost(),
-        command: { command: "codegraph", args: ["status"], cwd: childRoot }
+        command: { command: codegraphPath, args: ["status"], cwd: childRoot }
       }
     });
 
     const launched = await request(app)
       .post(`/api/projects/${added.body.project.id}/cli-actions/${encodeURIComponent("codegraph:init")}/execute`)
-      .set("x-local-api-token", context.token)
       .send({ targetRootPath: childRoot, dryRun: true })
       .expect(200);
     expect(launched.body).toMatchObject({
@@ -258,7 +245,7 @@ describe("Project CLI API", () => {
       status: "launched",
       launch: {
         launched: true,
-        command: { command: "codegraph", args: ["init", "-i"], cwd: childRoot }
+        command: { command: codegraphPath, args: ["init", "-i"], cwd: childRoot }
       }
     });
     expect(runner.executed).not.toContain("codegraph status");
@@ -266,14 +253,12 @@ describe("Project CLI API", () => {
 
     await request(app)
       .post(`/api/projects/${added.body.project.id}/cli-actions/${encodeURIComponent("codegraph:missing")}/execute`)
-      .set("x-local-api-token", context.token)
       .send({ targetRootPath: childRoot })
       .expect(404);
 
     await request(app)
       .get(`/api/projects/${added.body.project.id}/cli-actions`)
       .query({ targetRootPath: path.join(directory, "outside") })
-      .set("x-local-api-token", context.token)
       .expect(400);
   });
 });

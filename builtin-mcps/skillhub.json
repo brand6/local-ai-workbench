@@ -1,0 +1,12 @@
+{
+  "serverId": "skillhub",
+  "name": "skillhub",
+  "description": "搜索本地 SkillHub 技能库中的可用技能。由本应用托管。",
+  "transport": "http",
+  "command": null,
+  "args": [],
+  "url": "${APP_URL}/mcp",
+  "headers": {},
+  "env": {},
+  "requiredEnv": []
+}

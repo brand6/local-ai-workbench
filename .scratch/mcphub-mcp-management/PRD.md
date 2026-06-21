@@ -4,11 +4,11 @@ Status: ready-for-human
 
 ## Problem Statement
 
-用户在本机同时使用 Claude Code、Codex、OpenCode 等多个 AI coding 工具，每个工具都有自己的 MCP 配置位置和格式。相同的 MCP server 往往需要在多个项目、多个工具里重复维护；已有项目里也可能已经存在手写的 `.mcp.json`、`.codex/config.toml` 或 `opencode.json`。用户希望像 SkillHub 管理技能一样管理 MCP：有一个全局中心库，有项目上下文里的启用入口，并且能把本地已有配置迁移到中心库。
+用户在本机同时使用 Claude Code、Codex、OpenCode 等多个 AI coding 工具，也可能使用 ZCode 这类不通过本系统打开会话的项目配置目标。每个目标都有自己的 MCP 配置位置和格式。相同的 MCP server 往往需要在多个项目、多个目标里重复维护；已有项目里也可能已经存在手写的 `.mcp.json`、`.codex/config.toml`、`opencode.json` 或目标自有配置。用户希望像 SkillHub 管理技能一样管理 MCP：有一个全局中心库，有项目上下文里的启用入口，并且能把本地已有配置迁移到中心库。
 
 项目当前已经支持 root/subproject 会话分组和项目内 SkillHub 管理。MCP 管理需要沿用这个项目/子项目语义：顶部 Hub 入口只管理中心库，项目详情中的每个 root/subproject group 才管理该工作目录实际使用的 MCP。否则父项目和子项目会把 MCP 配置写到错误目录，或者让用户无法分辨某个配置到底对哪个工作目录生效。
 
-MCP 配置格式也不能直接按工具原样存储。Claude Code、Codex 和 OpenCode 对同一类 MCP server 的配置字段和文件结构不同；如果 McpHub 保存多份成品配置，后续导入、更新和迁移会迅速变成格式同步问题。McpHub 应保存规范化核心模型，分发时按目标工具结构化写入。
+MCP 配置格式也不能直接按工具原样存储。Claude Code、Codex、OpenCode 和非会话配置目标对同一类 MCP server 的配置字段和文件结构可能不同；例如 ZCode 工作区原生格式是 `.zcode/config.json` 的 `mcp.servers`，而 `.agents/mcp.json` 的 `mcpServers` 只是兼容兜底来源。如果 McpHub 保存多份成品配置，后续导入、更新和迁移会迅速变成格式同步问题。McpHub 应保存规范化核心模型，分发时按目标配置结构写入。
 
 ## Solution
 
@@ -19,13 +19,14 @@ MCP 配置格式也不能直接按工具原样存储。Claude Code、Codex 和 O
 - `本地 MCP`：读取当前 group path 下真实存在的 MCP 配置文件，展示本地 MCP entries，并允许把本地未管理 MCP 迁移到 McpHub。
 - `McpHub MCP`：展示全局 McpHub 中心库中的 server，允许把 server 应用到当前 group path 的支持工具，或者取消已接管/已应用的 server。
 
-McpHub 中心库只保存规范化核心 MCP server。MVP 支持 `stdio` 和 `http` 两种 transport；支持的目标工具是现有 `ToolId` 里的 `claude`、`codex` 和 `opencode`。不额外引入独立 MCP target id，不支持的工具不在项目 MCP 面板里显示。
+McpHub 中心库只保存规范化核心 MCP server。MVP 支持 `stdio` 和 `http` 两种 transport；支持目标从 `ToolId` 扩展为 Project Config Target：会话型目标可以是 `claude`、`codex`、`opencode` 等，非会话型目标可以是 ZCode。McpHub 支持某个 Project Config Target 只代表能写项目 MCP 配置，不代表能打开会话、扫描历史或 Resume；不支持的目标不在项目 MCP 面板里显示。
 
 分发时按当前 group path 写项目级配置：
 
 - `claude` 写 `<groupPath>/.mcp.json` 的 `mcpServers`。
 - `codex` 写 `<groupPath>/.codex/config.toml` 的 `mcp_servers`。
 - `opencode` 写 `<groupPath>/opencode.json` 的 `mcp`。
+- `zcode` 按官方 ZCode 工作区原生格式写 `<groupPath>/.zcode/config.json` 的 `mcp.servers`。不得写成 `.zcode/mcp.json`；`.agents/mcp.json` 只是 ZCode 的兼容兜底来源，不是设置面板写回目标。
 
 写入采用结构化编辑：读取已有文件，解析为 JSON/TOML/JSON5 结构，更新或删除指定 server entry，再序列化写回。其它 server 和其它根字段保留；不做字节级格式保留，也不做复杂 diff preview。同名 entry 在应用时由 McpHub 的规范化配置覆盖。
 
@@ -45,7 +46,7 @@ MVP 不保存真实 secret，不写系统或用户级环境变量。用户自行
 
 1. As a local AI tool user, I want a top-level `McpHub` entry, so that I can manage MCP server definitions from one central library.
 2. As a local AI tool user, I want McpHub to be independent from projects, so that the center library does not mix global server definitions with project-specific bindings.
-3. As a local AI tool user, I want McpHub to store normalized MCP server definitions, so that one server can be distributed to Claude Code, Codex, and OpenCode.
+3. As a local AI tool user, I want McpHub to store normalized MCP server definitions, so that one server can be distributed to Claude Code, Codex, OpenCode, and supported non-session project config targets.
 4. As a local AI tool user, I want JSON-only MCP import and editing, so that I can paste examples from MCP documentation without filling many form fields.
 5. As a local AI tool user, I want pasted JSON to accept common MCP shapes, so that Claude-style, VS Code/Copilot-style, OpenCode-style, and plain server maps can all be imported.
 6. As a local AI tool user, I want pasted JSON to tolerate small bracket and formatting mistakes, so that copying partial snippets does not force manual cleanup every time.
@@ -62,7 +63,7 @@ MVP 不保存真实 secret，不写系统或用户级环境变量。用户自行
 17. As a local AI tool user, I want missing required env values to warn but not block writing, so that different tool launch environments are still supported.
 18. As a local AI tool user, I want every project root and subproject group to have an `MCP` entry, so that I can manage MCP for the exact working directory shown in project detail.
 19. As a local AI tool user, I want the project `MCP` panel to have `本地 MCP` and `McpHub MCP` tabs, so that local discovery and center-library application are not mixed.
-20. As a local AI tool user, I want `本地 MCP` to read `.mcp.json`, `.codex/config.toml`, and `opencode.json`, so that I can see what the current directory actually exposes to tools.
+20. As a local AI tool user, I want `本地 MCP` to read `.mcp.json`, `.codex/config.toml`, `opencode.json`, and supported non-session target config files, so that I can see what the current directory actually exposes to tools.
 21. As a local AI tool user, I want `本地 MCP` to show unmanaged entries without editing them, so that McpHub does not become a general local config editor.
 22. As a local AI tool user, I want to migrate unmanaged local MCP entries into McpHub, so that existing hand-written project config can be brought under central management.
 23. As a local AI tool user, I want local MCP migration to normalize the entry rather than preserve original format, so that future distribution uses one core model.
@@ -73,14 +74,15 @@ MVP 不保存真实 secret，不写系统或用户级环境变量。用户自行
 28. As a local AI tool user, I want applying a server to `claude` to write the current group `.mcp.json`, so that Claude Code can read project-level MCP config.
 29. As a local AI tool user, I want applying a server to `codex` to write the current group `.codex/config.toml`, so that Codex can read project-level MCP config.
 30. As a local AI tool user, I want applying a server to `opencode` to write the current group `opencode.json`, so that OpenCode can read project-level MCP config.
-31. As a local AI tool user, I want `${PROJECT_ROOT}` to expand to the current project or subproject group path, so that built-in and reusable configs work across directories.
-32. As a local AI tool user, I want disabling a managed server to delete only the matching managed entry from the current target config, so that unrelated local config is preserved.
-33. As a local AI tool user, I want deleting a center server to clean only entries McpHub previously managed, so that unmanaged local MCP is not removed.
-34. As a local AI tool user, I want unsupported tools to be hidden from the project MCP panel, so that I only see targets McpHub can actually write.
-35. As a developer of the manager, I want McpHub to follow SkillHub's center-library plus project-panel model, so that users do not need to learn a separate product shape.
-36. As a developer of the manager, I want MCP format conversion isolated per tool, so that target-specific config differences do not leak into the center model.
-37. As a developer of the manager, I want structure-aware file writes, so that MCP entries can be updated without rewriting unrelated tool settings.
-38. As a developer of the manager, I want external behavior tests around import, migration, application, and deletion, so that the feature is verified through user-visible flows.
+31. As a local AI tool user, I want applying a server to `zcode` to write the current group `.zcode/config.json` under `mcp.servers`, so that ZCode can consume official workspace-level MCP config without being treated as a session CLI.
+32. As a local AI tool user, I want `${PROJECT_ROOT}` to expand to the current project or subproject group path, so that built-in and reusable configs work across directories.
+33. As a local AI tool user, I want disabling a managed server to delete only the matching managed entry from the current target config, so that unrelated local config is preserved.
+34. As a local AI tool user, I want deleting a center server to clean only entries McpHub previously managed, so that unmanaged local MCP is not removed.
+35. As a local AI tool user, I want unsupported targets to be hidden from the project MCP panel, so that I only see targets McpHub can actually write.
+36. As a developer of the manager, I want McpHub to follow SkillHub's center-library plus project-panel model, so that users do not need to learn a separate product shape.
+37. As a developer of the manager, I want MCP format conversion isolated per target, so that target-specific config differences do not leak into the center model.
+38. As a developer of the manager, I want structure-aware file writes, so that MCP entries can be updated without rewriting unrelated tool settings.
+39. As a developer of the manager, I want external behavior tests around import, migration, application, and deletion, so that the feature is verified through user-visible flows.
 
 ## Implementation Decisions
 
@@ -92,14 +94,17 @@ MVP 不保存真实 secret，不写系统或用户级环境变量。用户自行
 - `McpHub MCP` shows only center-library server definitions and the current group bindings.
 - The center library stores normalized server definitions, not Claude/Codex/OpenCode raw formats.
 - MVP supports only `stdio` and `http`; `sse` is out of scope.
-- MVP supports only `claude`, `codex`, and `opencode`; unsupported tools are hidden from project MCP management.
-- The implementation uses existing `ToolId` values rather than adding a separate MCP target id type in MVP.
+- Target support is based on Project Config Target definitions, not only `ToolId`. Session tools and non-session targets share the same project-side Apply/Disable model, but only Session Tools participate in launch, scan, and Resume flows.
+- ZCode is a supported non-session MCP target using the official workspace config `<groupPath>/.zcode/config.json` with nested `mcp.servers`. ZCode also documents `.agents/mcp.json` with `mcpServers` as a compatibility fallback, but `.zcode/config.json` has priority and is the correct writeback target.
+- Unsupported tools or targets are hidden from project MCP management.
+- The implementation uses Project Config Target ids for project-side MCP targets, while preserving `ToolId` for session-capable tools.
 - `serverId` is globally unique and immutable after creation.
 - The persisted binding identity includes the parent project, target group path, tool id, server id, last applied server id, and applied timestamp.
 - McpHub deletes only entries for which it has an applied/managed record.
 - Applying to Claude Code writes project-level `.mcp.json` with a top-level `mcpServers` map.
 - Applying to Codex writes project-level `.codex/config.toml` with `mcp_servers`.
 - Applying to OpenCode writes project-level `opencode.json` with `mcp`, converting `stdio` to local and `http` to remote.
+- Applying to ZCode writes project-level `.zcode/config.json` with a nested `mcp.servers` map and does not create any CliHub/session capability.
 - File writes are structure-aware: JSON/TOML/JSON5 is parsed, the specific MCP entry is changed, and the file is serialized back.
 - The app does not promise byte-for-byte formatting preservation.
 - The app does not provide a full diff preview before writing.
@@ -124,8 +129,8 @@ MVP 不保存真实 secret，不写系统或用户级环境变量。用户自行
 - Tests should verify external behavior at storage, API, file-renderer, and UI seams rather than implementation internals.
 - Storage tests should cover center MCP servers, immutable server ids, project group bindings, applied ownership records, and cascade/cleanup behavior.
 - Import tests should cover multiple JSON shapes, repaired snippets, multiple server imports, complete update, patch update, incomplete failure, and unsupported transport failure.
-- Renderer tests should cover Claude `.mcp.json`, Codex `.codex/config.toml`, and OpenCode `opencode.json` output while preserving unrelated config fields.
-- Local discovery tests should cover reading existing Claude, Codex, and OpenCode project config files and normalizing their entries.
+- Renderer tests should cover Claude `.mcp.json`, Codex `.codex/config.toml`, OpenCode `opencode.json`, and ZCode `.zcode/config.json` `mcp.servers` output while preserving unrelated config fields.
+- Local discovery tests should cover reading existing Claude, Codex, OpenCode, and supported non-session project config files and normalizing their entries.
 - Migration tests should cover single target migration, multi-target identical migration, multi-target conflicting migration, and migration without immediate file rewrite.
 - API tests should cover listing McpHub with built-in MCP, importing JSON, listing project local MCP, migrating local entries, applying bindings, disabling bindings, and deleting managed entries.
 - UI tests should cover top-level McpHub navigation, JSON import results, project group `MCP` button visibility, `本地 MCP` migration, and `McpHub MCP` apply/disable behavior.
@@ -145,7 +150,7 @@ MVP 不保存真实 secret，不写系统或用户级环境变量。用户自行
 - Byte-for-byte formatting preservation of JSON, JSON5, or TOML files.
 - Full diff preview before applying.
 - `sse` transport.
-- Copilot CLI, VS Code Copilot, Qwen, Qoder, Cursor, Gemini, Claude Desktop, or other targets in MVP.
+- Copilot CLI, VS Code Copilot, Qwen, Qoder, Cursor, Gemini, Claude Desktop, or other targets without a verified Project Config Target adapter.
 - `filesystem` and `fetch` built-in MCP servers.
 - Editing or deleting unmanaged local MCP entries from the `本地 MCP` tab.
 - Renaming existing `serverId` values.

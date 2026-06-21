@@ -66,6 +66,9 @@ import type {
   ProjectToolTarget,
   RefreshMode,
   ProjectRepairResult,
+  ProjectServiceList,
+  ProjectServiceStartResult,
+  ProjectServiceStopResult,
   RefreshResult,
   RelocationPreview,
   RelocationResult,
@@ -83,28 +86,21 @@ import type {
   SkillHubImportResult,
   SkillHubList,
   SkillHubOpenTarget,
+  SkillHubSourceDeleteResult,
   SkillHubSourceUpdatePreview,
   SkillHubUpdateCheckResult,
   ToolStatus
 } from "../shared/types.js";
 
-function localApiToken(): string {
-  return window.__LOCAL_API_TOKEN__ ?? "";
-}
-
-function apiHeaders(headers: Record<string, string> = {}): Record<string, string> {
-  return { ...headers, "x-local-api-token": localApiToken() };
-}
-
 export async function apiGet<T>(url: string): Promise<T> {
-  const response = await fetch(url, { headers: apiHeaders() });
+  const response = await fetch(url);
   return handle<T>(response);
 }
 
 export async function apiPost<T>(url: string, body: unknown = {}): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
-    headers: apiHeaders({ "content-type": "application/json" }),
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
   });
   return handle<T>(response);
@@ -113,7 +109,7 @@ export async function apiPost<T>(url: string, body: unknown = {}): Promise<T> {
 export async function apiPatch<T>(url: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "PATCH",
-    headers: apiHeaders({ "content-type": "application/json" }),
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
   });
   return handle<T>(response);
@@ -122,14 +118,14 @@ export async function apiPatch<T>(url: string, body: unknown): Promise<T> {
 export async function apiPut<T>(url: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "PUT",
-    headers: apiHeaders({ "content-type": "application/json" }),
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
   });
   return handle<T>(response);
 }
 
 export async function apiDelete<T>(url: string): Promise<T> {
-  const response = await fetch(url, { method: "DELETE", headers: apiHeaders() });
+  const response = await fetch(url, { method: "DELETE" });
   return handle<T>(response);
 }
 
@@ -144,7 +140,7 @@ async function handle<T>(response: Response): Promise<T> {
 export const client = {
   bootstrap: () => apiGet<BootstrapState>("/api/bootstrap"),
   setDataDir: (dataDir: string) => apiPost<BootstrapState>("/api/bootstrap/data-dir", { dataDir }),
-  eventsUrl: () => `/api/events?token=${encodeURIComponent(localApiToken())}`,
+  eventsUrl: () => "/api/events",
   config: () => apiGet<AppConfig>("/api/config"),
   updateConfig: (config: Partial<Pick<AppConfig, "terminal" | "projectResources">>) => apiPatch<AppConfig>("/api/config", config),
   skillhub: (query = "") => apiGet<SkillHubList>(`/api/skillhub${query ? `?query=${encodeURIComponent(query)}` : ""}`),
@@ -155,6 +151,7 @@ export const client = {
   checkSkillHubUpdates: () => apiGet<SkillHubUpdateCheckResult>("/api/skillhub/updates"),
   applySkillHubUpdate: (sourceId: string, confirmDestructive = false) =>
     apiPost<SkillHubSourceUpdatePreview>(`/api/skillhub/sources/${encodeURIComponent(sourceId)}/update`, { confirmDestructive }),
+  deleteSkillHubSource: (sourceId: string) => apiDelete<SkillHubSourceDeleteResult>(`/api/skillhub/sources/${encodeURIComponent(sourceId)}`),
   previewDeleteSkillHubSkill: (skillId: string) =>
     apiGet<SkillHubDeletePreview>(`/api/skillhub/skills/${encodeURIComponent(skillId)}/delete-preview`),
   deleteSkillHubSkill: (skillId: string) => apiDelete<SkillHubDeletePreview>(`/api/skillhub/skills/${encodeURIComponent(skillId)}`),
@@ -219,6 +216,11 @@ export const client = {
   openPluginHubPrivateFile: (pluginId: string, fileId: string, target: SkillHubOpenTarget) =>
     apiPost<LocalOpenResponse>(`/api/pluginhub/plugins/${encodeURIComponent(pluginId)}/private-files/${encodeURIComponent(fileId)}/open`, { target }),
   deletePluginHubPlugin: (pluginId: string) => apiDelete<PluginHubPluginDeletePreview>(`/api/pluginhub/plugins/${encodeURIComponent(pluginId)}`),
+  projectServices: () => apiGet<ProjectServiceList>("/api/project-services"),
+  startProjectService: (serviceId: string, dryRun = false) =>
+    apiPost<ProjectServiceStartResult>(`/api/project-services/${encodeURIComponent(serviceId)}/start`, { dryRun }),
+  stopProjectService: (serviceId: string) =>
+    apiPost<ProjectServiceStopResult>(`/api/project-services/${encodeURIComponent(serviceId)}/stop`, {}),
   projects: () => apiGet<Project[]>("/api/projects"),
   drives: () => apiGet<ScanDrive[]>("/api/local-filesystem/drives"),
   pickDirectory: () => apiPost<DirectoryPickResponse>("/api/local-filesystem/pick-directory"),
@@ -260,8 +262,20 @@ export const client = {
       replaceConflicts,
       ...(targetRootPath ? { targetRootPath } : {})
     }),
+  openProjectSkillTarget: (id: string, skillId: string, toolId: string, targetRootPath?: string, target: SkillHubOpenTarget = "document") =>
+    apiPost<LocalOpenResponse>(`/api/projects/${id}/skill-targets/${encodeURIComponent(skillId)}/${encodeURIComponent(toolId)}/open`, {
+      target,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
   projectLocalSkills: (id: string, targetRootPath?: string) =>
     apiGet<ProjectLocalSkillsState>(`/api/projects/${id}/local-skills${projectTargetQuery(targetRootPath)}`),
+  openProjectLocalSkill: (id: string, toolId: string, folderName: string, targetRootPath?: string, target: SkillHubOpenTarget = "document") =>
+    apiPost<LocalOpenResponse>(`/api/projects/${id}/local-skills/open`, {
+      toolId,
+      folderName,
+      target,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
   migrateProjectLocalSkill: (
     id: string,
     toolId: string,
@@ -290,6 +304,11 @@ export const client = {
     apiPost<ProjectAgentApplyResult>(`/api/projects/${id}/agent-bindings/${encodeURIComponent(bindingId)}/sync`, {
       ...(targetRootPath ? { targetRootPath } : {})
     }),
+  openProjectAgentBinding: (id: string, bindingId: string, targetRootPath?: string, target: SkillHubOpenTarget = "document") =>
+    apiPost<LocalOpenResponse>(`/api/projects/${id}/agent-bindings/${encodeURIComponent(bindingId)}/open`, {
+      target,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
   syncProjectAgents: (id: string, targetRootPath?: string) =>
     apiPost<ProjectAgentSyncResult>(`/api/projects/${id}/agents/sync`, {
       ...(targetRootPath ? { targetRootPath } : {})
@@ -314,6 +333,13 @@ export const client = {
       outputPath,
       target,
       conflictResolution,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
+  openProjectLocalAgent: (id: string, toolId: AgentHubToolId, outputPath: string, targetRootPath?: string, target: SkillHubOpenTarget = "document") =>
+    apiPost<LocalOpenResponse>(`/api/projects/${id}/local-agents/open`, {
+      toolId,
+      outputPath,
+      target,
       ...(targetRootPath ? { targetRootPath } : {})
     }),
   projectPlugins: (id: string, targetRootPath?: string) =>
@@ -341,6 +367,11 @@ export const client = {
     apiDelete<ProjectMcpDisableResult>(
       `/api/projects/${id}/mcp-bindings/${encodeURIComponent(serverId)}/${encodeURIComponent(toolId)}${projectTargetQuery(targetRootPath)}`
     ),
+  openProjectMcpTarget: (id: string, toolId: McpHubTargetToolId, targetRootPath?: string, target: SkillHubOpenTarget = "document") =>
+    apiPost<LocalOpenResponse>(`/api/projects/${id}/mcp-targets/${encodeURIComponent(toolId)}/open`, {
+      target,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
   migrateProjectLocalMcp: (id: string, serverId: string, mode: ProjectLocalMcpMigrationMode | null = null, targetRootPath?: string) =>
     apiPost<ProjectLocalMcpMigrationResult>(`/api/projects/${id}/local-mcp/migrate`, {
       serverId,
@@ -358,6 +389,11 @@ export const client = {
   shareProjectHooks: (id: string, toolId: HookHubSupportedToolId, input: HookHubSuiteInput, targetRootPath?: string) =>
     apiPost<HookHubShareResult>(`/api/projects/${id}/hooks/${encodeURIComponent(toolId)}/share`, {
       ...input,
+      ...(targetRootPath ? { targetRootPath } : {})
+    }),
+  openProjectHookConfig: (id: string, toolId: HookHubSupportedToolId, targetRootPath?: string, target: SkillHubOpenTarget = "document") =>
+    apiPost<LocalOpenResponse>(`/api/projects/${id}/hooks/${encodeURIComponent(toolId)}/open`, {
+      target,
       ...(targetRootPath ? { targetRootPath } : {})
     }),
   applyHookHubSuite: (
@@ -381,18 +417,35 @@ export const client = {
     apiPost<HookHubSyncResult>(`/api/projects/${id}/hooks/sync`, {
       ...(targetRootPath ? { targetRootPath } : {})
     }),
-  ruleSyncStatus: (id: string) => apiGet<RuleSyncStatus>(`/api/projects/${id}/rule-sync/status`),
-  prepareRuleFileCreate: (id: string, file: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]]["file"], source: RuleCreateSource) =>
-    apiPost<RuleCreatePreview>(`/api/projects/${id}/rule-sync/create-preview`, { file, source }),
-  createRuleFile: (id: string, file: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]]["file"], content: string) =>
-    apiPost<RuleCreateResult>(`/api/projects/${id}/rule-sync/create`, { file, content }),
-  createRuleTemplateFile: (id: string) => apiPost<RuleCreateResult>(`/api/projects/${id}/rule-sync/template`),
-  openRuleFile: (id: string, file: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]]["file"]) =>
-    apiPost<LocalOpenResponse>(`/api/projects/${id}/rule-sync/open`, { file }),
-  applyRuleSync: (id: string, direction: RuleSyncDirection, options: { confirmGitInit?: boolean; confirmDirectOverwrite?: boolean } = {}) =>
-    apiPost<RuleSyncResult>(`/api/projects/${id}/rule-sync/apply`, { direction, ...options }),
-  commitRuleSync: (id: string, direction: RuleSyncDirection) =>
-    apiPost<RuleSyncCommitResult>(`/api/projects/${id}/rule-sync/commit`, { direction }),
+  ruleSyncStatus: (id: string, targetRootPath?: string) =>
+    apiGet<RuleSyncStatus>(`/api/projects/${id}/rule-sync/status${projectTargetQuery(targetRootPath)}`),
+  prepareRuleFileCreate: (
+    id: string,
+    file: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]]["file"],
+    source: RuleCreateSource,
+    targetRootPath?: string
+  ) =>
+    apiPost<RuleCreatePreview>(`/api/projects/${id}/rule-sync/create-preview`, { file, source, ...(targetRootPath ? { targetRootPath } : {}) }),
+  createRuleFile: (
+    id: string,
+    file: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]]["file"],
+    content: string,
+    targetRootPath?: string
+  ) =>
+    apiPost<RuleCreateResult>(`/api/projects/${id}/rule-sync/create`, { file, content, ...(targetRootPath ? { targetRootPath } : {}) }),
+  createRuleTemplateFile: (id: string, targetRootPath?: string) =>
+    apiPost<RuleCreateResult>(`/api/projects/${id}/rule-sync/template`, { ...(targetRootPath ? { targetRootPath } : {}) }),
+  openRuleFile: (id: string, file: RuleSyncStatus["files"][keyof RuleSyncStatus["files"]]["file"], targetRootPath?: string) =>
+    apiPost<LocalOpenResponse>(`/api/projects/${id}/rule-sync/open`, { file, ...(targetRootPath ? { targetRootPath } : {}) }),
+  applyRuleSync: (
+    id: string,
+    direction: RuleSyncDirection,
+    options: { confirmGitInit?: boolean; confirmDirectOverwrite?: boolean } = {},
+    targetRootPath?: string
+  ) =>
+    apiPost<RuleSyncResult>(`/api/projects/${id}/rule-sync/apply`, { direction, ...options, ...(targetRootPath ? { targetRootPath } : {}) }),
+  commitRuleSync: (id: string, direction: RuleSyncDirection, targetRootPath?: string) =>
+    apiPost<RuleSyncCommitResult>(`/api/projects/${id}/rule-sync/commit`, { direction, ...(targetRootPath ? { targetRootPath } : {}) }),
   repairCandidates: (id: string) => apiGet<ProjectRepairCandidate[]>(`/api/projects/${id}/repair-candidates`),
   repairProject: (id: string, targetProjectId: string, targetRootPath?: string) =>
     apiPost<ProjectRepairResult>(`/api/projects/${id}/repair`, { targetProjectId, targetRootPath }),

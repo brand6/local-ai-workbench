@@ -19,6 +19,9 @@ import type {
   ProjectLocalSkillsState,
   ProjectPluginState,
   ProjectRepairCandidate,
+  ProjectServiceList,
+  ProjectServiceStartResult,
+  ProjectServiceStopResult,
   ProjectToolTarget,
   RefreshResult,
   RelocationResult,
@@ -49,6 +52,7 @@ const clientMock = vi.hoisted(() => ({
   applySkillHubUpdate: vi.fn(),
   previewDeleteSkillHubSkill: vi.fn(),
   deleteSkillHubSkill: vi.fn(),
+  deleteSkillHubSource: vi.fn(),
   openSkillHubSkill: vi.fn(),
   agenthub: vi.fn(),
   refreshAgentHubDiscovery: vi.fn(),
@@ -94,19 +98,26 @@ const clientMock = vi.hoisted(() => ({
   projectToolTargets: vi.fn(),
   updateProjectToolTargets: vi.fn(),
   projectCliActions: vi.fn(),
+  projectServices: vi.fn(),
+  startProjectService: vi.fn(),
+  stopProjectService: vi.fn(),
   executeProjectCliAction: vi.fn(),
   executeProjectCliCommand: vi.fn(),
   projectSkillTargets: vi.fn(),
   updateProjectSkillTargets: vi.fn(),
+  openProjectSkillTarget: vi.fn(),
   projectLocalSkills: vi.fn(),
+  openProjectLocalSkill: vi.fn(),
   migrateProjectLocalSkill: vi.fn(),
   projectAgents: vi.fn(),
   projectLocalAgents: vi.fn(),
   applyProjectAgent: vi.fn(),
   syncProjectAgent: vi.fn(),
+  openProjectAgentBinding: vi.fn(),
   syncProjectAgents: vi.fn(),
   disableProjectAgent: vi.fn(),
   migrateProjectLocalAgent: vi.fn(),
+  openProjectLocalAgent: vi.fn(),
   projectPlugins: vi.fn(),
   installProjectPlugin: vi.fn(),
   syncProjectPlugin: vi.fn(),
@@ -114,10 +125,12 @@ const clientMock = vi.hoisted(() => ({
   projectMcp: vi.fn(),
   applyProjectMcp: vi.fn(),
   disableProjectMcp: vi.fn(),
+  openProjectMcpTarget: vi.fn(),
   migrateProjectLocalMcp: vi.fn(),
   projectHooks: vi.fn(),
   writeProjectHooks: vi.fn(),
   shareProjectHooks: vi.fn(),
+  openProjectHookConfig: vi.fn(),
   applyHookHubSuite: vi.fn(),
   syncProjectHookTool: vi.fn(),
   syncProjectHooks: vi.fn(),
@@ -155,7 +168,7 @@ describe("HomePage", () => {
       defaultDataDir: "C:\\tmp\\local-ai-workbench",
       overriddenByArg: true
     });
-    clientMock.eventsUrl.mockReturnValue("/api/events?token=test");
+    clientMock.eventsUrl.mockReturnValue("/api/events");
     clientMock.projects.mockResolvedValue([]);
     clientMock.detail.mockResolvedValue(detailFixture(projectFixture("E:\\old")));
     clientMock.detailSummary.mockImplementation((projectId: string, search: string) =>
@@ -174,6 +187,7 @@ describe("HomePage", () => {
     });
     clientMock.checkSkillHubUpdates.mockResolvedValue({ previews: [] });
     clientMock.openSkillHubSkill.mockResolvedValue({ opened: true, path: "C:\\tmp\\local-ai-workbench\\skillhub\\library\\review\\SKILL.md" });
+    clientMock.deleteSkillHubSource.mockResolvedValue({ source: skillHubSourceFixture("source-local", "local-source", "local"), skills: [], affectedTargets: [], failures: [] });
     clientMock.agenthub.mockResolvedValue(agentHubListFixture());
     clientMock.refreshAgentHubDiscovery.mockResolvedValue(agentHubListFixture());
     clientMock.importBuiltInAgencyAgents.mockResolvedValue({ source: agentHubSourceFixture(), imported: [], updated: [], skipped: [], conflicts: [], requiresConfirmation: false });
@@ -286,14 +300,18 @@ describe("HomePage", () => {
     clientMock.deletePluginHubPlugin.mockResolvedValue({ plugin: pluginHubPluginFixture(), projectBindings: [], failures: [] });
     clientMock.projectToolTargets.mockResolvedValue([]);
     clientMock.projectSkillTargets.mockResolvedValue({ projectId: "project-1", toolTargets: [], skillTargets: [], skills: [] });
+    clientMock.openProjectSkillTarget.mockResolvedValue({ opened: true, path: "E:\\old\\.codex\\skills\\review\\SKILL.md" });
     clientMock.projectLocalSkills.mockResolvedValue({ projectId: "project-1", toolTargets: [], migrationSources: [], skills: [] });
+    clientMock.openProjectLocalSkill.mockResolvedValue({ opened: true, path: "E:\\old\\.codex\\skills\\review\\SKILL.md" });
     clientMock.projectAgents.mockResolvedValue(projectAgentStateFixture(projectFixture("E:\\old")));
     clientMock.projectLocalAgents.mockResolvedValue(projectAgentStateFixture(projectFixture("E:\\old")));
     clientMock.applyProjectAgent.mockResolvedValue(projectAgentApplyResultFixture(projectFixture("E:\\old")));
     clientMock.syncProjectAgent.mockResolvedValue(projectAgentApplyResultFixture(projectFixture("E:\\old")));
+    clientMock.openProjectAgentBinding.mockResolvedValue({ opened: true, path: "E:\\old\\.codex\\agents\\code-reviewer.toml" });
     clientMock.syncProjectAgents.mockResolvedValue({ projectId: "project-1", targetRootPath: "E:\\old", updated: [], skipped: [] });
     clientMock.disableProjectAgent.mockResolvedValue({ ...projectAgentDisableResultFixture(projectFixture("E:\\old")), deletedFile: false });
     clientMock.migrateProjectLocalAgent.mockResolvedValue(projectLocalAgentMigrationResultFixture(projectFixture("E:\\old")));
+    clientMock.openProjectLocalAgent.mockResolvedValue({ opened: true, path: "E:\\old\\.codex\\agents\\local-reviewer.toml" });
     clientMock.projectPlugins.mockResolvedValue(projectPluginStateFixture(projectFixture("E:\\old")));
     clientMock.installProjectPlugin.mockResolvedValue(projectPluginApplyResultFixture(projectFixture("E:\\old")));
     clientMock.syncProjectPlugin.mockResolvedValue(projectPluginApplyResultFixture(projectFixture("E:\\old")));
@@ -302,6 +320,7 @@ describe("HomePage", () => {
     clientMock.projectHooks.mockResolvedValue(projectHookStateFixture(projectFixture("E:\\old")));
     clientMock.writeProjectHooks.mockResolvedValue({ projectId: "project-1", targetRootPath: "E:\\old", toolId: "claude", status: "drifted" });
     clientMock.shareProjectHooks.mockResolvedValue({ suite: hookHubSuiteFixture(), sourceToolId: "claude", sourceConfigPath: "E:\\old\\.claude\\settings.json" });
+    clientMock.openProjectHookConfig.mockResolvedValue({ opened: true, path: "E:\\old\\.claude\\settings.json" });
     clientMock.applyHookHubSuite.mockResolvedValue({
       projectId: "project-1",
       targetRootPath: "E:\\old",
@@ -356,6 +375,7 @@ describe("HomePage", () => {
       configPath: "E:\\old\\.mcp.json",
       warnings: []
     });
+    clientMock.openProjectMcpTarget.mockResolvedValue({ opened: true, path: "E:\\old\\.mcp.json" });
     clientMock.disableProjectMcp.mockResolvedValue({
       projectId: "project-1",
       targetRootPath: "E:\\old",
@@ -379,6 +399,9 @@ describe("HomePage", () => {
     });
     clientMock.updateProjectToolTargets.mockResolvedValue([]);
     clientMock.projectCliActions.mockResolvedValue(projectCliStateFixture(projectFixture("E:\\old"), { registered: false }));
+    clientMock.projectServices.mockResolvedValue(projectServiceListFixture());
+    clientMock.startProjectService.mockResolvedValue(projectServiceStartFixture());
+    clientMock.stopProjectService.mockResolvedValue(projectServiceStopFixture());
     clientMock.executeProjectCliAction.mockResolvedValue(projectCliRunResultFixture(projectFixture("E:\\old")));
     clientMock.executeProjectCliCommand.mockResolvedValue(projectCliRunResultFixture(projectFixture("E:\\old"), undefined, { command: "git", args: ["status"], commandText: "git status" }));
     clientMock.updateProjectSkillTargets.mockResolvedValue({
@@ -551,20 +574,17 @@ describe("HomePage", () => {
     expect(container.querySelector(".notice")).not.toBeInTheDocument();
   });
 
-  it("dismisses global feedback after 10 seconds", () => {
-    vi.useFakeTimers();
+  it("does not use JavaScript timers to auto-hide global feedback", () => {
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
     try {
       const { container } = render(<GlobalNotice message="项目已添加" />);
 
-      expect(container.querySelector(".toast-notice")).toHaveTextContent("项目已添加");
+      const toast = container.querySelector(".toast-notice");
 
-      act(() => {
-        vi.advanceTimersByTime(10000);
-      });
-
-      expect(container.querySelector(".toast-notice")).not.toBeInTheDocument();
+      expect(toast).toHaveTextContent("项目已添加");
+      expect(setTimeoutSpy).not.toHaveBeenCalled();
     } finally {
-      vi.useRealTimers();
+      setTimeoutSpy.mockRestore();
     }
   });
 
@@ -653,7 +673,15 @@ describe("HomePage", () => {
     expect(screen.getByRole("region", { name: "Sources" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Plugins" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Custom Plugins" })).toBeInTheDocument();
-    expect(screen.getByText("python-development")).toBeInTheDocument();
+    const pluginsRegion = screen.getByRole("region", { name: "Plugins" });
+    const sourceDetails = within(pluginsRegion).getByText("wshobson-agents").closest("details") as HTMLDetailsElement;
+    const sourceSummary = within(sourceDetails).getByText("wshobson-agents").closest("summary") as HTMLElement;
+    expect(sourceDetails.open).toBe(false);
+    expect(sourceSummary).toHaveTextContent("1 plugins");
+    expect(sourceSummary).not.toHaveTextContent("python-development");
+    fireEvent.click(sourceSummary);
+    expect(sourceDetails.open).toBe(true);
+    expect(within(sourceDetails).getByText("python-development")).toBeInTheDocument();
 
     const customRegion = screen.getByRole("region", { name: "Custom Plugins" });
     fireEvent.click(within(customRegion).getByText("custom-review"));
@@ -740,26 +768,29 @@ describe("HomePage", () => {
     fireEvent.click(screen.getByRole("button", { name: "PluginHub" }));
     expect(await screen.findByRole("heading", { name: "PluginHub" })).toBeInTheDocument();
     const pluginsRegion = screen.getByRole("region", { name: "Plugins" });
-    fireEvent.click(within(pluginsRegion).getByText("python-development").closest("summary") as HTMLElement);
+    const sourceDetails = within(pluginsRegion).getByText("wshobson-agents").closest("details") as HTMLDetailsElement;
+    fireEvent.click(within(sourceDetails).getByText("wshobson-agents").closest("summary") as HTMLElement);
+    const pluginDetails = within(sourceDetails).getByText("python-development").closest("details") as HTMLElement;
+    fireEvent.click(within(pluginDetails).getByText("python-development").closest("summary") as HTMLElement);
 
-    const skillsGroup = within(pluginsRegion).getByText("Skills").closest("details") as HTMLElement;
+    const skillsGroup = within(pluginDetails).getByText("Skills").closest("details") as HTMLElement;
     fireEvent.click(within(skillsGroup).getByText("Skills").closest("summary") as HTMLElement);
     fireEvent.click(within(skillsGroup).getByText("review").closest("summary") as HTMLElement);
     fireEvent.click(within(skillsGroup).getByRole("button", { name: "打开" }));
     await waitFor(() => expect(clientMock.openSkillHubSkill).toHaveBeenCalledWith("skill-1", "document"));
 
-    const agentsGroup = within(pluginsRegion).getByText("Agents").closest("details") as HTMLElement;
+    const agentsGroup = within(pluginDetails).getByText("Agents").closest("details") as HTMLElement;
     fireEvent.click(within(agentsGroup).getByText("Agents").closest("summary") as HTMLElement);
     fireEvent.click(within(agentsGroup).getByText("Code Reviewer").closest("summary") as HTMLElement);
     fireEvent.click(within(agentsGroup).getByRole("button", { name: "打开" }));
     await waitFor(() => expect(clientMock.openAgentHubAgent).toHaveBeenCalledWith("agent-1", "document"));
 
-    const mcpGroup = within(pluginsRegion).getByText("MCP Servers").closest("details") as HTMLElement;
+    const mcpGroup = within(pluginDetails).getByText("MCP Servers").closest("details") as HTMLElement;
     fireEvent.click(within(mcpGroup).getByText("MCP Servers").closest("summary") as HTMLElement);
     fireEvent.click(within(mcpGroup).getByText("context7").closest("summary") as HTMLElement);
     expect(within(mcpGroup).getByText("Context7 docs")).toBeInTheDocument();
 
-    const privateFilesGroup = within(pluginsRegion).getByText("Private Files").closest("details") as HTMLElement;
+    const privateFilesGroup = within(pluginDetails).getByText("Private Files").closest("details") as HTMLElement;
     fireEvent.click(within(privateFilesGroup).getByText("Private Files").closest("summary") as HTMLElement);
     fireEvent.click(within(privateFilesGroup).getByText("plugins/python-development/.codex-plugin/plugin.json").closest("summary") as HTMLElement);
     fireEvent.click(within(privateFilesGroup).getByRole("button", { name: "打开文件" }));
@@ -784,13 +815,16 @@ describe("HomePage", () => {
     fireEvent.click(screen.getByRole("button", { name: "PluginHub" }));
     expect(await screen.findByRole("heading", { name: "PluginHub" })).toBeInTheDocument();
     const pluginsRegion = screen.getByRole("region", { name: "Plugins" });
-    fireEvent.click(within(pluginsRegion).getByText("python-development").closest("summary") as HTMLElement);
+    const sourceDetails = within(pluginsRegion).getByText("wshobson-agents").closest("details") as HTMLDetailsElement;
+    fireEvent.click(within(sourceDetails).getByText("wshobson-agents").closest("summary") as HTMLElement);
+    const pluginDetails = within(sourceDetails).getByText("python-development").closest("details") as HTMLElement;
+    fireEvent.click(within(pluginDetails).getByText("python-development").closest("summary") as HTMLElement);
 
-    expect(within(pluginsRegion).getByText("Skills")).toBeInTheDocument();
-    expect(within(pluginsRegion).queryByText("Agents")).not.toBeInTheDocument();
-    expect(within(pluginsRegion).queryByText("MCP Servers")).not.toBeInTheDocument();
-    expect(within(pluginsRegion).queryByText("Hook Suites")).not.toBeInTheDocument();
-    expect(within(pluginsRegion).queryByText("Private Files")).not.toBeInTheDocument();
+    expect(within(pluginDetails).getByText("Skills")).toBeInTheDocument();
+    expect(within(pluginDetails).queryByText("Agents")).not.toBeInTheDocument();
+    expect(within(pluginDetails).queryByText("MCP Servers")).not.toBeInTheDocument();
+    expect(within(pluginDetails).queryByText("Hook Suites")).not.toBeInTheDocument();
+    expect(within(pluginDetails).queryByText("Private Files")).not.toBeInTheDocument();
   });
 
   it("opens CliHub from the topbar and supports custom CLI actions", async () => {
@@ -805,6 +839,8 @@ describe("HomePage", () => {
 
     expect(await screen.findByRole("heading", { name: "CliHub" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "项目工具 CLI" })).toBeInTheDocument();
+    const customCliGroup = screen.getByRole("region", { name: "自定义 CLI" });
+    expect(within(customCliGroup).getByText("暂无自定义 CLI")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "检测已安装Cli" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "刷新发现" })).not.toBeInTheDocument();
     expect(screen.getByText("Codex")).toBeInTheDocument();
@@ -1176,6 +1212,38 @@ describe("HomePage", () => {
     expect(within(pluginSkillDetails).queryByRole("button", { name: "删除" })).not.toBeInTheDocument();
   });
 
+  it("deletes a SkillHub source from the source group action", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const localSource = skillHubSourceFixture("source-local", "local-source", "local");
+    const pluginSource = skillHubSourceFixture("source-plugin", "team-plugin", "plugin");
+    clientMock.skillhub.mockResolvedValue({
+      config: { rootDir: "C:\\tmp\\local-ai-workbench\\skillhub", libraryDir: "C:\\tmp\\local-ai-workbench\\skillhub\\library" },
+      sources: [localSource, pluginSource],
+      skills: [
+        skillHubSkillFixture(localSource, "skill-1", "review", "Review code"),
+        skillHubSkillFixture(pluginSource, "skill-2", "plugin-review", "Plugin review")
+      ]
+    });
+    clientMock.deleteSkillHubSource.mockResolvedValue({ source: localSource, skills: [], affectedTargets: [], failures: [] });
+
+    render(<App />);
+
+    await screen.findByText("还没有项目");
+    fireEvent.click(screen.getByRole("button", { name: "SkillHub" }));
+
+    const sourceList = await screen.findByRole("region", { name: "技能来源" });
+    const localSourceDetails = within(sourceList).getByText("local-source").closest("details") as HTMLDetailsElement;
+    const pluginSourceDetails = within(sourceList).getByText("team-plugin").closest("details") as HTMLDetailsElement;
+    expect(within(localSourceDetails).getByRole("button", { name: "删除 source" })).toBeInTheDocument();
+    expect(within(pluginSourceDetails).queryByRole("button", { name: "删除 source" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(localSourceDetails).getByRole("button", { name: "删除 source" }));
+
+    await waitFor(() => expect(clientMock.deleteSkillHubSource).toHaveBeenCalledWith("source-local"));
+    expect(await screen.findByText("SkillHub source 已删除")).toBeInTheDocument();
+    confirmSpy.mockRestore();
+  });
+
   it("moves SkillHub update checks into the topbar and shows source-level update previews", async () => {
     const githubSource = skillHubSourceFixture("source-github", "owner/repo", "github");
     const updatePreview = skillHubUpdatePreviewFixture(githubSource);
@@ -1267,6 +1335,41 @@ describe("HomePage", () => {
 
     resolveScan({ scanRunId: "scan-1", candidates: [] });
     expect(await screen.findByText("扫描完成：未发现候选")).toBeInTheDocument();
+  });
+
+  it("opens project services from the topbar and starts or stops one service based on state", async () => {
+    const serviceList = projectServiceListFixture();
+    const started = projectServiceStartFixture(serviceList.services[0]);
+    clientMock.projectServices.mockResolvedValue(serviceList);
+    clientMock.startProjectService.mockResolvedValue(started);
+    clientMock.stopProjectService.mockResolvedValue(projectServiceStopFixture(started.service));
+
+    const { container } = render(<App />);
+
+    await screen.findByText("还没有项目");
+    const topbarActions = container.querySelector(".topbar-actions") as HTMLElement;
+    const startButton = within(topbarActions).getByRole("button", { name: "启动" });
+    const settingsButton = within(topbarActions).getByRole("button", { name: "设置" });
+    expect(startButton.compareDocumentPosition(settingsButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(startButton);
+
+    const dialog = await screen.findByRole("dialog", { name: "启动项目" });
+    await waitFor(() => expect(clientMock.projectServices).toHaveBeenCalledTimes(1));
+    expect(within(dialog).getAllByText("github-repo-manager").length).toBeGreaterThan(0);
+    expect(within(dialog).getByText("npm run dev")).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "启动" }));
+
+    await waitFor(() => expect(clientMock.startProjectService).toHaveBeenCalledWith("service-dev"));
+    expect(container.querySelector(".toast-notice")).toHaveTextContent("服务已启动：npm run dev");
+    await waitFor(() => expect(within(dialog).getAllByRole("button", { name: "关闭" })).toHaveLength(2));
+
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "关闭" })[1]);
+
+    await waitFor(() => expect(clientMock.stopProjectService).toHaveBeenCalledWith("service-dev"));
+    expect(container.querySelector(".toast-notice")).toHaveTextContent("服务已关闭：npm run dev");
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "启动" })).toBeInTheDocument());
   });
 
   it("opens settings instead of showing the working directory in the topbar", async () => {
@@ -1516,11 +1619,9 @@ describe("HomePage", () => {
     expect(onRelocateProject).toHaveBeenCalled();
   });
 
-  it("renders project tool targets above the detail filters as compact checkboxes", () => {
+  it("renders project tool targets in project configuration as compact checkboxes", () => {
     const project = projectFixture("E:\\old");
     const onUpdateProjectTools = vi.fn();
-    const onRefreshRuleSync = vi.fn();
-    const onApplyRuleSync = vi.fn();
 
     render(
       <ProjectDetailView
@@ -1542,9 +1643,6 @@ describe("HomePage", () => {
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
         onUpdateProjectTools={onUpdateProjectTools}
-        ruleSyncStatus={ruleSyncStatusFixture(project)}
-        onRefreshRuleSync={onRefreshRuleSync}
-        onApplyRuleSync={onApplyRuleSync}
       />
     );
 
@@ -1554,9 +1652,46 @@ describe("HomePage", () => {
 
     fireEvent.click(within(targetSection).getByRole("checkbox", { name: "opencode" }));
     expect(onUpdateProjectTools).toHaveBeenCalledWith(["codex", "opencode"]);
+    expect(screen.queryByRole("region", { name: "规则同步" })).not.toBeInTheDocument();
+  });
 
+  it("shows group-scoped rule sync content from the rules button beside new session", () => {
+    const project = projectFixture("E:\\old");
+    const onToggleProjectRules = vi.fn();
+    const onRefreshRuleSync = vi.fn();
+    const onApplyRuleSync = vi.fn();
+
+    render(
+      <ProjectDetailView
+        project={project}
+        detail={detailFixture(project)}
+        tools={[]}
+        query=""
+        warnings={[]}
+        busy={false}
+        setQuery={vi.fn()}
+        onLaunch={vi.fn()}
+        onResume={vi.fn()}
+        onDeleteSession={vi.fn()}
+        repairCandidates={[]}
+        onRepairProject={vi.fn()}
+        onRelocateProject={vi.fn()}
+        ruleSyncTargetRoot={project.rootPath}
+        ruleSyncStateTargetKey={`${project.id}::${project.rootPath}`}
+        ruleSyncStatus={ruleSyncStatusFixture(project)}
+        onToggleProjectRules={onToggleProjectRules}
+        onRefreshRuleSync={onRefreshRuleSync}
+        onApplyRuleSync={onApplyRuleSync}
+      />
+    );
+
+    const group = screen.getByText("old（根目录）").closest("section") as HTMLElement;
+    const groupActions = group.querySelector(".group-actions") as HTMLElement;
+    const buttons = within(groupActions).getAllByRole("button").map((button) => button.textContent);
+    expect(buttons.slice(-2)).toEqual(["规则", "新会话"]);
+    fireEvent.click(within(groupActions).getByRole("button", { name: "规则" }));
+    expect(onToggleProjectRules).toHaveBeenCalledWith(project.rootPath);
     const ruleSyncSection = screen.getByRole("region", { name: "规则同步" });
-    expect(ruleSyncSection.compareDocumentPosition(targetSection) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
     const agentsRow = within(ruleSyncSection).getByRole("article", { name: "AGENTS.md 规则文件" });
     const claudeRow = within(ruleSyncSection).getByRole("article", { name: "CLAUDE.md 规则文件" });
     expect(within(agentsRow).getByText("AGENTS.md")).toBeInTheDocument();
@@ -1679,6 +1814,29 @@ describe("HomePage", () => {
     expect(screen.queryByRole("button", { name: "qwen" })).not.toBeInTheDocument();
   });
 
+  it("closes project side panels when clicking outside", async () => {
+    const project = projectFixture("E:\\old");
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+
+    fireEvent.click(screen.getByRole("button", { name: "技能" }));
+    expect(await screen.findByRole("complementary", { name: "项目技能管理" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "关闭项目侧边窗口" }));
+    expect(screen.queryByRole("complementary", { name: "项目技能管理" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "关闭项目侧边窗口" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "MCP" }));
+    expect(await screen.findByRole("complementary", { name: "项目 MCP 管理" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "关闭项目侧边窗口" }));
+    expect(screen.queryByRole("complementary", { name: "项目 MCP 管理" })).not.toBeInTheDocument();
+  });
+
   it("keeps project tool target editing out of the skill panel and only shows enabled tools inside a skill", async () => {
     const project = projectFixture("E:\\old");
     const localSource = skillHubSourceFixture("source-1", "local-source", "local");
@@ -1748,6 +1906,52 @@ describe("HomePage", () => {
     expect(within(panel).getByRole("checkbox", { name: "codex" })).toBeInTheDocument();
     expect(within(panel).getByRole("checkbox", { name: "opencode" })).toBeInTheDocument();
     expect(within(panel).queryByRole("checkbox", { name: "qwen" })).not.toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole("button", { name: "打开 codex 文件" }));
+    await waitFor(() => expect(clientMock.openProjectSkillTarget).toHaveBeenCalledWith(project.id, "skill-1", "codex", project.rootPath, "document"));
+  });
+
+  it("uses the skill folder name when project SkillHub metadata only has a generic instructions title", async () => {
+    const project = projectFixture("E:\\old");
+    const localSource = skillHubSourceFixture("source-1", "AICodingConfig", "local");
+    const toolTargets = [projectToolTargetFixture(project, "codex", true)];
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.projectToolTargets.mockResolvedValue(toolTargets);
+    clientMock.projectSkillTargets.mockResolvedValue({
+      projectId: project.id,
+      toolTargets,
+      skillTargets: [],
+      skills: [
+        {
+          id: "skill-compose-editor-tool",
+          sourceId: localSource.id,
+          sourceType: "local",
+          folderName: "compose-editor-tool",
+          skillName: "Skill Instructions",
+          description: null,
+          libraryRelativePath: "AICodingConfig/skills/compose-editor-tool",
+          libraryPath: "C:\\tmp\\local-ai-workbench\\skillhub\\library\\AICodingConfig\\skills\\compose-editor-tool",
+          sourceRelativePath: "skills/compose-editor-tool",
+          contentHash: "hash",
+          createdAt: "2026-06-01T00:00:00Z",
+          updatedAt: "2026-06-01T00:00:00Z",
+          source: localSource
+        }
+      ]
+    });
+
+    render(<App />);
+
+    await screen.findByText("old");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByRole("button", { name: "技能" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目技能管理" });
+    fireEvent.click(within(panel).getByRole("tab", { name: "SkillHub技能" }));
+    await within(panel).findByText("AICodingConfig");
+    expect(within(panel).getByText("compose-editor-tool")).toBeInTheDocument();
+    expect(within(panel).queryByText("Skill Instructions")).not.toBeInTheDocument();
   });
 
   it("updates one SkillHub skill row after a checkbox change without full panel reloads", async () => {
@@ -1933,6 +2137,9 @@ describe("HomePage", () => {
     expect(within(panel).getByRole("region", { name: "SkillHub 技能" })).toBeInTheDocument();
     const localSection = within(panel).getByRole("region", { name: "Local 技能" });
     expect(localSection).toBeInTheDocument();
+    fireEvent.click(within(localSection).getByText("review").closest("summary") as HTMLElement);
+    fireEvent.click(within(localSection).getByRole("button", { name: "打开文件" }));
+    await waitFor(() => expect(clientMock.openProjectLocalSkill).toHaveBeenCalledWith(project.id, "codex", "review", project.rootPath, "document"));
     fireEvent.click(within(localSection).getByRole("button", { name: "迁移到SkillHub" }));
     const startButton = within(localSection).getByRole("button", { name: "开始迁移" });
     expect(startButton).toBeDisabled();
@@ -2027,7 +2234,9 @@ describe("HomePage", () => {
     const project = projectFixture("E:\\old");
     clientMock.projects.mockResolvedValue([project]);
     clientMock.detail.mockResolvedValue(detailFixture(project));
-    clientMock.projectPlugins.mockResolvedValue(projectPluginStateFixture(project));
+    const pluginState = projectPluginStateFixture(project);
+    pluginState.toolTargets = [projectToolTargetFixture(project, "codex", true), projectToolTargetFixture(project, "qwen", true)];
+    clientMock.projectPlugins.mockResolvedValue(pluginState);
 
     render(<App />);
 
@@ -2038,13 +2247,24 @@ describe("HomePage", () => {
 
     const panel = await screen.findByRole("complementary", { name: "项目 Plugin 管理" });
     expect(clientMock.projectPlugins).toHaveBeenCalledWith(project.id, project.rootPath);
-    expect(within(panel).getByRole("region", { name: "安装 Plugin" })).toBeInTheDocument();
-    expect(within(panel).getByRole("region", { name: "已安装 Plugin" })).toBeInTheDocument();
-    expect(within(panel).getAllByText("python-development").length).toBeGreaterThan(0);
-    expect(within(panel).getByRole("radio", { name: "codex" })).toBeChecked();
-    expect(within(panel).queryByRole("radio", { name: "qwen" })).not.toBeInTheDocument();
+    expect(within(panel).getByRole("tab", { name: "本地 Plugin" })).toHaveAttribute("aria-selected", "true");
+    const localRegion = within(panel).getByRole("region", { name: "本地 Plugin" });
+    expect(within(localRegion).getByText("python-development")).toBeInTheDocument();
 
-    fireEvent.click(within(panel).getByRole("button", { name: "安装" }));
+    fireEvent.click(within(panel).getByRole("tab", { name: "Hub Plugin" }));
+    const hubRegion = within(panel).getByRole("region", { name: "Hub Plugin" });
+    const sourceDetails = within(hubRegion).getByText("wshobson-agents").closest("details") as HTMLDetailsElement;
+    const sourceSummary = within(sourceDetails).getByText("wshobson-agents").closest("summary") as HTMLElement;
+    expect(sourceDetails.open).toBe(false);
+    expect(sourceSummary).toHaveTextContent("1 个 Plugin");
+    expect(sourceSummary).not.toHaveTextContent("python-development");
+    fireEvent.click(sourceSummary);
+    const pluginDetails = within(sourceDetails).getByText("python-development").closest("details") as HTMLDetailsElement;
+    fireEvent.click(within(pluginDetails).getByText("python-development").closest("summary") as HTMLElement);
+    expect(within(pluginDetails).getByRole("radio", { name: "codex" })).toBeChecked();
+    expect(within(pluginDetails).getByRole("radio", { name: "qwen" })).toBeInTheDocument();
+
+    fireEvent.click(within(pluginDetails).getByRole("button", { name: "安装" }));
 
     await waitFor(() => expect(clientMock.installProjectPlugin).toHaveBeenCalledWith(project.id, "plugin-1", "codex", project.rootPath, null));
     expect(await screen.findByText("项目 Plugin 已安装")).toBeInTheDocument();
@@ -2285,6 +2505,10 @@ describe("HomePage", () => {
     expect(within(panel).getByText("Claude Code")).toBeInTheDocument();
     expect(within(panel).getByText("current")).toBeInTheDocument();
     expect(within(panel).getByText("OpenCode")).toBeInTheDocument();
+    const claudeHookRow = within(panel).getByText("Claude Code").closest("details") as HTMLElement;
+    fireEvent.click(within(claudeHookRow).getByText("Claude Code").closest("summary") as HTMLElement);
+    fireEvent.click(within(claudeHookRow).getByRole("button", { name: "打开配置文件" }));
+    await waitFor(() => expect(clientMock.openProjectHookConfig).toHaveBeenCalledWith(project.id, "claude", childRoot, "document"));
   });
 
   it("opens project CLI management for a custom CodeGraph CLI on the selected child group", async () => {
@@ -2528,6 +2752,9 @@ describe("HomePage", () => {
     const panel = await screen.findByRole("complementary", { name: "项目 Agent 管理" });
     expect(await within(panel).findByText("Code Reviewer")).toBeInTheDocument();
     expect(clientMock.projectAgents).not.toHaveBeenCalled();
+    fireEvent.click(within(panel).getByText("Code Reviewer").closest("summary") as HTMLElement);
+    fireEvent.click(within(panel).getByRole("button", { name: "打开文件" }));
+    await waitFor(() => expect(clientMock.openProjectLocalAgent).toHaveBeenCalledWith(project.id, "codex", binding.outputPath, project.rootPath, "document"));
 
     fireEvent.click(within(panel).getByRole("checkbox", { name: "取消 Code Reviewer" }));
 
@@ -2607,6 +2834,77 @@ describe("HomePage", () => {
 
     await waitFor(() => expect(clientMock.applyProjectMcp).toHaveBeenCalledWith(project.id, "context7", "claude", project.rootPath));
     expect(await screen.findByText("MCP 已应用到项目")).toBeInTheDocument();
+    fireEvent.click(within(panel).getByText("context7"));
+    fireEvent.click(within(panel).getByRole("button", { name: "打开 claude 文件" }));
+    await waitFor(() => expect(clientMock.openProjectMcpTarget).toHaveBeenCalledWith(project.id, "claude", project.rootPath, "document"));
+  });
+
+  it("keeps local MCP summaries in a full-width content area when file actions are shown", async () => {
+    const project = projectFixture("E:\\ai-work\\角色技能分析");
+    const server = {
+      serverId: "paper-search",
+      name: "paper-search",
+      description: "Paper search MCP",
+      transport: "http",
+      command: null,
+      args: [],
+      url: "https://mcp.example.test/paper",
+      headers: {},
+      env: {},
+      requiredEnv: [],
+      createdAt: "2026-06-01T00:00:00Z",
+      updatedAt: "2026-06-01T00:00:00Z"
+    };
+    clientMock.projects.mockResolvedValue([project]);
+    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.projectMcp.mockResolvedValue({
+      projectId: project.id,
+      targetRootPath: project.rootPath,
+      targets: [],
+      servers: [],
+      bindings: [],
+      localEntries: [
+        {
+          projectId: project.id,
+          targetRootPath: project.rootPath,
+          toolId: "claude",
+          serverId: server.serverId,
+          filePath: `${project.rootPath}\\.mcp.json`,
+          status: "managed",
+          server,
+          reason: null
+        },
+        {
+          projectId: project.id,
+          targetRootPath: project.rootPath,
+          toolId: "codex",
+          serverId: server.serverId,
+          filePath: `${project.rootPath}\\.codex\\config.toml`,
+          status: "unmanaged",
+          server,
+          reason: null
+        }
+      ]
+    });
+
+    render(<App />);
+
+    await screen.findByText("角色技能分析");
+    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    await screen.findByText("当前项目根目录");
+    fireEvent.click(screen.getByRole("button", { name: "MCP" }));
+
+    const panel = await screen.findByRole("complementary", { name: "项目 MCP 管理" });
+    const row = within(panel).getByText("paper-search").closest("article") as HTMLElement;
+    const main = row.querySelector(".project-local-mcp-main") as HTMLElement;
+    const actions = row.querySelector(".project-local-mcp-actions") as HTMLElement;
+
+    expect(main).toHaveTextContent("paper-search");
+    expect(main).toHaveTextContent("claude: http，已接管；codex: http");
+    expect(actions).toBeInTheDocument();
+    expect(within(actions).getByRole("button", { name: "打开 claude 文件" })).toBeInTheDocument();
+    expect(within(actions).getByRole("button", { name: "打开 codex 文件" })).toBeInTheDocument();
+    expect(within(actions).getByRole("button", { name: "迁移到McpHub" })).toBeInTheDocument();
   });
 
   it("applies a McpHub server to all target tools from the row checkbox", async () => {
@@ -2651,9 +2949,9 @@ describe("HomePage", () => {
         label: "Qwen",
         enabled: true,
         inferred: false,
-        supported: false,
-        configPath: "",
-        reason: "尚未支持",
+        supported: true,
+        configPath: `${project.rootPath}\\.qwen\\settings.json`,
+        reason: null,
         updatedAt: "2026-06-01T00:00:00Z"
       }
     ];
@@ -2694,16 +2992,14 @@ describe("HomePage", () => {
     fireEvent.click(within(panel).getByRole("button", { name: "McpHub MCP" }));
     fireEvent.click(within(panel).getByRole("checkbox", { name: "选择 context7 全部工具" }));
 
-    await waitFor(() => expect(clientMock.applyProjectMcp).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(clientMock.applyProjectMcp).toHaveBeenCalledTimes(3));
     expect(clientMock.applyProjectMcp).toHaveBeenCalledWith(project.id, "context7", "claude", project.rootPath);
     expect(clientMock.applyProjectMcp).toHaveBeenCalledWith(project.id, "context7", "codex", project.rootPath);
-    expect(clientMock.applyProjectMcp).not.toHaveBeenCalledWith(project.id, "context7", "qwen", project.rootPath);
-    const qwenCheckbox = within(panel).getByRole("checkbox", { name: "qwen" });
-    expect(qwenCheckbox).toBeDisabled();
-    fireEvent.click(qwenCheckbox.closest("label") as HTMLElement);
-    expect(alertSpy).toHaveBeenCalledWith("尚未支持");
+    expect(clientMock.applyProjectMcp).toHaveBeenCalledWith(project.id, "context7", "qwen", project.rootPath);
+    expect(within(panel).getByRole("checkbox", { name: "qwen" })).not.toBeDisabled();
+    expect(alertSpy).not.toHaveBeenCalled();
     alertSpy.mockRestore();
-    expect(await screen.findByText("MCP 已应用到 2 个工具")).toBeInTheDocument();
+    expect(await screen.findByText("MCP 已应用到 3 个工具")).toBeInTheDocument();
   });
 
   it("shows merge repair candidates for missing cwd projects", () => {
@@ -2932,6 +3228,7 @@ describe("HomePage", () => {
     expect(within(returnSlot).getByRole("button", { name: "返回" })).toBeInTheDocument();
     expect(within(topbar).getByRole("checkbox", { name: "子目录" })).toBeInTheDocument();
     expect(within(topbar).getByRole("button", { name: "刷新项目" })).toBeInTheDocument();
+    expect(within(topbar).getByRole("button", { name: "启动" })).toBeInTheDocument();
     expect(within(topbar).getByRole("button", { name: "设置" })).toBeInTheDocument();
     expect(within(topbar).queryByRole("button", { name: "规则同步" })).not.toBeInTheDocument();
     expect(within(topbar).queryByRole("button", { name: "刷新索引" })).not.toBeInTheDocument();
@@ -2955,13 +3252,14 @@ describe("HomePage", () => {
 
     const topbarActions = container.querySelector(".topbar-actions") as HTMLElement;
     const buttons = within(topbarActions).getAllByRole("button").map((button) => button.textContent);
-    expect(buttons.slice(-2)).toEqual(["刷新项目", "设置"]);
+    expect(buttons.slice(-3)).toEqual(["刷新项目", "启动", "设置"]);
   });
 
-  it("loads project rule status only after expanding project config and shows failures", async () => {
+  it("loads group rule status only after clicking the group rules button and shows failures", async () => {
     const project = { ...projectFixture("E:\\new-ai-game"), sessionCount: 3 };
+    const childRoot = "E:\\new-ai-game\\packages\\app";
     clientMock.projects.mockResolvedValue([project]);
-    clientMock.detail.mockResolvedValue(detailFixture(project));
+    clientMock.detail.mockResolvedValue(detailWithChildGroup(project, childRoot));
     clientMock.ruleSyncStatus.mockRejectedValue(new Error("git status timeout"));
 
     render(<App />);
@@ -2973,8 +3271,13 @@ describe("HomePage", () => {
     expect(clientMock.ruleSyncStatus).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByText("项目配置"));
+    expect(clientMock.ruleSyncStatus).not.toHaveBeenCalled();
 
-    await waitFor(() => expect(clientMock.ruleSyncStatus).toHaveBeenCalledWith(project.id));
+    const childGroup = screen.getByText("packages\\app").closest("section") as HTMLElement;
+    const childActions = childGroup.querySelector(".group-actions") as HTMLElement;
+    fireEvent.click(within(childActions).getByRole("button", { name: "规则" }));
+
+    await waitFor(() => expect(clientMock.ruleSyncStatus).toHaveBeenCalledWith(project.id, childRoot));
     const ruleSyncSection = screen.getByRole("region", { name: "规则同步" });
     expect(await within(ruleSyncSection).findByText("规则状态读取失败")).toBeInTheDocument();
     expect(within(ruleSyncSection).getByText("git status timeout")).toBeInTheDocument();
@@ -3016,8 +3319,9 @@ describe("HomePage", () => {
     await screen.findByText("new-ai-game");
     fireEvent.click(screen.getByRole("button", { name: "打开" }));
     await screen.findByText("当前项目根目录");
-    fireEvent.click(screen.getByText("项目配置"));
-    await waitFor(() => expect(clientMock.ruleSyncStatus).toHaveBeenCalledWith(project.id));
+    const group = screen.getByText("old（根目录）").closest("section") as HTMLElement;
+    fireEvent.click(within(group.querySelector(".group-actions") as HTMLElement).getByRole("button", { name: "规则" }));
+    await waitFor(() => expect(clientMock.ruleSyncStatus).toHaveBeenCalledWith(project.id, project.rootPath));
 
     const ruleSyncSection = screen.getByRole("region", { name: "规则同步" });
     const agentsRow = await within(ruleSyncSection).findByRole("article", { name: "AGENTS.md 规则文件" });
@@ -3039,11 +3343,11 @@ describe("HomePage", () => {
     expect(clientMock.applyRuleSync).not.toHaveBeenCalled();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "commit" }));
-    await waitFor(() => expect(clientMock.commitRuleSync).toHaveBeenCalledWith(project.id, "claude-to-agents"));
+    await waitFor(() => expect(clientMock.commitRuleSync).toHaveBeenCalledWith(project.id, "claude-to-agents", project.rootPath));
     expect(clientMock.applyRuleSync).not.toHaveBeenCalled();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "同步" }));
-    await waitFor(() => expect(clientMock.applyRuleSync).toHaveBeenCalledWith(project.id, "claude-to-agents"));
+    await waitFor(() => expect(clientMock.applyRuleSync).toHaveBeenCalledWith(project.id, "claude-to-agents", {}, project.rootPath));
   });
 
   it("creates the CLAUDE.md template from an editable preview and then shows view", async () => {
@@ -3079,8 +3383,9 @@ describe("HomePage", () => {
     await screen.findByText("new-ai-game");
     fireEvent.click(screen.getByRole("button", { name: "打开" }));
     await screen.findByText("当前项目根目录");
-    fireEvent.click(screen.getByText("项目配置"));
-    await waitFor(() => expect(clientMock.ruleSyncStatus).toHaveBeenCalledWith(project.id));
+    const group = screen.getByText("old（根目录）").closest("section") as HTMLElement;
+    fireEvent.click(within(group.querySelector(".group-actions") as HTMLElement).getByRole("button", { name: "规则" }));
+    await waitFor(() => expect(clientMock.ruleSyncStatus).toHaveBeenCalledWith(project.id, project.rootPath));
 
     const ruleSyncSection = screen.getByRole("region", { name: "规则同步" });
     expect(await within(ruleSyncSection).findByText("未发现规则文件")).toBeInTheDocument();
@@ -3091,7 +3396,7 @@ describe("HomePage", () => {
     fireEvent.click(within(initialClaudeRow).getByRole("button", { name: "创建" }));
 
     const dialog = await screen.findByRole("dialog", { name: "创建CLAUDE.md" });
-    await waitFor(() => expect(clientMock.prepareRuleFileCreate).toHaveBeenCalledWith(project.id, "CLAUDE.md", "template"));
+    await waitFor(() => expect(clientMock.prepareRuleFileCreate).toHaveBeenCalledWith(project.id, "CLAUDE.md", "template", project.rootPath));
     expect(within(dialog).getByRole("radio", { name: /默认模板/ })).toBeChecked();
     expect(within(dialog).getByRole("radio", { name: /从AGENTS.md同步/ })).toBeDisabled();
     const editor = within(dialog).getByRole("textbox", { name: "CLAUDE.md 预览内容" });
@@ -3100,13 +3405,13 @@ describe("HomePage", () => {
     fireEvent.change(editor, { target: { value: editedContent } });
     fireEvent.click(within(dialog).getByRole("button", { name: "创建" }));
 
-    await waitFor(() => expect(clientMock.createRuleFile).toHaveBeenCalledWith(project.id, "CLAUDE.md", editedContent));
+    await waitFor(() => expect(clientMock.createRuleFile).toHaveBeenCalledWith(project.id, "CLAUDE.md", editedContent, project.rootPath));
     expect(within(ruleSyncSection).queryByRole("button", { name: "查看规则" })).not.toBeInTheDocument();
 
     const claudeRow = await within(ruleSyncSection).findByRole("article", { name: "CLAUDE.md 规则文件" });
     const viewButton = await within(claudeRow).findByRole("button", { name: "查看" });
     fireEvent.click(viewButton);
-    await waitFor(() => expect(clientMock.openRuleFile).toHaveBeenCalledWith(project.id, "CLAUDE.md"));
+    await waitFor(() => expect(clientMock.openRuleFile).toHaveBeenCalledWith(project.id, "CLAUDE.md", project.rootPath));
   });
 
   it("keeps refresh index in the home command bar outside project detail", async () => {
@@ -3712,6 +4017,52 @@ function projectToolTargetFixture(project: Project, toolId: ToolId, enabled: boo
   };
 }
 
+function projectServiceListFixture(): ProjectServiceList {
+  return {
+    services: [
+      {
+        serviceId: "service-dev",
+        projectId: "project-1",
+        projectLabel: "github-repo-manager",
+        projectRootPath: "E:\\ai-tools\\github-repo-manager",
+        targetRootPath: "E:\\ai-tools\\github-repo-manager",
+        targetLabel: "github-repo-manager（根目录）",
+        packageName: "github-repo-manager",
+        packageJsonPath: "E:\\ai-tools\\github-repo-manager\\package.json",
+        scriptName: "dev",
+        scriptCommand: "vite --host 127.0.0.1",
+        packageManager: "npm",
+        command: "npm",
+        args: ["run", "dev"],
+        commandText: "npm run dev",
+        cwd: "E:\\ai-tools\\github-repo-manager",
+        status: "stopped",
+        pid: null,
+        startedAt: null,
+        stoppedAt: null,
+        exitCode: null
+      }
+    ]
+  };
+}
+
+function projectServiceStartFixture(service = projectServiceListFixture().services[0]): ProjectServiceStartResult {
+  const startedAt = "2026-06-01T00:00:00Z";
+  return {
+    service: { ...service, status: "running", pid: 1234, startedAt, stoppedAt: null, exitCode: null },
+    alreadyRunning: false,
+    startedAt
+  };
+}
+
+function projectServiceStopFixture(service = projectServiceStartFixture().service): ProjectServiceStopResult {
+  const stoppedAt = "2026-06-01T00:01:00Z";
+  return {
+    service: { ...service, status: "stopped", stoppedAt, exitCode: null },
+    stoppedAt
+  };
+}
+
 function projectCliStateFixture(
   project: Project,
   options: { targetRootPath?: string; registered?: boolean } = {}
@@ -4173,7 +4524,7 @@ function pluginHubPluginFixture(overrides: Partial<PluginHubList["plugins"][numb
         required: true
       }
     ],
-    harnessSupport: { codex: "native", claude: "planned" },
+    harnessSupport: { codex: "native", claude: "planned", qwen: "native" },
     createdAt: "2026-06-01T00:00:00Z",
     updatedAt: "2026-06-01T00:00:00Z",
     source,
@@ -4361,6 +4712,7 @@ function appConfigFixture(
       copilot: { command: "copilot" },
       cursor: { command: "cursor-agent" },
       antigravity: { command: "agy" },
+      trae: { command: "traecli" },
       reasonix: { command: "reasonix" }
     },
     terminal: { mode },

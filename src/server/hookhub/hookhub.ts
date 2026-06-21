@@ -17,6 +17,7 @@ import type {
   HookHubSupportedToolId,
   HookHubSuite,
   HookHubSuiteInput,
+  LocalOpenResponse,
   Project,
   ProjectHookBinding,
   ProjectHookBindingRemovalResult,
@@ -25,10 +26,14 @@ import type {
   ProjectToolTarget,
   ToolId
 } from "../../shared/types.js";
+import { isToolId } from "../../shared/types.js";
+import { openLocalPath } from "../core/localFilesystem.js";
 import { displayPath, isPathInsideOrEqual, normalizeFsPath } from "../core/pathUtils.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";
 import { listProjectToolTargets } from "../skillhub/projectSkills.js";
+
+type SessionProjectToolTarget = ProjectToolTarget & { toolId: ToolId };
 
 interface HookReadResult {
   toolId: HookHubSupportedToolId;
@@ -67,12 +72,15 @@ interface JsonContainer {
   error: string | null;
 }
 
-const supportedToolIds: HookHubSupportedToolId[] = ["claude", "codex", "qwen", "qoder"];
+const supportedToolIds: HookHubSupportedToolId[] = ["claude", "codex", "qwen", "qoder", "kimi", "codebuddy"];
+const projectWritebackToolIds: Exclude<HookHubSupportedToolId, "kimi">[] = ["claude", "codex", "qwen", "qoder", "codebuddy"];
 const adapterLabels: Record<HookHubSupportedToolId, string> = {
   claude: "Claude Code",
   codex: "Codex",
   qwen: "Qwen",
-  qoder: "Qoder"
+  qoder: "Qoder",
+  kimi: "Kimi Code",
+  codebuddy: "CodeBuddy Code"
 };
 
 export function listHookHub(database: AppDatabase, query = ""): HookHubList {
@@ -157,8 +165,8 @@ export function listProjectHookState(database: AppDatabase, project: Project, qu
   const bindings = new Map(database.listProjectHookBindings(project.id, project.rootPath).map((binding) => [binding.toolId, binding]));
   const tools: ProjectHookToolState[] = [];
 
-  for (const toolTarget of listProjectToolTargets(database, project, config).filter((target) => target.enabled)) {
-    if (isHookHubSupportedToolId(toolTarget.toolId)) {
+  for (const toolTarget of listProjectToolTargets(database, project, config).filter((target): target is SessionProjectToolTarget => target.enabled && isToolId(target.toolId))) {
+    if (isProjectHookWritebackToolId(toolTarget.toolId)) {
       const binding = bindings.get(toolTarget.toolId) ?? null;
       const suite = binding ? suiteById.get(binding.suiteId) ?? null : null;
       tools.push(projectHookToolState(project, toolTarget.toolId, binding, suite));
@@ -222,6 +230,7 @@ export function writeProjectHooks(
 }
 
 export function shareProjectHooksToHookHub(database: AppDatabase, project: Project, toolId: HookHubSupportedToolId, input: HookHubSuiteInput): HookHubShareResult {
+  ensureProjectHookWritebackSupported(toolId);
   const current = readProjectHooks(project, toolId, database.getProjectHookBinding(project.id, project.rootPath, toolId)?.configPath ?? null);
   if (current.error) throw new Error(current.error);
   if (!current.hasHooks) throw new Error("当前工具没有可上传的 hooks section");
@@ -232,7 +241,14 @@ export function shareProjectHooksToHookHub(database: AppDatabase, project: Proje
   return { suite, sourceToolId: toolId, sourceConfigPath: current.configPath };
 }
 
+export function openProjectHookConfig(database: AppDatabase, project: Project, toolId: HookHubSupportedToolId, target: "document" | "folder"): LocalOpenResponse {
+  ensureProjectHookWritebackSupported(toolId);
+  const current = readProjectHooks(project, toolId, database.getProjectHookBinding(project.id, project.rootPath, toolId)?.configPath ?? null);
+  return openLocalPath(target === "document" ? current.configPath : path.dirname(current.configPath));
+}
+
 export function removeProjectHookBinding(database: AppDatabase, project: Project, toolId: HookHubSupportedToolId): ProjectHookBindingRemovalResult {
+  ensureProjectHookWritebackSupported(toolId);
   const binding = database.getProjectHookBinding(project.id, project.rootPath, toolId);
   const state = projectHookToolState(project, toolId, binding, binding ? database.getHookHubSuite(binding.suiteId) : null);
   if (binding && state.status !== "missing") throw new Error("只有 missing 状态可以移除 HookHub binding");
@@ -339,6 +355,7 @@ export function syncProjectHooksFromHookHub(database: AppDatabase, project: Proj
 }
 
 export function syncProjectHookToolFromHookHub(database: AppDatabase, project: Project, toolId: HookHubSupportedToolId, options: Pick<HookApplyOptions, "gitCommand" | "config"> = {}) {
+  ensureProjectHookWritebackSupported(toolId);
   const binding = database.getProjectHookBinding(project.id, project.rootPath, toolId);
   if (!binding) throw new Error("当前工具没有 HookHub binding");
   const state = projectHookToolState(project, toolId, binding, database.getHookHubSuite(binding.suiteId));
@@ -347,12 +364,23 @@ export function syncProjectHookToolFromHookHub(database: AppDatabase, project: P
 }
 
 export function isHookHubSupportedToolId(value: unknown): value is HookHubSupportedToolId {
-  return value === "claude" || value === "codex" || value === "qwen" || value === "qoder";
+  return value === "claude" || value === "codex" || value === "qwen" || value === "qoder" || value === "kimi" || value === "codebuddy";
+}
+
+function isProjectHookWritebackToolId(value: unknown): value is Exclude<HookHubSupportedToolId, "kimi"> {
+  return projectWritebackToolIds.includes(value as Exclude<HookHubSupportedToolId, "kimi">);
 }
 
 export function convertHookPayloadForTool(payload: unknown, sourceToolId: HookHubSupportedToolId, targetToolId: HookHubSupportedToolId): unknown | null {
   if (sourceToolId === targetToolId) return payload;
   if (sourceToolId === "claude" && ["codex", "qwen", "qoder"].includes(targetToolId)) return convertClaudeHookPayloadToSimpleTool(payload);
+  if (sourceToolId === "claude" && targetToolId === "kimi") return convertClaudeHookPayloadToKimi(payload);
+  if (sourceToolId === "claude" && targetToolId === "codebuddy") return payload;
+  if (sourceToolId === "codebuddy" && targetToolId === "claude") return payload;
+  if (sourceToolId === "codebuddy" && ["codex", "qwen", "qoder"].includes(targetToolId)) return convertClaudeHookPayloadToSimpleTool(payload);
+  if (sourceToolId === "codebuddy" && targetToolId === "kimi") return convertClaudeHookPayloadToKimi(payload);
+  if (["codex", "qwen", "qoder"].includes(sourceToolId) && targetToolId === "kimi") return convertSimpleHookPayloadToKimi(payload);
+  if (sourceToolId === "kimi" && ["codex", "qwen", "qoder"].includes(targetToolId)) return convertKimiHookPayloadToSimpleTool(payload);
   return null;
 }
 
@@ -438,6 +466,35 @@ function convertClaudeHookPayloadToSimpleTool(payload: unknown): unknown | null 
   return Object.keys(converted).length > 0 ? converted : null;
 }
 
+function convertClaudeHookPayloadToKimi(payload: unknown): unknown | null {
+  const simple = convertClaudeHookPayloadToSimpleTool(payload);
+  return simple ? convertSimpleHookPayloadToKimi(simple) : null;
+}
+
+function convertSimpleHookPayloadToKimi(payload: unknown): unknown | null {
+  const rules = normalizeKimiHookRules(payload);
+  return rules.length > 0 ? rules : null;
+}
+
+function convertKimiHookPayloadToSimpleTool(payload: unknown): unknown | null {
+  const rules = normalizeKimiHookRules(payload);
+  if (rules.length === 0) return null;
+  const converted: Record<string, unknown[]> = {};
+  for (const rule of rules) {
+    const event = simpleHookEventName(String(rule.event ?? ""));
+    const command = typeof rule.command === "string" ? rule.command.trim() : "";
+    if (!event || !command) continue;
+    converted[event] = [
+      ...(converted[event] ?? []),
+      {
+        ...(typeof rule.matcher === "string" && rule.matcher.trim() ? { matcher: rule.matcher.trim() } : {}),
+        command,
+        ...(typeof rule.timeout === "number" ? { timeout: rule.timeout } : {})
+      }
+    ];
+  }
+  return Object.keys(converted).length > 0 ? converted : null;
+}
 function simpleHookEventName(eventName: string): string {
   const known: Record<string, string> = {
     PreToolUse: "pre",
@@ -538,7 +595,11 @@ function discoveryOnlyToolState(project: Project, toolId: Exclude<HookHubDiscove
   };
 }
 
-function unsupportedHookToolState(project: Project, toolTarget: ProjectToolTarget): ProjectHookToolState {
+function unsupportedHookToolState(project: Project, toolTarget: SessionProjectToolTarget): ProjectHookToolState {
+  const reason =
+    toolTarget.toolId === "kimi"
+      ? "Kimi Code 官方文档目前只支持用户级 config.toml，未提供项目级 hook 配置；HookHub 不写入用户级配置"
+      : "尚未支持";
   return {
     projectId: project.id,
     targetRootPath: project.rootPath,
@@ -550,7 +611,7 @@ function unsupportedHookToolState(project: Project, toolTarget: ProjectToolTarge
     status: "unsupported",
     hooks: null,
     hooksSummary: "尚未支持",
-    reason: "尚未支持",
+    reason,
     error: null,
     binding: null,
     suite: null,
@@ -574,6 +635,18 @@ function toolLabel(toolId: ToolId): string {
 
 function readProjectHooks(project: Project, toolId: HookHubSupportedToolId, preferredConfigPath: string | null): HookReadResult {
   const configPath = preferredConfigPath && fs.existsSync(preferredConfigPath) ? preferredConfigPath : chooseConfigPath(project.rootPath, toolId);
+  if (toolId === "kimi") {
+    const container = readKimiHookContainer(configPath);
+    return {
+      toolId,
+      label: adapterLabels[toolId],
+      configPath,
+      scope: "project",
+      hooks: container.hooks,
+      hasHooks: !isEmptyHooks(container.hooks),
+      error: container.error
+    };
+  }
   const container = readJsonContainer(configPath);
   if (container.error) {
     return { toolId, label: adapterLabels[toolId], configPath, scope: "project", hooks: null, hasHooks: false, error: container.error };
@@ -593,6 +666,10 @@ function readProjectHooks(project: Project, toolId: HookHubSupportedToolId, pref
 function chooseConfigPath(rootPath: string, toolId: HookHubSupportedToolId): string {
   const candidates = hookConfigCandidates(rootPath, toolId);
   const withHooks = candidates.find((candidate) => {
+    if (toolId === "kimi") {
+      const container = readKimiHookContainer(candidate);
+      return !container.error && !isEmptyHooks(container.hooks);
+    }
     const container = readJsonContainer(candidate);
     return !container.error && !isEmptyHooks(extractHooksPayload(toolId, container.value));
   });
@@ -604,12 +681,14 @@ function hookConfigPath(rootPath: string, toolId: HookHubSupportedToolId): strin
   if (toolId === "codex") return path.join(rootPath, ".codex", "hooks.json");
   if (toolId === "claude") return path.join(rootPath, ".claude", "settings.json");
   if (toolId === "qwen") return path.join(rootPath, ".qwen", "settings.json");
+  if (toolId === "kimi") return path.join(rootPath, ".kimi-code", "config.toml");
+  if (toolId === "codebuddy") return path.join(rootPath, ".codebuddy", "settings.json");
   return path.join(rootPath, ".qoder", "settings.json");
 }
 
 function hookConfigCandidates(rootPath: string, toolId: HookHubSupportedToolId): string[] {
-  if (toolId === "codex") return [hookConfigPath(rootPath, toolId)];
-  const dir = toolId === "claude" ? ".claude" : toolId === "qwen" ? ".qwen" : ".qoder";
+  if (toolId === "codex" || toolId === "kimi") return [hookConfigPath(rootPath, toolId)];
+  const dir = toolId === "claude" ? ".claude" : toolId === "qwen" ? ".qwen" : toolId === "codebuddy" ? ".codebuddy" : ".qoder";
   return [path.join(rootPath, dir, "settings.local.json"), path.join(rootPath, dir, "settings.json")];
 }
 
@@ -622,6 +701,160 @@ function readJsonContainer(configPath: string): JsonContainer {
   }
 }
 
+function readKimiHookContainer(configPath: string): { path: string; exists: boolean; hooks: unknown; error: string | null } {
+  if (!fs.existsSync(configPath)) return { path: configPath, exists: false, hooks: [], error: null };
+  try {
+    return { path: configPath, exists: true, hooks: parseKimiHookRules(fs.readFileSync(configPath, "utf8")), error: null };
+  } catch (error) {
+    return { path: configPath, exists: true, hooks: null, error: error instanceof Error ? error.message : "Kimi hooks TOML 解析失败" };
+  }
+}
+
+function parseKimiHookRules(input: string): Record<string, unknown>[] {
+  const rules: Record<string, unknown>[] = [];
+  let current: Record<string, unknown> | null = null;
+
+  for (const rawLine of input.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line === "[[hooks]]") {
+      if (current) rules.push(current);
+      current = {};
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith("[")) {
+      if (current) rules.push(current);
+      current = null;
+      continue;
+    }
+    const match = /^([A-Za-z0-9_-]+)\s*=\s*(.+)$/.exec(line);
+    if (!match?.[1]) continue;
+    current[match[1]] = parseKimiTomlScalar(match[2] ?? "");
+  }
+
+  if (current) rules.push(current);
+  return normalizeKimiHookRules(rules);
+}
+
+function serializeKimiHooksConfig(existing: string, hooks: unknown): string {
+  const base = removeKimiHookBlocks(existing).trimEnd();
+  const rules = normalizeKimiHookRules(hooks);
+  const hookText = rules.map(kimiHookRuleToml).join("\n\n");
+  const next = [base, hookText].filter((part) => part.trim()).join("\n\n");
+  return next.trimEnd() ? `${next.trimEnd()}\n` : "";
+}
+
+function removeKimiHookBlocks(input: string): string {
+  const output: string[] = [];
+  let skippingHook = false;
+  for (const line of input.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === "[[hooks]]") {
+      skippingHook = true;
+      continue;
+    }
+    if (skippingHook && trimmed.startsWith("[")) {
+      if (trimmed === "[[hooks]]") continue;
+      skippingHook = false;
+    }
+    if (!skippingHook) output.push(line);
+  }
+  return output.join("\n");
+}
+
+function kimiHookRuleToml(rule: Record<string, unknown>): string {
+  const lines = ["[[hooks]]"];
+  lines.push(`event = ${kimiTomlValue(String(rule.event ?? ""))}`);
+  if (typeof rule.matcher === "string" && rule.matcher.trim()) lines.push(`matcher = ${kimiTomlValue(rule.matcher.trim())}`);
+  lines.push(`command = ${kimiTomlValue(String(rule.command ?? ""))}`);
+  if (typeof rule.timeout === "number" && Number.isFinite(rule.timeout)) lines.push(`timeout = ${Math.max(1, Math.floor(rule.timeout))}`);
+  return lines.join("\n");
+}
+
+function normalizeKimiHookRules(hooks: unknown): Record<string, unknown>[] {
+  const rules: Record<string, unknown>[] = [];
+  if (Array.isArray(hooks)) {
+    for (const item of hooks) pushKimiHookRule(rules, null, item);
+  } else if (isRecord(hooks)) {
+    for (const [event, value] of Object.entries(hooks)) {
+      if (Array.isArray(value)) {
+        for (const item of value) pushKimiHookRule(rules, event, item);
+      } else {
+        pushKimiHookRule(rules, event, value);
+      }
+    }
+  }
+  return rules;
+}
+
+function pushKimiHookRule(output: Record<string, unknown>[], eventHint: string | null, value: unknown): void {
+  if (typeof value === "string") {
+    const event = kimiHookEventName(eventHint ?? "Stop");
+    if (value.trim()) output.push({ event, command: value.trim() });
+    return;
+  }
+  if (!isRecord(value)) return;
+  const event = kimiHookEventName(stringValue(value.event) ?? eventHint ?? "Stop");
+  const directCommand = stringValue(value.command);
+  if (directCommand) {
+    output.push(kimiHookRule(event, value, directCommand));
+    return;
+  }
+  const nestedHooks = Array.isArray(value.hooks) ? value.hooks : [];
+  for (const hook of nestedHooks) {
+    if (!isRecord(hook)) continue;
+    const command = stringValue(hook.command);
+    if (command) output.push(kimiHookRule(event, { ...value, timeout: hook.timeout }, command));
+  }
+}
+
+function kimiHookRule(event: string, source: Record<string, unknown>, command: string): Record<string, unknown> {
+  return {
+    event,
+    ...(typeof source.matcher === "string" && source.matcher.trim() ? { matcher: source.matcher.trim() } : {}),
+    command,
+    ...(typeof source.timeout === "number" ? { timeout: source.timeout } : {})
+  };
+}
+
+function kimiHookEventName(eventName: string): string {
+  const known: Record<string, string> = {
+    pre: "PreToolUse",
+    post: "PostToolUse",
+    stop: "Stop",
+    session_start: "SessionStart",
+    user_prompt_submit: "UserPromptSubmit",
+    notification: "Notification",
+    subagent_stop: "SubagentStop",
+    pre_compact: "PreCompact",
+    post_compact: "PostCompact"
+  };
+  return known[eventName] ?? eventName;
+}
+
+function parseKimiTomlScalar(value: string): unknown {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    try {
+      return trimmed.startsWith('"') ? JSON.parse(trimmed) : trimmed.slice(1, -1);
+    } catch {
+      return trimmed.slice(1, -1);
+    }
+  }
+  if (trimmed === "true") return true;
+  if (trimmed === "false") return false;
+  const numeric = Number(trimmed);
+  return Number.isFinite(numeric) ? numeric : trimmed;
+}
+
+function kimiTomlValue(value: string): string {
+  return JSON.stringify(value);
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
 function parseJsonConfigText(input: string): unknown {
   return JSON.parse(stripJsonComments(input));
 }
@@ -639,6 +872,11 @@ function extractHooksPayload(toolId: HookHubSupportedToolId, value: unknown): un
 
 function writeHooksSection(toolId: HookHubSupportedToolId, configPath: string, hooks: unknown): void {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  if (toolId === "kimi") {
+    const existing = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
+    fs.writeFileSync(configPath, serializeKimiHooksConfig(existing, hooks), "utf8");
+    return;
+  }
   const container = readJsonContainer(configPath);
   if (container.error) throw new Error(container.error);
   const base = isRecord(container.value) ? { ...container.value } : {};
@@ -651,8 +889,15 @@ function writeHooksSection(toolId: HookHubSupportedToolId, configPath: string, h
 }
 
 function ensureProjectToolEnabled(database: AppDatabase, project: Project, toolId: HookHubSupportedToolId, config?: AppConfig): void {
+  ensureProjectHookWritebackSupported(toolId);
   const target = listProjectToolTargets(database, project, config).find((item) => item.toolId === toolId);
   if (!target?.enabled) throw new Error("该工具未在项目中启用");
+}
+
+function ensureProjectHookWritebackSupported(toolId: HookHubSupportedToolId): void {
+  if (!isProjectHookWritebackToolId(toolId)) {
+    throw new Error("Kimi Code 官方文档目前没有项目级 hook 配置机制，HookHub 不写入用户级 config.toml");
+  }
 }
 
 function ensureReplacementMode(database: AppDatabase, currentState: ProjectHookToolState, suite: HookHubSuite, options: HookApplyOptions): void {

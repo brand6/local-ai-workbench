@@ -126,20 +126,25 @@ describe("AgentHub", () => {
     const projectRoot = path.join(directory, "repo");
     fs.mkdirSync(projectRoot, { recursive: true });
     const project = db.addProject(projectRoot).project;
-    db.replaceProjectToolTargets(project.id, ["claude", "codex", "opencode", "cursor", "qwen", "kilo"]);
-    for (const toolId of ["claude", "codex", "opencode", "cursor", "qwen"] as const) {
+    db.replaceProjectToolTargets(project.id, ["claude", "codex", "opencode", "cursor", "qwen", "kimi", "kilo"]);
+    for (const toolId of ["claude", "codex", "opencode", "cursor", "qwen", "kimi"] as const) {
       const preview = conversionPreview(reparsed, toolId, projectRoot, "create");
       expect(preview.targetPath).toContain(reparsed.slug);
       expect(preview.outputHash).toMatch(/^[a-f0-9]{64}$/);
       const applied = applyProjectAgentTarget(db, directory, project, reparsed.id, toolId);
       expect(applied.action).toBe("applied");
       expect(fs.existsSync(applied.preview.targetPath)).toBe(true);
+      if (toolId === "opencode") {
+        const opencodeAgentText = fs.readFileSync(applied.preview.targetPath, "utf8");
+        expect(opencodeAgentText).toMatch(/mode:\s+"?subagent"?/);
+        expect(opencodeAgentText).not.toContain("name:");
+      }
     }
     const projectAgentState = listProjectAgentState(db, directory, project);
     expect(projectAgentState.agents.find((agent) => agent.id === reparsed.id)?.projection.body).toBe("");
     expect(projectAgentState.targets.find((target) => target.agent.id === reparsed.id)?.agent.projection.body).toBe("");
     expect(projectAgentState.targets.find((target) => target.binding?.agentId === reparsed.id)?.binding?.agent?.projection.body).toBe("");
-    expect(projectAgentState.targets.filter((target) => target.binding && target.status === "current")).toHaveLength(5);
+    expect(projectAgentState.targets.filter((target) => target.binding && target.status === "current")).toHaveLength(6);
     expect(projectAgentState.toolTargets.find((target) => target.toolId === "kilo")).toMatchObject({ enabled: true, supported: false, reason: "尚未支持" });
     expect(projectAgentState.targets.find((target) => target.agent.id === reparsed.id && target.toolId === "kilo")).toMatchObject({
       status: "unsupported",
@@ -158,6 +163,39 @@ describe("AgentHub", () => {
     expect(replaced.binding?.id).toBe(replacementPreview.replacedBindings[0]?.id);
     expect(replaced.binding?.agentId).toBe(replacement.id);
     expect(db.listProjectAgentTargetsForAgent(reparsed.id).map((target) => target.toolId)).not.toContain("codex");
+    db.close();
+  });
+
+  it("filters broad local imports to agent candidates instead of every Markdown document", () => {
+    directory = testDir("agenthub-local-import-filter");
+    const db = new AppDatabase(directory);
+    skipBuiltInAgencySeed(db);
+    const sourceRoot = path.join(directory, "AICodingConfig");
+    fs.mkdirSync(path.join(sourceRoot, "agents", "openspec", "schemas", "x3-dev", "templates"), { recursive: true });
+    fs.mkdirSync(path.join(sourceRoot, "GameRunner", "compose-autotest-script", "references"), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, "agents", "project-dev-review.agent.md"), importedNative("Project Dev Review", "Review implementation."), "utf8");
+    fs.writeFileSync(path.join(sourceRoot, "agents", "workflow-trace-protocol.md"), "# Workflow Trace Protocol\n\nProtocol notes, not an agent.\n", "utf8");
+    fs.writeFileSync(path.join(sourceRoot, "agents", "openspec", "schemas", "x3-dev", "templates", "design.md"), "# Design\n\nTemplate body.\n", "utf8");
+    fs.writeFileSync(
+      path.join(sourceRoot, "GameRunner", "compose-autotest-script", "SKILL.md"),
+      "---\nname: compose-autotest-script\ndescription: Generate test scripts.\n---\n\n# Skill docs\n",
+      "utf8"
+    );
+    fs.writeFileSync(
+      path.join(sourceRoot, "GameRunner", "compose-autotest-script", "references", "login-template.md"),
+      "# Login Template\n\nReference material.\n",
+      "utf8"
+    );
+
+    const imported = importLocalAgentFolder(db, directory, sourceRoot, "claude");
+
+    expect(imported.imported.map((agent) => agent.sourceRelativePath)).toEqual(["agents/project-dev-review.agent.md"]);
+    expect(imported.skipped.map((item) => normalizeRelativeTestPath(path.relative(sourceRoot, item.path))).sort()).toEqual([
+      "GameRunner/compose-autotest-script/SKILL.md",
+      "GameRunner/compose-autotest-script/references/login-template.md",
+      "agents/openspec/schemas/x3-dev/templates/design.md",
+      "agents/workflow-trace-protocol.md"
+    ]);
     db.close();
   });
 
@@ -213,9 +251,9 @@ describe("AgentHub", () => {
       {
         toolId: "opencode" as const,
         filename: "builder.md",
-        content: `---\ndescription: OpenCode native\nmode: primary\ncolor: blue\n---\n\nBuild with OpenCode context.\n`,
-        preserved: "mode",
-        expectedText: "mode: primary"
+        content: `---\ndescription: OpenCode native\nmode: primary\nmodel: openai/gpt-5\ncolor: blue\n---\n\nBuild with OpenCode context.\n`,
+        preserved: "model",
+        expectedText: "model: openai/gpt-5"
       },
       {
         toolId: "cursor" as const,
@@ -246,7 +284,7 @@ describe("AgentHub", () => {
 
     const invalidSource = path.join(directory, "invalid-codex");
     fs.mkdirSync(invalidSource, { recursive: true });
-    fs.writeFileSync(path.join(invalidSource, "empty.toml"), "", "utf8");
+    fs.writeFileSync(path.join(invalidSource, "empty.agent.toml"), "", "utf8");
     expect(importLocalAgentFolder(db, directory, invalidSource, "codex").skipped[0]?.reason).toContain("Codex agent 缺少");
 
     const invalidProjectPath = path.join(projectRoot, ".codex", "agents", "invalid.toml");
@@ -259,6 +297,35 @@ describe("AgentHub", () => {
     db.close();
   });
 
+
+  it("parses and applies CodeBuddy native agents", () => {
+    directory = testDir("agenthub-codebuddy-native-adapter");
+    const db = new AppDatabase(directory);
+    skipBuiltInAgencySeed(db);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["codebuddy"]);
+    const sourceRoot = path.join(directory, "source-codebuddy");
+    fs.mkdirSync(sourceRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(sourceRoot, "buddy.md"),
+      `---\nname: CodeBuddy Reviewer\ndescription: CodeBuddy native\ntools: ["Read"]\n---\n\nReview with CodeBuddy context.\n`,
+      "utf8"
+    );
+
+    const imported = importLocalAgentFolder(db, directory, sourceRoot, "codebuddy");
+    expect(imported.imported).toHaveLength(1);
+    const agent = imported.imported[0]!;
+    const preview = conversionPreview(agent, "codebuddy", projectRoot, "create");
+    expect(preview.targetPath).toBe(path.join(projectRoot, ".codebuddy", "agents", "buddy.md"));
+    expect(preview.preservedNativeFields).toContain("tools");
+    const applied = applyProjectAgentTarget(db, directory, project, agent.id, "codebuddy");
+    expect(applied.action).toBe("applied");
+    expect(fs.readFileSync(applied.preview.targetPath, "utf8")).toContain("tools:");
+    expect(db.listProjectAgentTargets(project.id, project.rootPath)).toEqual([expect.objectContaining({ toolId: "codebuddy", agentId: agent.id })]);
+    db.close();
+  });
   it("tracks project target status, sync, unmanaged conflicts, migration, disable, and backup behavior", () => {
     directory = testDir("agenthub-project-lifecycle");
     const db = new AppDatabase(directory);
@@ -323,7 +390,7 @@ describe("AgentHub", () => {
 });
 
 function importedNative(name: string, body: string): string {
-  return `---\nname: ${name}\ndescription: ${name} description\n---\n\n${body}\n`;
+  return `---\nname: ${name}\ndescription: ${name} description\ntools: []\n---\n\n${body}\n`;
 }
 
 function staleBuiltInAgent(sourceId: string, nativePath: string) {

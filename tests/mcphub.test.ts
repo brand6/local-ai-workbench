@@ -27,10 +27,10 @@ describe("McpHub", () => {
 
     const firstList = listMcpHub(db);
     const secondList = listMcpHub(db);
-    expect(firstList.servers.map((server) => server.serverId)).toEqual(["context7", "playwright", "unityMCP"]);
+    expect(firstList.servers.map((server) => server.serverId)).toEqual(["context7", "playwright", "skillhub", "unityMCP"]);
     expect(firstList.servers.every((server) => server.builtin)).toBe(true);
-    expect(secondList.servers).toHaveLength(3);
-    expect(db.listMcpHubServers()).toHaveLength(3);
+    expect(secondList.servers).toHaveLength(4);
+    expect(db.listMcpHubServers()).toHaveLength(4);
 
     const imported = importMcpHubJson(
       db,
@@ -67,7 +67,7 @@ describe("McpHub", () => {
     listMcpHub(db);
 
     expect(() => deleteMcpHubServer(db, "context7")).toThrow("内置 MCP server 不能删除");
-    expect(listMcpHub(db).servers.map((server) => server.serverId)).toEqual(["context7", "playwright", "unityMCP"]);
+    expect(listMcpHub(db).servers.map((server) => server.serverId)).toEqual(["context7", "playwright", "skillhub", "unityMCP"]);
     db.close();
   });
 
@@ -80,7 +80,7 @@ describe("McpHub", () => {
     fs.writeFileSync(path.join(projectRoot, ".codex", "config.toml"), 'model = "gpt-5"\n\n[mcp_servers.keep]\ncommand = "keep"\n', "utf8");
     fs.writeFileSync(path.join(projectRoot, "opencode.json"), JSON.stringify({ $schema: "https://opencode.ai/config.json", provider: {} }, null, 2), "utf8");
     const project = db.addProject(projectRoot).project;
-    db.replaceProjectToolTargets(project.id, ["claude", "codex", "opencode"]);
+    db.replaceProjectToolTargets(project.id, ["claude", "codex", "opencode", "codebuddy"]);
     const server = db.upsertMcpHubServer({
       serverId: "docs",
       name: "docs",
@@ -103,7 +103,7 @@ describe("McpHub", () => {
       keep: true,
       mcpServers: {
         localOnly: { command: "node" },
-        docs: { command: "node", args: [`${projectRoot}\\server.js`], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+        docs: { command: "node", args: [path.join(projectRoot, "server.js")], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
       }
     });
     expect(fs.readFileSync(path.join(projectRoot, ".codex", "config.toml"), "utf8")).toContain('model = "gpt-5"');
@@ -133,7 +133,7 @@ describe("McpHub", () => {
     const projectRoot = path.join(directory, "repo");
     fs.mkdirSync(projectRoot, { recursive: true });
     const project = db.addProject(projectRoot).project;
-    db.replaceProjectToolTargets(project.id, ["cursor", "antigravity"]);
+    db.replaceProjectToolTargets(project.id, ["qwen", "codebuddy", "cursor", "antigravity", "trae", "kimi", "zcode", "workbuddy"]);
     const server = db.upsertMcpHubServer({
       serverId: "docs",
       name: "docs",
@@ -147,20 +147,216 @@ describe("McpHub", () => {
       requiredEnv: []
     });
 
+    applyProjectMcpServer(db, project, "qwen", server.serverId);
+    applyProjectMcpServer(db, project, "codebuddy", server.serverId);
     applyProjectMcpServer(db, project, "cursor", server.serverId);
     applyProjectMcpServer(db, project, "antigravity", server.serverId);
+    applyProjectMcpServer(db, project, "trae", server.serverId);
+    applyProjectMcpServer(db, project, "kimi", server.serverId);
+    applyProjectMcpServer(db, project, "zcode", server.serverId);
+    applyProjectMcpServer(db, project, "workbuddy", server.serverId);
 
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".qwen", "settings.json"), "utf8"))).toMatchObject({
+      mcpServers: {
+        docs: { command: "node", args: [path.join(projectRoot, "server.js")], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+      }
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8"))).toMatchObject({
+      mcpServers: {
+        docs: { type: "stdio", command: "node", args: [path.join(projectRoot, "server.js")], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+      }
+    });
     expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".cursor", "mcp.json"), "utf8"))).toMatchObject({
       mcpServers: {
-        docs: { type: "stdio", command: "node", args: [`${projectRoot}\\server.js`], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+        docs: { type: "stdio", command: "node", args: [path.join(projectRoot, "server.js")], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
       }
     });
     expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".agents", "mcp_config.json"), "utf8"))).toMatchObject({
       mcpServers: {
-        docs: { command: "node", args: [`${projectRoot}\\server.js`], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+        docs: { command: "node", args: [path.join(projectRoot, "server.js")], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
       }
     });
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".trae", "mcp.json"), "utf8"))).toMatchObject({
+      mcpServers: {
+        docs: { command: "node", args: [path.join(projectRoot, "server.js")], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+      }
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".kimi-code", "mcp.json"), "utf8"))).toMatchObject({
+      mcpServers: {
+        docs: { command: "node", args: [path.join(projectRoot, "server.js")], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+      }
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".zcode", "config.json"), "utf8"))).toMatchObject({
+      mcp: {
+        servers: {
+          docs: { command: "node", args: [path.join(projectRoot, "server.js")], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+        }
+      }
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".workbuddy", "mcp.json"), "utf8"))).toMatchObject({
+      mcpServers: {
+        docs: { command: "node", args: [path.join(projectRoot, "server.js")], env: { DOCS_TOKEN: "${DOCS_TOKEN}" } }
+      }
+    });
+
     db.close();
+  });
+
+  it("does not write Trae Solo MCP config without an official project config path", () => {
+    directory = testDir("mcphub-trae-solo-unsupported");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(path.join(projectRoot, ".trae"), { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["trae-solo"]);
+    const server = db.upsertMcpHubServer({
+      serverId: "docs",
+      name: "docs",
+      description: "Docs server",
+      transport: "stdio",
+      command: "node",
+      args: ["${PROJECT_ROOT}\\server.js"],
+      url: null,
+      headers: {},
+      env: {},
+      requiredEnv: []
+    });
+
+    const state = listProjectMcpState(db, project);
+    expect(state.targets).toContainEqual(
+      expect.objectContaining({ toolId: "trae-solo", supported: false, reason: expect.stringContaining("未提供项目级 MCP 配置文件路径") })
+    );
+    expect(() => applyProjectMcpServer(db, project, "trae-solo", server.serverId)).toThrow("未提供项目级 MCP 配置文件路径");
+    expect(fs.existsSync(path.join(projectRoot, ".trae", "mcp.json"))).toBe(false);
+    db.close();
+  });
+
+  it("renders HTTP MCP entries for Claude, Codex, CodeBuddy, Qwen, TRAE CLI, Kimi, ZCode, and WorkBuddy", () => {
+    directory = testDir("mcphub-apply-http-types");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["claude", "codex", "qwen", "codebuddy", "trae", "kimi", "zcode", "workbuddy"]);
+    const server = db.upsertMcpHubServer({
+      serverId: "skillhub",
+      name: "skillhub",
+      description: "SkillHub MCP",
+      transport: "http",
+      command: null,
+      args: [],
+      url: "http://127.0.0.1:3987/mcp",
+      headers: { Authorization: "Bearer local" },
+      env: {},
+      requiredEnv: []
+    });
+
+    try {
+      applyProjectMcpServer(db, project, "claude", server.serverId);
+      applyProjectMcpServer(db, project, "codex", server.serverId);
+      applyProjectMcpServer(db, project, "qwen", server.serverId);
+      applyProjectMcpServer(db, project, "codebuddy", server.serverId);
+      applyProjectMcpServer(db, project, "trae", server.serverId);
+      applyProjectMcpServer(db, project, "kimi", server.serverId);
+      applyProjectMcpServer(db, project, "zcode", server.serverId);
+      applyProjectMcpServer(db, project, "workbuddy", server.serverId);
+
+      expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8"))).toMatchObject({
+        mcpServers: {
+          skillhub: {
+            type: "http",
+            url: "http://127.0.0.1:3987/mcp",
+            headers: { Authorization: "Bearer local" }
+          }
+        }
+      });
+      const codexConfig = fs.readFileSync(path.join(projectRoot, ".codex", "config.toml"), "utf8");
+      expect(codexConfig).toContain("[mcp_servers.skillhub]");
+      expect(codexConfig).toContain('type = "http"');
+      expect(codexConfig).toContain('url = "http://127.0.0.1:3987/mcp"');
+      expect(codexConfig).toContain('headers = { Authorization = "Bearer local" }');
+      const qwenConfig = JSON.parse(fs.readFileSync(path.join(projectRoot, ".qwen", "settings.json"), "utf8"));
+      expect(qwenConfig.mcpServers.skillhub).toMatchObject({ httpUrl: "http://127.0.0.1:3987/mcp", headers: { Authorization: "Bearer local" } });
+      expect(qwenConfig.mcpServers.skillhub.type).toBeUndefined();
+      expect(qwenConfig.mcpServers.skillhub.url).toBeUndefined();
+      const codebuddyConfig = JSON.parse(fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8"));
+      expect(codebuddyConfig.mcpServers.skillhub).toMatchObject({ type: "http", url: "http://127.0.0.1:3987/mcp", headers: { Authorization: "Bearer local" } });
+      const traeConfig = JSON.parse(fs.readFileSync(path.join(projectRoot, ".trae", "mcp.json"), "utf8"));
+      expect(traeConfig.mcpServers.skillhub).toMatchObject({ type: "http", url: "http://127.0.0.1:3987/mcp", headers: { Authorization: "Bearer local" } });
+      const kimiConfig = JSON.parse(fs.readFileSync(path.join(projectRoot, ".kimi-code", "mcp.json"), "utf8"));
+      expect(kimiConfig.mcpServers.skillhub).toMatchObject({ url: "http://127.0.0.1:3987/mcp", headers: { Authorization: "Bearer local" } });
+      expect(kimiConfig.mcpServers.skillhub.type).toBeUndefined();
+      expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".zcode", "config.json"), "utf8"))).toMatchObject({
+        mcp: {
+          servers: {
+            skillhub: {
+              type: "http",
+              url: "http://127.0.0.1:3987/mcp",
+              headers: { Authorization: "Bearer local" }
+            }
+          }
+        }
+      });
+      const workbuddyConfig = JSON.parse(fs.readFileSync(path.join(projectRoot, ".workbuddy", "mcp.json"), "utf8"));
+      expect(workbuddyConfig.mcpServers.skillhub).toMatchObject({ url: "http://127.0.0.1:3987/mcp", headers: { Authorization: "Bearer local" } });
+      expect(workbuddyConfig.mcpServers.skillhub.type).toBeUndefined();
+
+    } finally {
+      db.close();
+    }
+  });
+
+  it("claims semantically equivalent unmanaged Claude MCP entries", () => {
+    directory = testDir("mcphub-apply-equivalent-local");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectRoot, ".mcp.json"),
+      JSON.stringify({ mcpServers: { unityMCP: { url: "http://127.0.0.1:8082/mcp" } } }, null, 2),
+      "utf8"
+    );
+    const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["claude"]);
+    listMcpHub(db);
+
+    const applied = applyProjectMcpServer(db, project, "claude", "unityMCP");
+
+    expect(applied).toMatchObject({ toolId: "claude", server: { serverId: "unityMCP" } });
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8")).mcpServers.unityMCP).toMatchObject({
+      type: "http",
+      url: "http://127.0.0.1:8082/mcp"
+    });
+    expect(db.getProjectMcpBinding(project.id, project.rootPath, "claude", "unityMCP")).not.toBeNull();
+    db.close();
+  });
+
+  it("reports read-only MCP config files as writeback conflicts", () => {
+    directory = testDir("mcphub-readonly-config");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const configPath = path.join(projectRoot, ".mcp.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ mcpServers: { PapeEngineLauncer: { type: "http", url: "http://127.0.0.1:18765/mcp" } } }, null, 2),
+      "utf8"
+    );
+    fs.chmodSync(configPath, 0o444);
+    const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["claude"]);
+    listMcpHub(db);
+
+    try {
+      expect(() => applyProjectMcpServer(db, project, "claude", "unityMCP")).toThrow("目标 MCP 配置文件不可写");
+      expect(JSON.parse(fs.readFileSync(configPath, "utf8")).mcpServers).toEqual({
+        PapeEngineLauncer: { type: "http", url: "http://127.0.0.1:18765/mcp" }
+      });
+      expect(db.getProjectMcpBinding(project.id, project.rootPath, "claude", "unityMCP")).toBeNull();
+    } finally {
+      fs.chmodSync(configPath, 0o666);
+      db.close();
+    }
   });
 
   it("keeps failed MCP cleanup bindings owned when deleting a center server", () => {
@@ -225,11 +421,12 @@ describe("McpHub", () => {
     expect(state.targets.map((target) => ({ toolId: target.toolId, enabled: target.enabled, supported: target.supported, reason: target.reason }))).toEqual([
       { toolId: "claude", enabled: true, supported: true, reason: null },
       { toolId: "codex", enabled: true, supported: true, reason: null },
-      { toolId: "qwen", enabled: true, supported: false, reason: "尚未支持" }
+      { toolId: "qwen", enabled: true, supported: true, reason: null }
     ]);
 
     expect(() => applyProjectMcpServer(db, project, "opencode", server.serverId)).toThrow("该工具未在项目中启用");
     expect(applyProjectMcpServer(db, project, "claude", server.serverId)).toMatchObject({ toolId: "claude" });
+    expect(applyProjectMcpServer(db, project, "qwen", server.serverId)).toMatchObject({ toolId: "qwen", configPath: path.join(projectRoot, ".qwen", "settings.json") });
     db.close();
   });
 
@@ -249,8 +446,9 @@ describe("McpHub", () => {
       JSON.stringify({ mcp: { shared: { type: "local", command: ["node", "server.js"], environment: { ROOT: "${PROJECT_ROOT}" } } } }, null, 2),
       "utf8"
     );
+
     const project = db.addProject(projectRoot).project;
-    db.replaceProjectToolTargets(project.id, ["claude", "codex", "opencode"]);
+    db.replaceProjectToolTargets(project.id, ["claude", "codex", "opencode", "codebuddy"]);
     const beforeFiles = [
       fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8"),
       fs.readFileSync(path.join(projectRoot, ".codex", "config.toml"), "utf8"),
@@ -258,14 +456,14 @@ describe("McpHub", () => {
     ];
 
     const before = listProjectMcpState(db, project);
-    expect(before.localEntries).toHaveLength(3);
+    expect(before.localEntries).toHaveLength(4);
     expect(before.localEntries.every((entry) => entry.status === "unmanaged")).toBe(true);
 
     const migrated = migrateProjectLocalMcp(db, project, "shared");
     const after = listProjectMcpState(db, project);
 
     expect(migrated).toMatchObject({ action: "migrated", requiresConfirmation: false, server: { serverId: "shared" } });
-    expect(migrated.bindings.map((binding) => binding.toolId).sort()).toEqual(["claude", "codex", "opencode"]);
+    expect(migrated.bindings.map((binding) => binding.toolId).sort()).toEqual(["claude", "codebuddy", "codex", "opencode"]);
     expect(after.localEntries.every((entry) => entry.status === "managed")).toBe(true);
     expect(fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8")).toBe(beforeFiles[0]);
     expect(fs.readFileSync(path.join(projectRoot, ".codex", "config.toml"), "utf8")).toBe(beforeFiles[1]);

@@ -10,12 +10,14 @@ import {
   type HookHubSuiteInput,
   type HookHubSupportedToolId,
   isMcpHubTargetToolId,
+  isProjectConfigTargetId,
   isProjectResourceDirectoryPreference,
   isTerminalMode,
   isToolId,
   type AppConfig,
   type McpHubTargetToolId,
   type PluginHubComponentRef,
+  type ProjectConfigTargetId,
   type PluginHubCustomPluginInput,
   type PluginHubSourceDeleteMode,
   type ProjectLocalMcpMigrationMode,
@@ -45,13 +47,17 @@ import {
   applyGitHubSourceUpdate,
   checkGitHubUpdates,
   deleteSkillHubSkill,
+  deleteSkillHubSource,
   importGitHubSource,
   importLocalSkills,
   listSkillHub,
   listProjectLocalSkillsState,
   migrateProjectLocalSkill,
+  openProjectLocalSkill,
+  openProjectSkillTarget,
   openSkillHubSkill,
   previewDeleteSkillHubSkill,
+  repairSkillHubSkillMetadata,
   seedDefaultSkillHubSources
 } from "../skillhub/skillhub.js";
 import {
@@ -78,7 +84,8 @@ import {
   importMcpHubJson,
   listMcpHub,
   listProjectMcpState,
-  migrateProjectLocalMcp
+  migrateProjectLocalMcp,
+  openProjectMcpTarget
 } from "../mcphub/mcphub.js";
 import {
   applyHookHubSuiteToProject,
@@ -90,6 +97,7 @@ import {
   isHookHubSupportedToolId,
   listHookHub,
   listProjectHookState,
+  openProjectHookConfig,
   removeProjectHookBinding,
   shareProjectHooksToHookHub,
   syncHookHubSuiteToEnabledProjects,
@@ -110,6 +118,8 @@ import {
   listProjectLocalAgentState,
   migrateProjectLocalAgent,
   openAgentHubAgent,
+  openProjectAgentBinding,
+  openProjectLocalAgent,
   refreshAgentHubDiscovery,
   reparseAgentHubAgent,
   syncProjectAgents,
@@ -140,6 +150,7 @@ import {
   executeProjectCliCommand,
   listProjectCliActions
 } from "../projectCli/projectCliActions.js";
+import { ProjectServiceError } from "../projectServices/projectServices.js";
 import { applyRuleSync, commitRuleSyncTarget, createRuleFile, createRuleTemplateFile, getRuleSyncStatus, openRuleFile, prepareRuleFileCreate } from "../skillhub/ruleSync.js";
 import { listProjectSkillTargetsState, listProjectToolTargets, setProjectSkillTargets, unavailableProjectToolIds, updateProjectToolTargets } from "../skillhub/projectSkills.js";
 import type { AppContext } from "../appContext.js";
@@ -149,16 +160,6 @@ import { apiTimingMiddleware } from "./apiTiming.js";
 export function installApi(app: Express, context: AppContext): void {
   app.use(express.json({ limit: "1mb" }));
   app.use("/api", apiTimingMiddleware(context));
-
-  app.use("/api", (request, response, next) => {
-    const eventStreamToken = request.path === "/events" && typeof request.query.token === "string" ? request.query.token : null;
-    const token = request.header("x-local-api-token") ?? eventStreamToken;
-    if (token !== context.token) {
-      response.status(401).json({ error: "invalid-local-token" });
-      return;
-    }
-    next();
-  });
 
   app.get("/api/bootstrap", (_request, response) => {
     response.json(context.bootstrapState());
@@ -299,6 +300,16 @@ export function installApi(app: Express, context: AppContext): void {
       response.json(applyGitHubSourceUpdate(context.database(), context.config(), dataDir, request.params.id, { confirmDestructive: Boolean(request.body?.confirmDestructive) }));
     } catch (error) {
       response.status(400).json({ error: "skillhub-update-apply-failed", reason: error instanceof Error ? error.message : "skillhub-update-apply-failed" });
+    }
+  });
+
+  app.delete("/api/skillhub/sources/:id", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    try {
+      response.json(deleteSkillHubSource(context.database(), context.config(), dataDir, request.params.id));
+    } catch (error) {
+      response.status(404).json({ error: "skillhub-source-delete-failed", reason: error instanceof Error ? error.message : "skillhub-source-delete-failed" });
     }
   });
 
@@ -533,8 +544,7 @@ export function installApi(app: Express, context: AppContext): void {
         const channelId = stringBody(request, "channelId");
         const plan = await createCliHubInstallLaunchPlan(context.database(), cliId, channelId, dataDir, context.cliHubRuntimeOptions());
         const launchPlan = withCliHubInstallCompletionCallback(plan, {
-          url: `${request.protocol}://${request.get("host")}/api/clihub/clis/${encodeURIComponent(cliId)}/install-terminal/complete?channelId=${encodeURIComponent(plan.channel.channelId)}`,
-          token: context.token
+          url: `${request.protocol}://${request.get("host")}/api/clihub/clis/${encodeURIComponent(cliId)}/install-terminal/complete?channelId=${encodeURIComponent(plan.channel.channelId)}`
         });
         const launch = launchInTerminal(launchPlan.command, {
           dryRun: Boolean(request.body?.dryRun),
@@ -618,8 +628,7 @@ export function installApi(app: Express, context: AppContext): void {
     try {
       const plan = createCliHubUpdateLaunchPlan(context.database(), cliId, dataDir);
       const launchPlan = withCliHubUpdateCompletionCallback(plan, {
-        url: `${request.protocol}://${request.get("host")}/api/clihub/clis/${encodeURIComponent(cliId)}/update-terminal/complete`,
-        token: context.token
+        url: `${request.protocol}://${request.get("host")}/api/clihub/clis/${encodeURIComponent(cliId)}/update-terminal/complete`
       });
       const launch = launchInTerminal(launchPlan.command, {
         dryRun: Boolean(request.body?.dryRun),
@@ -893,6 +902,44 @@ export function installApi(app: Express, context: AppContext): void {
     }
   });
 
+  app.get("/api/project-services", (_request, response) => {
+    response.json(context.projectServices().list(context.database()));
+  });
+
+  app.post("/api/project-services/:serviceId/start", (request, response) => {
+    const serviceId = stringParam(request, "serviceId");
+    if (!serviceId) {
+      response.status(404).json({ error: "project-service-not-found" });
+      return;
+    }
+    try {
+      response.json(context.projectServices().start(context.database(), serviceId, { dryRun: Boolean(request.body?.dryRun) }));
+    } catch (error) {
+      if (error instanceof ProjectServiceError) {
+        response.status(error.statusCode).json({ error: error.code, reason: error.message });
+        return;
+      }
+      response.status(400).json({ error: "project-service-start-failed", reason: error instanceof Error ? error.message : "project-service-start-failed" });
+    }
+  });
+
+  app.post("/api/project-services/:serviceId/stop", (request, response) => {
+    const serviceId = stringParam(request, "serviceId");
+    if (!serviceId) {
+      response.status(404).json({ error: "project-service-not-found" });
+      return;
+    }
+    try {
+      response.json(context.projectServices().stop(context.database(), serviceId));
+    } catch (error) {
+      if (error instanceof ProjectServiceError) {
+        response.status(error.statusCode).json({ error: error.code, reason: error.message });
+        return;
+      }
+      response.status(400).json({ error: "project-service-stop-failed", reason: error instanceof Error ? error.message : "project-service-stop-failed" });
+    }
+  });
+
   app.get("/api/projects", (_request, response) => {
     response.json(context.database().listProjects());
   });
@@ -904,9 +951,9 @@ export function installApi(app: Express, context: AppContext): void {
       return;
     }
     const includeSubdirectories = Boolean(request.body?.includeSubdirectories);
-    const toolIds = toolIdsBody(request);
+    const toolIds = projectConfigTargetIdsBody(request);
     if (toolIds === null) {
-      response.status(400).json({ error: "toolIds must be an array of supported tool ids" });
+      response.status(400).json({ error: "toolIds must be an array of supported project config target ids" });
       return;
     }
     const unavailableToolIds = toolIds ? unavailableProjectToolIds(context.config(), toolIds) : [];
@@ -914,7 +961,7 @@ export function installApi(app: Express, context: AppContext): void {
       response.status(409).json({
         error: "tool-unavailable",
         toolIds: unavailableToolIds,
-        reason: `只支持本机已安装的 CLI：${unavailableToolIds.join(", ")}`
+        reason: `只支持当前项目可配置目标：${unavailableToolIds.join(", ")}`
       });
       return;
     }
@@ -967,9 +1014,9 @@ export function installApi(app: Express, context: AppContext): void {
       response.status(404).json({ error: "project-not-found" });
       return;
     }
-    const toolIds = toolIdsBody(request);
+    const toolIds = projectConfigTargetIdsBody(request);
     if (!toolIds) {
-      response.status(400).json({ error: "toolIds must be an array of supported tool ids" });
+      response.status(400).json({ error: "toolIds must be an array of supported project config target ids" });
       return;
     }
     const unavailableToolIds = unavailableProjectToolIds(context.config(), toolIds);
@@ -977,7 +1024,7 @@ export function installApi(app: Express, context: AppContext): void {
       response.status(409).json({
         error: "tool-unavailable",
         toolIds: unavailableToolIds,
-        reason: `只支持本机已安装的 CLI：${unavailableToolIds.join(", ")}`
+        reason: `只支持当前项目可配置目标：${unavailableToolIds.join(", ")}`
       });
       return;
     }
@@ -1062,6 +1109,7 @@ export function installApi(app: Express, context: AppContext): void {
     const dataDir = requireDataDir(context, response);
     if (!dataDir) return;
     seedDefaultSkillHubSources(context.database(), context.config(), dataDir);
+    repairSkillHubSkillMetadata(context.database());
     const project = projectSkillScopeFromRequest(context, request, response);
     if (!project) {
       return;
@@ -1073,6 +1121,7 @@ export function installApi(app: Express, context: AppContext): void {
     const dataDir = requireDataDir(context, response);
     if (!dataDir) return;
     seedDefaultSkillHubSources(context.database(), context.config(), dataDir);
+    repairSkillHubSkillMetadata(context.database());
     const project = projectSkillScopeFromRequest(context, request, response);
     if (!project) {
       return;
@@ -1083,7 +1132,7 @@ export function installApi(app: Express, context: AppContext): void {
   app.post("/api/projects/:id/local-skills/migrate", (request, response) => {
     const dataDir = requireDataDir(context, response);
     const project = projectSkillScopeFromRequest(context, request, response);
-    const toolId = toolIdBody(request);
+    const toolId = projectConfigTargetIdBody(request);
     const folderName = stringBody(request, "folderName");
     const mode = localSkillMigrationModeBody(request);
     const target = localSkillMigrationTargetBody(request);
@@ -1099,6 +1148,43 @@ export function installApi(app: Express, context: AppContext): void {
       response.json(migrateProjectLocalSkill(context.database(), context.config(), dataDir, project, toolId, folderName, mode, target));
     } catch (error) {
       response.status(400).json({ error: "project-local-skill-migration-failed", reason: error instanceof Error ? error.message : "project-local-skill-migration-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/skill-targets/:skillId/:toolId/open", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = projectConfigTargetIdParam(request, "toolId");
+    const target = skillHubOpenTargetBody(request);
+    if (!project) return;
+    if (!toolId || !target) {
+      response.status(400).json({ error: "toolId and target are required" });
+      return;
+    }
+    try {
+      response.json(openProjectSkillTarget(context.database(), project, request.params.skillId, toolId, target, context.config()));
+    } catch (error) {
+      response.status(400).json({ error: "project-skill-target-open-failed", reason: error instanceof Error ? error.message : "project-skill-target-open-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/local-skills/open", (request, response) => {
+    const dataDir = requireDataDir(context, response);
+    if (!dataDir) return;
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = projectConfigTargetIdBody(request);
+    const folderName = stringBody(request, "folderName");
+    const target = skillHubOpenTargetBody(request);
+    if (!project) return;
+    if (!toolId || !folderName || !target) {
+      response.status(400).json({ error: "toolId, folderName, and target are required" });
+      return;
+    }
+    try {
+      response.json(openProjectLocalSkill(context.database(), project, toolId, folderName, target, context.config()));
+    } catch (error) {
+      response.status(400).json({ error: "project-local-skill-open-failed", reason: error instanceof Error ? error.message : "project-local-skill-open-failed" });
     }
   });
 
@@ -1172,7 +1258,7 @@ export function installApi(app: Express, context: AppContext): void {
     const toolId = mcpHubTargetToolIdParam(request);
     if (!project) return;
     if (!toolId) {
-      response.status(400).json({ error: "toolId must be claude, codex, or opencode" });
+      response.status(400).json({ error: "toolId must be a supported McpHub target" });
       return;
     }
     try {
@@ -1187,13 +1273,29 @@ export function installApi(app: Express, context: AppContext): void {
     const toolId = mcpHubTargetToolIdParam(request);
     if (!project) return;
     if (!toolId) {
-      response.status(400).json({ error: "toolId must be claude, codex, or opencode" });
+      response.status(400).json({ error: "toolId must be a supported McpHub target" });
       return;
     }
     try {
       response.json(disableProjectMcpServer(context.database(), project, toolId, request.params.serverId, context.config()));
     } catch (error) {
       response.status(400).json({ error: "project-mcp-disable-failed", reason: error instanceof Error ? error.message : "project-mcp-disable-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/mcp-targets/:toolId/open", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = mcpHubTargetToolIdParam(request);
+    const target = skillHubOpenTargetBody(request);
+    if (!project) return;
+    if (!toolId || !target) {
+      response.status(400).json({ error: "toolId and target are required" });
+      return;
+    }
+    try {
+      response.json(openProjectMcpTarget(context.database(), project, toolId, target, context.config()));
+    } catch (error) {
+      response.status(400).json({ error: "project-mcp-target-open-failed", reason: error instanceof Error ? error.message : "project-mcp-target-open-failed" });
     }
   });
 
@@ -1257,6 +1359,22 @@ export function installApi(app: Express, context: AppContext): void {
       response.json(shareProjectHooksToHookHub(context.database(), project, toolId, input));
     } catch (error) {
       response.status(400).json({ error: "project-hooks-share-failed", reason: error instanceof Error ? error.message : "project-hooks-share-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/hooks/:toolId/open", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = hookHubSupportedToolIdParam(request);
+    const target = skillHubOpenTargetBody(request);
+    if (!project) return;
+    if (!toolId || !target) {
+      response.status(400).json({ error: "toolId and target are required" });
+      return;
+    }
+    try {
+      response.json(openProjectHookConfig(context.database(), project, toolId, target));
+    } catch (error) {
+      response.status(400).json({ error: "project-hook-config-open-failed", reason: error instanceof Error ? error.message : "project-hook-config-open-failed" });
     }
   });
 
@@ -1344,7 +1462,7 @@ export function installApi(app: Express, context: AppContext): void {
     const toolId = agentHubToolIdParam(request, "toolId");
     if (!dataDir || !project) return;
     if (!toolId) {
-      response.status(400).json({ error: "toolId must be claude, codex, opencode, cursor, or qwen" });
+      response.status(400).json({ error: "toolId must be a supported AgentHub target" });
       return;
     }
     try {
@@ -1380,6 +1498,38 @@ export function installApi(app: Express, context: AppContext): void {
     }
   });
 
+  app.post("/api/projects/:id/agent-bindings/:bindingId/open", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const target = skillHubOpenTargetBody(request);
+    if (!project) return;
+    if (!target) {
+      response.status(400).json({ error: "target must be document or folder" });
+      return;
+    }
+    try {
+      response.json(openProjectAgentBinding(context.database(), project, request.params.bindingId, target));
+    } catch (error) {
+      response.status(400).json({ error: "project-agent-binding-open-failed", reason: error instanceof Error ? error.message : "project-agent-binding-open-failed" });
+    }
+  });
+
+  app.post("/api/projects/:id/local-agents/open", (request, response) => {
+    const project = projectSkillScopeFromRequest(context, request, response);
+    const toolId = agentHubToolIdBody(request, "toolId");
+    const outputPath = stringBody(request, "outputPath");
+    const target = skillHubOpenTargetBody(request);
+    if (!project) return;
+    if (!toolId || !outputPath || !target) {
+      response.status(400).json({ error: "toolId, outputPath, and target are required" });
+      return;
+    }
+    try {
+      response.json(openProjectLocalAgent(context.database(), project, toolId, outputPath, target));
+    } catch (error) {
+      response.status(400).json({ error: "project-local-agent-open-failed", reason: error instanceof Error ? error.message : "project-local-agent-open-failed" });
+    }
+  });
+
   app.post("/api/projects/:id/local-agents/migrate", (request, response) => {
     const dataDir = requireDataDir(context, response);
     const project = projectSkillScopeFromRequest(context, request, response);
@@ -1410,9 +1560,9 @@ export function installApi(app: Express, context: AppContext): void {
     if (!project) {
       return;
     }
-    const toolIds = toolIdsBody(request);
+    const toolIds = projectConfigTargetIdsBody(request);
     if (toolIds === null || toolIds === undefined) {
-      response.status(400).json({ error: "toolIds must be an array of supported tool ids" });
+      response.status(400).json({ error: "toolIds must be an array of supported project config target ids" });
       return;
     }
     try {
@@ -1427,20 +1577,14 @@ export function installApi(app: Express, context: AppContext): void {
   });
 
   app.get("/api/projects/:id/rule-sync/status", (request, response) => {
-    const project = context.database().getProject(request.params.id);
-    if (!project) {
-      response.status(404).json({ error: "project-not-found" });
-      return;
-    }
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
     response.json(getRuleSyncStatus(project));
   });
 
   app.post("/api/projects/:id/rule-sync/create-preview", (request, response) => {
-    const project = context.database().getProject(request.params.id);
-    if (!project) {
-      response.status(404).json({ error: "project-not-found" });
-      return;
-    }
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
     const file = ruleFileNameBody(request);
     const source = ruleCreateSourceBody(request);
     if (!file || !source) {
@@ -1455,11 +1599,8 @@ export function installApi(app: Express, context: AppContext): void {
   });
 
   app.post("/api/projects/:id/rule-sync/create", (request, response) => {
-    const project = context.database().getProject(request.params.id);
-    if (!project) {
-      response.status(404).json({ error: "project-not-found" });
-      return;
-    }
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
     const file = ruleFileNameBody(request);
     const content = rawStringBody(request, "content");
     if (!file || content === null) {
@@ -1474,11 +1615,8 @@ export function installApi(app: Express, context: AppContext): void {
   });
 
   app.post("/api/projects/:id/rule-sync/template", (request, response) => {
-    const project = context.database().getProject(request.params.id);
-    if (!project) {
-      response.status(404).json({ error: "project-not-found" });
-      return;
-    }
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
     try {
       response.json(createRuleTemplateFile(project));
     } catch (error) {
@@ -1487,11 +1625,8 @@ export function installApi(app: Express, context: AppContext): void {
   });
 
   app.post("/api/projects/:id/rule-sync/open", (request, response) => {
-    const project = context.database().getProject(request.params.id);
-    if (!project) {
-      response.status(404).json({ error: "project-not-found" });
-      return;
-    }
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
     const file = ruleFileNameBody(request);
     if (!file) {
       response.status(400).json({ error: "file must be AGENTS.md or CLAUDE.md" });
@@ -1505,11 +1640,8 @@ export function installApi(app: Express, context: AppContext): void {
   });
 
   app.post("/api/projects/:id/rule-sync/apply", (request, response) => {
-    const project = context.database().getProject(request.params.id);
-    if (!project) {
-      response.status(404).json({ error: "project-not-found" });
-      return;
-    }
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
     const direction = ruleSyncDirectionBody(request);
     if (!direction) {
       response.status(400).json({ error: "direction must be agents-to-claude or claude-to-agents" });
@@ -1528,11 +1660,8 @@ export function installApi(app: Express, context: AppContext): void {
   });
 
   app.post("/api/projects/:id/rule-sync/commit", (request, response) => {
-    const project = context.database().getProject(request.params.id);
-    if (!project) {
-      response.status(404).json({ error: "project-not-found" });
-      return;
-    }
+    const project = projectSkillScopeFromRequest(context, request, response);
+    if (!project) return;
     const direction = ruleSyncDirectionBody(request);
     if (!direction) {
       response.status(400).json({ error: "direction must be agents-to-claude or claude-to-agents" });
@@ -1832,8 +1961,30 @@ function toolIdsBody(request: Request): ToolId[] | undefined | null {
   return toolIds;
 }
 
+function projectConfigTargetIdsBody(request: Request): ProjectConfigTargetId[] | undefined | null {
+  if (request.body?.toolIds === undefined) return undefined;
+  if (!Array.isArray(request.body.toolIds)) return null;
+  const toolIds: ProjectConfigTargetId[] = [];
+  for (const item of request.body.toolIds) {
+    if (!isProjectConfigTargetId(item)) return null;
+    if (!toolIds.includes(item)) toolIds.push(item);
+  }
+  return toolIds;
+}
+
+function projectConfigTargetIdBody(request: Request): ProjectConfigTargetId | null {
+  return isProjectConfigTargetId(request.body?.toolId) ? request.body.toolId : null;
+}
+
+function projectConfigTargetIdParam(request: Request, key: string): ProjectConfigTargetId | null {
+  return isProjectConfigTargetId(request.params[key]) ? request.params[key] : null;
+}
 function toolIdBody(request: Request): ToolId | null {
   return isToolId(request.body?.toolId) ? request.body.toolId : null;
+}
+
+function toolIdParam(request: Request, key: string): ToolId | null {
+  return isToolId(request.params[key]) ? request.params[key] : null;
 }
 
 function hookHubSupportedToolIdBody(request: Request): HookHubSupportedToolId | null {
@@ -1934,7 +2085,7 @@ function hookHubPayloadsBody(request: Request): Partial<Record<HookHubSupportedT
   const value = request.body?.payloads;
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const payloads: HookHubSuiteInput["payloads"] = {};
-  for (const toolId of ["claude", "codex", "qwen", "qoder"] satisfies HookHubSupportedToolId[]) {
+  for (const toolId of ["claude", "codex", "qwen", "qoder", "kimi", "codebuddy"] satisfies HookHubSupportedToolId[]) {
     if (Object.prototype.hasOwnProperty.call(value, toolId)) payloads[toolId] = value[toolId];
   }
   return payloads;

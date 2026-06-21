@@ -27,28 +27,31 @@ function configureOnlyCodexAvailable(appContext: AppContext): void {
 }
 
 describe("API", () => {
-  it("rejects calls without the startup token", async () => {
-    directory = testDir("api-token");
+  it("allows calls without a startup token", async () => {
+    directory = testDir("api-no-token");
     context = new AppContext(directory);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
 
-    await request(app).get("/api/projects").expect(401);
+    await request(app).get("/api/projects").expect(200);
   });
 
-  it("writes API response timing logs for interface operations", async () => {
-    directory = testDir("api-response-timing");
+  it("writes API response timing logs only for useful signals", async () => {
+    directory = testDir("api-useful-response-timing");
     context = new AppContext(directory);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
 
-    await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(200);
+    await request(app).get("/api/projects").expect(200);
+    expect(timingLogExists(directory)).toBe(false);
 
-    const entry = await readTimingLogEntry(directory, (candidate) => candidate.path === "/api/projects");
+    await request(app).post("/api/bootstrap/data-dir").send({}).expect(400);
+
+    const entry = await readTimingLogEntry(directory, (candidate) => candidate.path === "/api/bootstrap/data-dir" && candidate.statusCode === 400);
     expect(entry).toMatchObject({
       type: "api-response-time",
-      system: "projects",
-      method: "GET",
-      path: "/api/projects",
-      statusCode: 200,
+      system: "bootstrap",
+      method: "POST",
+      path: "/api/bootstrap/data-dir",
+      statusCode: 400,
       queryKeys: []
     });
     expect(typeof entry.durationMs).toBe("number");
@@ -65,7 +68,6 @@ describe("API", () => {
 
     const added = await request(app)
       .post("/api/projects")
-      .set("x-local-api-token", context.token)
       .send({ rootPath: projectRoot })
       .expect(201);
 
@@ -81,19 +83,17 @@ describe("API", () => {
       title: "首包测试"
     }));
 
-    const list = await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(200);
+    const list = await request(app).get("/api/projects").expect(200);
     expect(list.body).toHaveLength(1);
 
     const detail = await request(app)
       .get(`/api/projects/${projectId}/detail`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(detail.body.groups[0].isRoot).toBe(true);
     expect(detail.body.groups[0].tools[0].sessions).toHaveLength(1);
 
     const summary = await request(app)
       .get(`/api/projects/${projectId}/detail?includeSessions=false`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(summary.body.groups[0].sessionCount).toBe(1);
     expect(summary.body.groups[0].tools[0]).toMatchObject({
@@ -103,7 +103,7 @@ describe("API", () => {
     });
   });
 
-  it("only returns installed CLI tools from project tool targets", async () => {
+  it("returns available CLI tools plus non-CLI project config targets", async () => {
     directory = testDir("api-project-tool-targets-installed-only");
     const projectRoot = path.join(directory, "repo");
     fs.mkdirSync(projectRoot);
@@ -113,21 +113,18 @@ describe("API", () => {
 
     const added = await request(app)
       .post("/api/projects")
-      .set("x-local-api-token", context.token)
       .send({ rootPath: projectRoot })
       .expect(201);
     const projectId = added.body.project.id as string;
 
     const targets = await request(app)
       .get(`/api/projects/${projectId}/tool-targets`)
-      .set("x-local-api-token", context.token)
       .expect(200);
-    expect(targets.body.map((target: { toolId: string }) => target.toolId)).toEqual(["codex"]);
+    expect(targets.body.map((target: { toolId: string }) => target.toolId)).toEqual(["codex", "zcode", "workbuddy", "trae-solo"]);
 
     const rejected = await request(app)
       .patch(`/api/projects/${projectId}/tool-targets`)
-      .set("x-local-api-token", context.token)
-      .send({ toolIds: ["codex", "qwen"] })
+      .send({ toolIds: ["codex", "zcode", "workbuddy", "trae-solo", "qwen"] })
       .expect(409);
     expect(rejected.body).toMatchObject({ error: "tool-unavailable", toolIds: ["qwen"] });
   });
@@ -142,21 +139,20 @@ describe("API", () => {
 
     await request(app)
       .post("/api/projects")
-      .set("x-local-api-token", context.token)
       .send({ rootPath: projectRoot, toolIds: ["qwen"] })
       .expect(409);
-    const projects = await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(200);
+    const projects = await request(app).get("/api/projects").expect(200);
     expect(projects.body).toEqual([]);
   });
 
-  it("injects the local API token into the production index", async () => {
-    directory = testDir("api-index-token");
+  it("serves the production index without local API token injection", async () => {
+    directory = testDir("api-index-no-token");
     context = new AppContext(directory);
     const app = await createHttpApp(context, { dev: false });
 
     const response = await request(app).get("/").expect(200);
-    expect(response.text).toContain("window.__LOCAL_API_TOKEN__");
-    expect(response.text).toContain(context.token);
+    expect(response.text).not.toContain("window.__LOCAL_API_TOKEN__");
+    expect(response.text).not.toContain("x-local-api-token");
     expect(response.header["cache-control"]).toContain("no-store");
   });
 
@@ -174,10 +170,10 @@ describe("API", () => {
       const app = await createHttpApp(context, { dev: false, serveClient: false });
 
       expect(context.bootstrapState().initialized).toBe(false);
-      await request(app).get("/api/local-filesystem/drives").set("x-local-api-token", context.token).expect(200);
-      const picked = await request(app).post("/api/local-filesystem/pick-directory").set("x-local-api-token", context.token).expect(200);
+      await request(app).get("/api/local-filesystem/drives").expect(200);
+      const picked = await request(app).post("/api/local-filesystem/pick-directory").expect(200);
       expect(picked.body).toEqual({ path: pickedPath, cancelled: false });
-      await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(409);
+      await request(app).get("/api/projects").expect(409);
     } finally {
       process.env.APPDATA = previousAppData;
       process.env.LOCALAPPDATA = previousLocalAppData;
@@ -193,7 +189,6 @@ describe("API", () => {
 
     const created = await request(app)
       .post("/api/local-filesystem/create-directory")
-      .set("x-local-api-token", context.token)
       .send({ parentPath: parentRoot, directoryName: "demo-project" })
       .expect(201);
 
@@ -202,7 +197,6 @@ describe("API", () => {
 
     await request(app)
       .post("/api/local-filesystem/create-directory")
-      .set("x-local-api-token", context.token)
       .send({ parentPath: parentRoot, directoryName: "..\\outside" })
       .expect(400);
   });
@@ -212,13 +206,12 @@ describe("API", () => {
     context = new AppContext(directory);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
 
-    const current = await request(app).get("/api/config").set("x-local-api-token", context.token).expect(200);
+    const current = await request(app).get("/api/config").expect(200);
     expect(current.body.terminal.mode).toBe("new-window");
     expect(current.body.projectResources.directoryPreference).toBe("private");
 
     const updated = await request(app)
       .patch("/api/config")
-      .set("x-local-api-token", context.token)
       .send({ terminal: { mode: "per-project" }, projectResources: { directoryPreference: "public" } })
       .expect(200);
 
@@ -228,12 +221,10 @@ describe("API", () => {
     expect(context.config().projectResources.directoryPreference).toBe("public");
     await request(app)
       .patch("/api/config")
-      .set("x-local-api-token", context.token)
       .send({ terminal: { mode: "last" } })
       .expect(400);
     await request(app)
       .patch("/api/config")
-      .set("x-local-api-token", context.token)
       .send({ projectResources: { directoryPreference: "shared" } })
       .expect(400);
   });
@@ -258,7 +249,6 @@ describe("API", () => {
 
     const response = await request(app)
       .post("/api/launch/resume")
-      .set("x-local-api-token", context.token)
       .send({ sessionId: "qwen:qwen-mismatch", dryRun: true })
       .expect(409);
 
@@ -299,7 +289,6 @@ describe("API", () => {
 
     const response = await request(app)
       .post("/api/launch/resume")
-      .set("x-local-api-token", context.token)
       .send({ sessionId: `qwen:${sessionId}`, dryRun: true })
       .expect(200);
 
@@ -344,7 +333,6 @@ describe("API", () => {
 
     const scan = await request(app)
       .post("/api/scan-runs")
-      .set("x-local-api-token", context.token)
       .send({ roots: [directory] })
       .expect(201);
 
@@ -355,13 +343,12 @@ describe("API", () => {
 
     const confirmed = await request(app)
       .post(`/api/scan-runs/${scan.body.scanRunId}/confirm`)
-      .set("x-local-api-token", context.token)
       .send({ candidateIds: scan.body.candidates.map((candidate: { id: string }) => candidate.id) })
       .expect(200);
     expect(confirmed.body).toHaveLength(1);
     expect(confirmed.body[0].rootPath).toBe(projectRoot);
 
-    const projects = await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(200);
+    const projects = await request(app).get("/api/projects").expect(200);
     expect(projects.body).toHaveLength(1);
     expect(projects.body[0].sessionCount).toBe(1);
   });
@@ -407,14 +394,13 @@ describe("API", () => {
 
     const refreshed = await request(app)
       .post("/api/sessions/refresh")
-      .set("x-local-api-token", context.token)
       .send({ toolIds: ["opencode"] })
       .expect(200);
 
     expect(refreshed.body).toMatchObject({ indexedCount: 2, addedProjectCount: 1 });
     expect(context.database().listSessions().map((session) => session.toolId)).toEqual(["opencode", "opencode"]);
 
-    const projects = await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(200);
+    const projects = await request(app).get("/api/projects").expect(200);
     expect(projects.body).toHaveLength(1);
     expect(projects.body[0]).toMatchObject({
       rootPath: oldOpencodeRoot,
@@ -442,7 +428,6 @@ describe("API", () => {
 
     await request(app)
       .post("/api/sessions/refresh")
-      .set("x-local-api-token", context.token)
       .send({ mode: "full", toolIds: ["codex"] })
       .expect(200);
 
@@ -450,7 +435,6 @@ describe("API", () => {
 
     const refreshed = await request(app)
       .post("/api/sessions/refresh")
-      .set("x-local-api-token", context.token)
       .send({ mode: "incremental", toolIds: ["codex"] })
       .expect(200);
 
@@ -480,14 +464,13 @@ describe("API", () => {
     pointMvpBToolsAtMissingSources(context, directory);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const project = context.database().addProject(projectRoot, true).project;
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const session = context.database().listSessions()[0];
     expect(session?.id).toBe("codex:codex-delete-1");
 
     const deleted = await request(app)
       .delete(`/api/sessions/${encodeURIComponent(session.id)}`)
-      .set("x-local-api-token", context.token)
       .expect(200);
 
     expect(deleted.body).toMatchObject({
@@ -504,7 +487,6 @@ describe("API", () => {
 
     const detail = await request(app)
       .get(`/api/projects/${project.id}/detail`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(detail.body.groups[0].sessionCount).toBe(0);
   });
@@ -540,11 +522,10 @@ describe("API", () => {
     context.config().tools.copilot.sessionSources = [path.join(directory, "missing-copilot-sessions")];
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const project = context.database().addProject(projectRoot, true).project;
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const deleted = await request(app)
       .delete(`/api/sessions/${encodeURIComponent("opencode:ses_delete")}`)
-      .set("x-local-api-token", context.token)
       .expect(200);
 
     expect(deleted.body).toMatchObject({
@@ -570,7 +551,6 @@ describe("API", () => {
 
     const detail = await request(app)
       .get(`/api/projects/${project.id}/detail`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(detail.body.groups[0].sessionCount).toBe(1);
     expect(detail.body.groups[0].tools[0].sessions[0].id).toBe("opencode:ses_keep");
@@ -589,7 +569,6 @@ describe("API", () => {
 
     const scan = await request(app)
       .post("/api/scan-runs")
-      .set("x-local-api-token", context.token)
       .send({ roots: [directory] })
       .expect(201);
 
@@ -598,7 +577,6 @@ describe("API", () => {
 
     const confirmed = await request(app)
       .post(`/api/scan-runs/${scan.body.scanRunId}/confirm`)
-      .set("x-local-api-token", context.token)
       .send({
         candidateIds: scan.body.candidates.map((candidate: { id: string }) => candidate.id),
         includeEmptyCandidates: true
@@ -639,7 +617,6 @@ describe("API", () => {
 
     const filtered = await request(app)
       .get(`/api/parser-warnings?projectId=${project.id}`)
-      .set("x-local-api-token", context.token)
       .expect(200);
 
     expect(filtered.body.map((warning: { message: string }) => warning.message)).toEqual(["current project warning"]);
@@ -690,18 +667,16 @@ describe("API", () => {
     const sourceProject = context.database().addProject(oldRoot, true).project;
     const targetProject = context.database().addProject(newRoot, false).project;
     const unrelatedProject = context.database().addProject(unrelatedRoot, false).project;
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const candidates = await request(app)
       .get(`/api/projects/${sourceProject.id}/repair-candidates`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(candidates.body[0]).toMatchObject({ projectId: targetProject.id, rootPath: newRoot });
     expect(candidates.body.map((candidate: { projectId: string }) => candidate.projectId)).not.toContain(unrelatedProject.id);
 
     const repaired = await request(app)
       .post(`/api/projects/${sourceProject.id}/repair`)
-      .set("x-local-api-token", context.token)
       .send({ targetProjectId: targetProject.id })
       .expect(200);
 
@@ -714,7 +689,7 @@ describe("API", () => {
       }
     });
 
-    const projects = await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(200);
+    const projects = await request(app).get("/api/projects").expect(200);
     expect(projects.body.map((project: { id: string }) => project.id)).toEqual(expect.arrayContaining([targetProject.id, unrelatedProject.id]));
     expect(projects.body.map((project: { id: string }) => project.id)).not.toContain(sourceProject.id);
     expect(projects.body.find((project: { id: string }) => project.id === targetProject.id)).toMatchObject({
@@ -749,11 +724,10 @@ describe("API", () => {
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const project = context.database().addProject(oldRoot, true).project;
 
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const relocated = await request(app)
       .post(`/api/projects/${project.id}/relocate`)
-      .set("x-local-api-token", context.token)
       .send({ newRoot })
       .expect(200);
 
@@ -779,7 +753,6 @@ describe("API", () => {
 
     const detail = await request(app)
       .get(`/api/projects/${project.id}/detail`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(detail.body.project.rootPath).toBe(newRoot);
     expect(detail.body.groups[0].tools[0].sessions[0]).toMatchObject({
@@ -824,11 +797,10 @@ describe("API", () => {
     const sourceProject = context.database().addProject(oldRoot, false).project;
     const knightProject = context.database().addProject(knightRoot, true).project;
     const unrelatedProject = context.database().addProject(unrelatedRoot, false).project;
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const candidates = await request(app)
       .get(`/api/projects/${sourceProject.id}/repair-candidates`)
-      .set("x-local-api-token", context.token)
       .expect(200);
 
     expect(candidates.body[0]).toMatchObject({ projectId: knightProject.id, rootPath: knightRoot });
@@ -864,11 +836,10 @@ describe("API", () => {
     const sourceProject = context.database().addProject(oldRoot, false).project;
     const finalChargeProject = context.database().addProject(finalChargeRoot, true).project;
     const unrelatedProject = context.database().addProject(unrelatedRoot, true).project;
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const candidates = await request(app)
       .get(`/api/projects/${sourceProject.id}/repair-candidates`)
-      .set("x-local-api-token", context.token)
       .expect(200);
 
     expect(candidates.body[0]).toMatchObject({ projectId: finalChargeProject.id, rootPath: finalChargeRoot });
@@ -907,17 +878,15 @@ describe("API", () => {
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const sourceProject = context.database().addProject(oldRoot, false).project;
     const targetProject = context.database().addProject(newRoot, true).project;
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const candidates = await request(app)
       .get(`/api/projects/${sourceProject.id}/repair-candidates`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(candidates.body[0]).toMatchObject({ projectId: targetProject.id, rootPath: newRoot });
 
     const repaired = await request(app)
       .post(`/api/projects/${sourceProject.id}/repair`)
-      .set("x-local-api-token", context.token)
       .send({ targetProjectId: targetProject.id })
       .expect(200);
     expect(repaired.body).toMatchObject({
@@ -930,13 +899,12 @@ describe("API", () => {
       }
     });
 
-    const projects = await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(200);
+    const projects = await request(app).get("/api/projects").expect(200);
     expect(projects.body.map((project: { id: string }) => project.id)).toEqual([targetProject.id]);
     expect(projects.body[0]).toMatchObject({ rootPath: newRoot, sessionCount: 2 });
 
     const detail = await request(app)
       .get(`/api/projects/${targetProject.id}/detail`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(detail.body.groups[0].tools[0]).toMatchObject({ toolId: "opencode", sessionCount: 2 });
     expect(detail.body.groups[0].tools[0].sessions[0]).toMatchObject({
@@ -1004,11 +972,10 @@ describe("API", () => {
     for (const noisyRoot of noisyRoots) {
       context.database().addProject(noisyRoot, true);
     }
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const candidates = await request(app)
       .get(`/api/projects/${sourceProject.id}/repair-candidates`)
-      .set("x-local-api-token", context.token)
       .expect(200);
 
     expect(candidates.body[0]).toMatchObject({ projectId: targetProject.id, rootPath: newRoot });
@@ -1059,11 +1026,10 @@ describe("API", () => {
     const sourceProject = context.database().addProject(oldRoot, false).project;
     const targetProject = context.database().addProject(targetRoot, true).project;
     const unrelatedProject = context.database().addProject(unrelatedRoot, true).project;
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const candidates = await request(app)
       .get(`/api/projects/${sourceProject.id}/repair-candidates`)
-      .set("x-local-api-token", context.token)
       .expect(200);
 
     expect(candidates.body[0]).toMatchObject({ projectId: targetProject.id, rootPath: targetRoot });
@@ -1113,11 +1079,10 @@ describe("API", () => {
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const sourceProject = context.database().addProject(oldRoot, false).project;
     const parentProject = context.database().addProject(parentRoot, true).project;
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const candidates = await request(app)
       .get(`/api/projects/${sourceProject.id}/repair-candidates`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(candidates.body[0]).toMatchObject({
       projectId: parentProject.id,
@@ -1128,7 +1093,6 @@ describe("API", () => {
 
     const repaired = await request(app)
       .post(`/api/projects/${sourceProject.id}/repair`)
-      .set("x-local-api-token", context.token)
       .send({ targetProjectId: parentProject.id, targetRootPath: childRoot })
       .expect(200);
     expect(repaired.body).toMatchObject({
@@ -1142,12 +1106,11 @@ describe("API", () => {
       }
     });
 
-    const projects = await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(200);
+    const projects = await request(app).get("/api/projects").expect(200);
     expect(projects.body.map((project: { id: string }) => project.id)).toEqual([parentProject.id]);
 
     const detail = await request(app)
       .get(`/api/projects/${parentProject.id}/detail`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     const childGroup = detail.body.groups.find((group: { fullPath: string }) => group.fullPath === childRoot);
     expect(childGroup).toMatchObject({ sessionCount: 2 });
@@ -1175,6 +1138,10 @@ async function readTimingLogEntry(
   }
 
   throw new Error(`API timing log entry was not written to ${logPath}`);
+}
+
+function timingLogExists(dataDir: string): boolean {
+  return fs.existsSync(path.join(dataDir, "logs", "api-response-times.ndjson"));
 }
 
 function claudeProjectSource(root: string, cwd: string, fileName: string): string {

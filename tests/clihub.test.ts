@@ -66,9 +66,10 @@ describe("CliHub", () => {
       "kimi",
       "opencode",
       "qoder",
-      "qwen"
+      "qwen",
+      "trae"
     ]);
-    expect(clihub.clis.map((cli) => cli.cliId)).not.toEqual(expect.arrayContaining(["deepcode", "reasonix"]));
+    expect(clihub.clis.filter((cli) => cli.kind === "custom").map((cli) => cli.cliId)).toEqual(["deepcode", "reasonix"]);
     expect(clihub.clis.map((cli) => cli.cliId)).not.toEqual(expect.arrayContaining(["aider"]));
     expect(clihub.clis.filter((cli) => cli.kind === "function").map((cli) => cli.cliId)).toEqual(["gh", "playwright", "lark-cli"]);
     expect(clihub.clis.filter((cli) => cli.kind === "dependency").map((cli) => cli.cliId)).toEqual(["git", "node", "npm"]);
@@ -163,6 +164,17 @@ describe("CliHub", () => {
         })
       ])
     );
+    expect(channels("trae")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channelId: "trae:official-windows",
+          provider: "installer-command",
+          installCommand: ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://trae.cn/trae-cli/install.ps1 | iex"],
+          updateCommand: ["traecli", "update"],
+          metadata: { docsUrl: "https://docs.trae.cn/cli_get-started-with-trae-cli" }
+        })
+      ])
+    );
     db.close();
   });
 
@@ -238,6 +250,25 @@ describe("CliHub", () => {
     expect(cliIds).toContain("custom-local-deepcode");
   });
 
+  it("keeps local-only experimental CLI rows visible as custom even when no path was discovered yet", () => {
+    directory = testDir("clihub-stale-builtins-unresolved");
+    const db = new AppDatabase(directory);
+    db.upsertCliHubCli(staleCliHubCli("deepcode", "builtin"));
+
+    const clihub = listCliHub(db);
+    const deepcode = clihub.clis.find((cli) => cli.cliId === "deepcode");
+    db.close();
+
+    expect(deepcode).toMatchObject({
+      kind: "custom",
+      sourceType: "custom",
+      sourceState: "local-path",
+      localPath: null,
+      availabilityState: "unknown",
+      resolvedPaths: []
+    });
+  });
+
   it("parses supported install providers and rejects unsafe or bare commands", () => {
     expect(parseCliHubInstallCommand("npm install -g example-cli")).toMatchObject({ provider: "npm", packageId: "example-cli" });
     expect(parseCliHubInstallCommand("winget install --id Git.Git")).toMatchObject({ provider: "winget", packageId: "Git.Git" });
@@ -262,6 +293,33 @@ describe("CliHub", () => {
     expect(() => parseCliHubInstallCommand("powershell -Command iwr https://example.test/install.ps1")).toThrow("powershell");
   });
 
+  it("refreshes process PATH before explicit discovery lookups", async () => {
+    directory = testDir("clihub-refresh-path-before-discovery");
+    const db = new AppDatabase(directory);
+    listCliHub(db);
+    const codexPath = "C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd";
+    const runner = new FakeCliRunner({
+      lookups: { codex: [] },
+      runs: {
+        [`${codexPath} --version`]: { exitCode: 0, stdout: "codex 1.2.3", stderr: "" }
+      }
+    });
+    let refreshed = false;
+    const pathManager = {
+      async ensureUserPath() {},
+      async refreshProcessPath() {
+        refreshed = true;
+        runner.lookups.codex = [codexPath];
+      }
+    };
+
+    const clihub = await refreshCliHubDiscovery(db, "codex", { commandRunner: runner, pathManager });
+    const codex = clihub.clis.find((cli) => cli.cliId === "codex");
+    db.close();
+
+    expect(refreshed).toBe(true);
+    expect(codex).toMatchObject({ availabilityState: "available", resolvedPaths: [codexPath], version: "codex 1.2.3" });
+  });
   it("refreshes discovery without making version failure unavailable", async () => {
     directory = testDir("clihub-discovery");
     const db = new AppDatabase(directory);
@@ -310,6 +368,37 @@ describe("CliHub", () => {
       version: "codex 2.0.0",
       currentProvider: { provider: "winget", packageId: "OpenAI.Codex", confidence: "high" }
     });
+
+    db.close();
+  });
+
+  it("discovers Qoder through qodercli and checks npm updates", async () => {
+    directory = testDir("clihub-qoder-qodercli-update");
+    const db = new AppDatabase(directory);
+    listCliHub(db);
+    const qoderPath = "C:\\Users\\tester\\AppData\\Roaming\\npm\\qodercli.cmd";
+    const runner = new FakeCliRunner({
+      lookups: {
+        qoder: [],
+        qodercli: [qoderPath]
+      },
+      runs: {
+        [`${qoderPath} --version`]: { exitCode: 0, stdout: "qodercli 1.2.3", stderr: "" },
+        "npm outdated -g --json @qoder-ai/qodercli": { exitCode: 0, stdout: "{}", stderr: "" }
+      }
+    });
+
+    await refreshCliHubDiscovery(db, "qoder", { commandRunner: runner });
+    expect(db.getCliHubCli("qoder")).toMatchObject({
+      availabilityState: "available",
+      version: "qodercli 1.2.3",
+      currentProvider: { provider: "npm", packageId: "@qoder-ai/qodercli", confidence: "high" }
+    });
+
+    const checked = await checkCliHubUpdates(db, "qoder", { commandRunner: runner });
+
+    expect(checked.clis.find((cli) => cli.cliId === "qoder")).toMatchObject({ updateStatus: "up-to-date", updateError: null });
+    expect(runner.executed).toContain("npm outdated -g --json @qoder-ai/qodercli");
 
     db.close();
   });
@@ -688,6 +777,38 @@ describe("CliHub", () => {
     }
   });
 
+  itWindows("discovers TRAE CLI from its official installer directory when PATH is missing it", async () => {
+    directory = testDir("clihub-trae-known-path");
+    const previousLocalAppData = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = directory;
+    const db = new AppDatabase(directory);
+    try {
+      listCliHub(db);
+      const traePath = path.join(directory, "trae-cli", "bin", "traecli.exe");
+      fs.mkdirSync(path.dirname(traePath), { recursive: true });
+      fs.writeFileSync(traePath, "binary", "utf8");
+      const runner = new FakeCliRunner({
+        lookups: { traecli: [], "trae-cli": [], ta: [] },
+        runs: {
+          [`${traePath} --version`]: { exitCode: 0, stdout: "TRAE CLI 1.2.3", stderr: "" }
+        }
+      });
+
+      const refreshed = await refreshCliHubDiscovery(db, "trae", { commandRunner: runner });
+
+      expect(refreshed.clis.find((cli) => cli.cliId === "trae")).toMatchObject({
+        availabilityState: "available",
+        resolvedPaths: [traePath],
+        version: "TRAE CLI 1.2.3",
+        currentProvider: { provider: "installer-command", packageId: "traecli", confidence: "high" }
+      });
+    } finally {
+      if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previousLocalAppData;
+      db.close();
+    }
+  });
+
   it("keeps failed update stderr in the operation message", async () => {
     directory = testDir("clihub-update-failure-detail");
     const db = new AppDatabase(directory);
@@ -732,7 +853,7 @@ describe("CliHub", () => {
         command: { command: "npm", args: ["update", "-g", "@qwen-code/qwen-code"], cwd: "E:\\repo" },
         commandText: "npm update -g @qwen-code/qwen-code"
       },
-      { url: "http://127.0.0.1:3987/api/clihub/clis/qwen/update-terminal/complete", token: "local-token" },
+      { url: "http://127.0.0.1:3987/api/clihub/clis/qwen/update-terminal/complete" },
       "win32"
     );
 
@@ -743,7 +864,9 @@ describe("CliHub", () => {
     expect(windowsTerminalArgs).not.toContain("exit $updateExitCode");
 
     const encodedScript = plan.command.args.at(-1);
-    expect(Buffer.from(encodedScript ?? "", "base64").toString("utf16le")).toContain("exit $commandExitCode");
+    const decodedScript = Buffer.from(encodedScript ?? "", "base64").toString("utf16le");
+    expect(decodedScript).toContain("exit $commandExitCode");
+    expect(decodedScript).not.toContain("x-local-api-token");
 
     const installPlan = withCliHubInstallCompletionCallback(
       {
@@ -753,7 +876,7 @@ describe("CliHub", () => {
         command: { command: "npm", args: ["install", "-g", "@qwen-code/qwen-code"], cwd: "E:\\repo" },
         commandText: "npm install -g @qwen-code/qwen-code"
       },
-      { url: "http://127.0.0.1:3987/api/clihub/clis/qwen/install-terminal/complete?channelId=qwen%3Anpm", token: "local-token" },
+      { url: "http://127.0.0.1:3987/api/clihub/clis/qwen/install-terminal/complete?channelId=qwen%3Anpm" },
       "win32"
     );
     expect(installPlan.command.args).toEqual(["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", expect.any(String)]);

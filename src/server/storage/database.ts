@@ -15,6 +15,7 @@ import type {
   PluginHubSource,
   Project,
   ProjectAgentTarget,
+  ProjectConfigTargetId,
   ProjectHookBinding,
   ProjectMcpBinding,
   ProjectPluginBinding,
@@ -30,7 +31,7 @@ import type {
   SkillHubSourceType,
   ToolId
 } from "../../shared/types.js";
-import { toolIds as allToolIds } from "../../shared/types.js";
+import { projectConfigTargetIds as allProjectConfigTargetIds } from "../../shared/types.js";
 import { json, parseJson } from "../core/json.js";
 import { candidateSortKey, isPathInsideOrEqual, isStrictChildPath, normalizeFsPath, rebasePath, relativeLabel } from "../core/pathUtils.js";
 import { nowIso } from "../core/time.js";
@@ -1651,14 +1652,14 @@ export class AppDatabase {
       .all(projectId)
       .map((row) => ({
         projectId: String(row.project_id),
-        toolId: String(row.tool_id) as ToolId,
+        toolId: String(row.tool_id) as ProjectConfigTargetId,
         enabled: Boolean(row.enabled),
         inferred: Boolean(row.inferred),
         updatedAt: String(row.updated_at)
       }));
   }
 
-  upsertProjectToolTarget(projectId: string, toolId: ToolId, enabled: boolean, inferred: boolean): void {
+  upsertProjectToolTarget(projectId: string, toolId: ProjectConfigTargetId, enabled: boolean, inferred: boolean): void {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO project_tool_targets (project_id, tool_id, enabled, inferred, updated_at)
@@ -1667,11 +1668,11 @@ export class AppDatabase {
       .run(projectId, toolId, enabled ? 1 : 0, inferred ? 1 : 0, nowIso());
   }
 
-  replaceProjectToolTargets(projectId: string, toolIds: ToolId[]): void {
+  replaceProjectToolTargets(projectId: string, toolIds: ProjectConfigTargetId[]): void {
     const selected = new Set(toolIds);
     this.db.exec("BEGIN;");
     try {
-      for (const toolId of allToolIds) {
+      for (const toolId of allProjectConfigTargetIds) {
         this.upsertProjectToolTarget(projectId, toolId, selected.has(toolId), false);
       }
       this.db.exec("COMMIT;");
@@ -1695,7 +1696,7 @@ export class AppDatabase {
       .map((row) => this.projectSkillTargetFromRow(row));
   }
 
-  getProjectSkillTargetByLinkPath(projectId: string, toolId: ToolId, linkPath: string): ProjectSkillTarget | null {
+  getProjectSkillTargetByLinkPath(projectId: string, toolId: ProjectConfigTargetId, linkPath: string): ProjectSkillTarget | null {
     const row = this.db
       .prepare("SELECT * FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND link_path = ?")
       .get(projectId, toolId, linkPath);
@@ -1722,7 +1723,7 @@ export class AppDatabase {
     return this.projectSkillTargetFromRow(stored);
   }
 
-  deleteProjectSkillTarget(projectId: string, toolId: ToolId, skillId: string, linkPath?: string): ProjectSkillTarget | null {
+  deleteProjectSkillTarget(projectId: string, toolId: ProjectConfigTargetId, skillId: string, linkPath?: string): ProjectSkillTarget | null {
     const row = linkPath
       ? this.db
           .prepare("SELECT * FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND skill_id = ? AND link_path = ?")
@@ -1743,7 +1744,7 @@ export class AppDatabase {
     return this.projectSkillTargetFromRow(row);
   }
 
-  deleteProjectSkillTargetByLinkPath(projectId: string, toolId: ToolId, linkPath: string): ProjectSkillTarget | null {
+  deleteProjectSkillTargetByLinkPath(projectId: string, toolId: ProjectConfigTargetId, linkPath: string): ProjectSkillTarget | null {
     const row = this.db
       .prepare("SELECT * FROM project_skill_targets WHERE project_id = ? AND tool_id = ? AND link_path = ?")
       .get(projectId, toolId, linkPath);
@@ -2463,7 +2464,7 @@ export class AppDatabase {
   private projectSkillTargetFromRow(row: Row): ProjectSkillTarget {
     return {
       projectId: String(row.project_id),
-      toolId: String(row.tool_id) as ToolId,
+      toolId: String(row.tool_id) as ProjectConfigTargetId,
       skillId: String(row.skill_id),
       linkPath: String(row.link_path),
       targetPath: String(row.target_path),
@@ -2655,5 +2656,5 @@ function isSqliteLockedError(error: unknown): boolean {
 }
 
 function isHookHubSupportedToolId(value: string): value is HookHubSupportedToolId {
-  return value === "claude" || value === "codex" || value === "qwen" || value === "qoder";
+  return value === "claude" || value === "codex" || value === "qwen" || value === "qoder" || value === "kimi" || value === "codebuddy";
 }

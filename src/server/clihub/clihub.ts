@@ -57,12 +57,10 @@ export interface CliHubInstallLaunchPlan {
 
 export interface CliHubUpdateCompletionCallback {
   url: string;
-  token: string;
 }
 
 export interface CliHubInstallCompletionCallback {
   url: string;
-  token: string;
 }
 
 export interface CliHubTerminalUpdateCompletion {
@@ -94,6 +92,7 @@ interface InstallCommandParseResult {
 
 interface CliHubDiscoveryOptions {
   includeDetails?: boolean;
+  refreshProcessPath?: boolean;
 }
 
 const outputLimit = 1200;
@@ -321,7 +320,7 @@ const builtInClis: BuiltInCli[] = [
     cliId: "qoder",
     displayName: "Qoder",
     kind: "project-tool",
-    commandNames: ["qoder"],
+    commandNames: ["qodercli", "qoder"],
     channels: [providerChannel("qoder:npm", "npm", "@qoder-ai/qodercli")]
   },
   {
@@ -370,6 +369,31 @@ const builtInClis: BuiltInCli[] = [
         "-Command",
         "iex (irm 'https://antigravity.google/cli/install.ps1')"
       ])
+    ]
+  },
+  {
+    cliId: "trae",
+    displayName: "TRAE CLI",
+    kind: "project-tool",
+    commandNames: ["traecli", "trae-cli", "ta"],
+    windowsPathHints: [
+      "%LOCALAPPDATA%\\trae-cli\\bin\\traecli.exe",
+      "%LOCALAPPDATA%\\trae-cli\\bin\\trae-cli.exe",
+      "%LOCALAPPDATA%\\trae-cli\\bin\\ta.exe"
+    ],
+    channels: [
+      {
+        ...installerCommandChannel("trae:official-windows", "official install script: Windows PowerShell", "traecli", [
+          "powershell",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          "irm https://trae.cn/trae-cli/install.ps1 | iex"
+        ]),
+        updateCommand: ["traecli", "update"],
+        metadata: { docsUrl: "https://docs.trae.cn/cli_get-started-with-trae-cli" }
+      }
     ]
   },
   {
@@ -428,7 +452,11 @@ const builtInClis: BuiltInCli[] = [
   }
 ];
 
-const localOnlyExperimentalCliIds = new Set(["deepcode", "reasonix"]);
+const localOnlyExperimentalClis = [
+  { cliId: "deepcode", displayName: "DeepCode", commandNames: ["deepcode"] },
+  { cliId: "reasonix", displayName: "Reasonix", commandNames: ["reasonix"] }
+] satisfies Array<Pick<BuiltInCli, "cliId" | "displayName" | "commandNames">>;
+const localOnlyExperimentalCliIds = new Set(localOnlyExperimentalClis.map((cli) => cli.cliId));
 
 export class CliHubOperationRunner {
   private running: CliHubRunningOperation | null = null;
@@ -472,13 +500,20 @@ export function ensureBuiltInCliHubClis(database: AppDatabase): void {
       channels
     });
   }
+  ensureLocalOnlyExperimentalCustomClis(database);
+}
+
+function ensureLocalOnlyExperimentalCustomClis(database: AppDatabase): void {
+  for (const cli of localOnlyExperimentalClis) {
+    if (database.getCliHubCli(cli.cliId)) continue;
+    database.upsertCliHubCli(emptyCli(cli.cliId, cli.displayName, "custom", "custom", "local-path", cli.commandNames));
+  }
 }
 
 function demoteLocalOnlyExperimentalBuiltInClis(database: AppDatabase): void {
   for (const cli of database.listCliHubClis()) {
     if (cli.sourceType !== "builtin" || !localOnlyExperimentalCliIds.has(cli.cliId)) continue;
     const localPath = cli.localPath ?? cli.resolvedPaths[0] ?? null;
-    if (!localPath) continue;
     database.upsertCliHubCli({
       ...cli,
       kind: "custom",
@@ -486,12 +521,14 @@ function demoteLocalOnlyExperimentalBuiltInClis(database: AppDatabase): void {
       sourceState: "local-path",
       localPath,
       channels: [],
-      currentProvider: {
-        provider: "local-path",
-        packageId: null,
-        confidence: "high",
-        reason: "从已移除的内置实验 CLI 保留为本地自定义 CLI"
-      },
+      currentProvider: localPath
+        ? {
+            provider: "local-path",
+            packageId: null,
+            confidence: "high",
+            reason: "从已移除的内置实验 CLI 保留为本地自定义 CLI"
+          }
+        : null,
       providerCandidates: [],
       updateStatus: "unknown",
       updateCheckedAt: null,
@@ -503,6 +540,7 @@ function demoteLocalOnlyExperimentalBuiltInClis(database: AppDatabase): void {
 
 export async function refreshCliHubDiscovery(database: AppDatabase, cliId?: string | null, options: CliHubRuntimeOptions = {}, discoveryOptions: CliHubDiscoveryOptions = {}): Promise<CliHubList> {
   ensureBuiltInCliHubClis(database);
+  if (discoveryOptions.refreshProcessPath ?? true) await pathManager(options).refreshProcessPath?.();
   const runner = commandRunner(options);
   const clis = cliId ? [requiredCli(database, cliId)] : database.listCliHubClis();
   const discoveredClis = await Promise.all(clis.map((cli) => discoverCli(cli, runner, { includeDetails: discoveryOptions.includeDetails ?? true })));
@@ -636,7 +674,7 @@ export async function createCliHubInstallLaunchPlan(
   options: CliHubRuntimeOptions = {}
 ): Promise<CliHubInstallLaunchPlan> {
   ensureBuiltInCliHubClis(database);
-  await refreshCliHubDiscovery(database, cliId, options);
+  await refreshCliHubDiscovery(database, cliId, options, { refreshProcessPath: false });
   const cli = requiredCli(database, cliId);
   if (cli.availabilityState === "available") {
     throw new Error("CLI 已可用，CliHub 已阻止安装第二份 provider");
@@ -870,7 +908,7 @@ async function checkOneCliUpdate(database: AppDatabase, cli: CliHubCli, options:
   });
 }
 
-async function discoverCli(cli: CliHubCli, runner: CliHubCommandRunner, options: Required<CliHubDiscoveryOptions>): Promise<CliHubCli> {
+async function discoverCli(cli: CliHubCli, runner: CliHubCommandRunner, options: { includeDetails: boolean }): Promise<CliHubCli> {
   const timestamp = nowIso();
   if (cli.sourceState === "local-path" && cli.localPath) {
     if (!fs.existsSync(cli.localPath)) {
@@ -1510,7 +1548,7 @@ function terminalCompletionScript(command: LaunchCommand, callback: CliHubUpdate
     "$commandExitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } elseif ($commandSucceeded) { 0 } else { 1 }",
     "$body = @{ exitCode = $commandExitCode } | ConvertTo-Json -Compress",
     "try {",
-    `  Invoke-RestMethod -Method Post -Uri ${quotePowerShell(callback.url)} -Headers @{ 'x-local-api-token' = ${quotePowerShell(callback.token)} } -ContentType 'application/json' -Body $body | Out-Null`,
+    `  Invoke-RestMethod -Method Post -Uri ${quotePowerShell(callback.url)} -ContentType 'application/json' -Body $body | Out-Null`,
     "  Write-Host 'Local AI Workbench 已刷新 CliHub 状态。'",
     "} catch {",
     "  Write-Warning \"Local AI Workbench 状态刷新失败：$($_.Exception.Message)\"",

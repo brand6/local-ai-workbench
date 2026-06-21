@@ -54,6 +54,14 @@ export function buildTerminalHost(command: LaunchCommand, options: TerminalHostO
       };
     }
 
+    if (options.preferPowerShell) {
+      return {
+        kind: "powershell",
+        executable: "cmd.exe",
+        args: ["/d", "/s", "/c", "start", "\"\"", "powershell.exe", ...encodedPowerShellHostArgs(command)]
+      };
+    }
+
     return {
       kind: "powershell",
       executable: "powershell.exe",
@@ -83,8 +91,16 @@ function powerShellHostArgs(command: LaunchCommand): string[] {
   return ["-NoExit", "-Command", powerShellInvoke(command.command, command.args)];
 }
 
+function encodedPowerShellHostArgs(command: LaunchCommand): string[] {
+  return ["-NoExit", "-EncodedCommand", encodePowerShellCommand(powerShellInvoke(command.command, command.args))];
+}
+
 function powerShellInvoke(command: string, args: string[]): string {
   return ["&", quotePowerShell(command), ...args.map(quotePowerShell)].join(" ");
+}
+
+function encodePowerShellCommand(script: string): string {
+  return Buffer.from(script, "utf16le").toString("base64");
 }
 
 function quotePowerShell(value: string): string {

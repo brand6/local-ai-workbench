@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ViteDevServer } from "vite";
 import { installApi } from "./api.js";
+import { installMcpEndpoint } from "./mcp.js";
 import type { AppContext } from "../appContext.js";
 
 export interface CreateServerOptions {
@@ -21,6 +22,7 @@ const INDEX_HEADERS = {
 export async function createHttpApp(context: AppContext, options: CreateServerOptions) {
   const app = express();
   installApi(app, context);
+  installMcpEndpoint(app, context);
 
   if (options.serveClient === false) {
     return app;
@@ -34,7 +36,7 @@ export async function createHttpApp(context: AppContext, options: CreateServerOp
     });
     app.use(vite.middlewares);
     app.use((request, response, next) => {
-      serveDevIndex(vite, request.originalUrl, context.token)
+      serveDevIndex(vite, request.originalUrl)
         .then((html) => response.status(200).set(INDEX_HEADERS).end(html))
         .catch(next);
     });
@@ -45,7 +47,7 @@ export async function createHttpApp(context: AppContext, options: CreateServerOp
   app.use(express.static(clientDir, { index: false }));
   app.use((_request, response) => {
     const html = fs.readFileSync(path.join(clientDir, "index.html"), "utf8");
-    response.status(200).set(INDEX_HEADERS).end(injectToken(html, context.token));
+    response.status(200).set(INDEX_HEADERS).end(html);
   });
 
   return app;
@@ -65,12 +67,7 @@ function resolveClientDir(currentDir: string): string {
   return found;
 }
 
-async function serveDevIndex(vite: ViteDevServer, url: string, token: string): Promise<string> {
+async function serveDevIndex(vite: ViteDevServer, url: string): Promise<string> {
   const template = fs.readFileSync(path.resolve("index.html"), "utf8");
-  return vite.transformIndexHtml(url, injectToken(template, token));
-}
-
-function injectToken(html: string, token: string): string {
-  const script = `<script>window.__LOCAL_API_TOKEN__ = ${JSON.stringify(token)};</script>`;
-  return html.includes("</head>") ? html.replace("</head>", `${script}\n</head>`) : `${script}\n${html}`;
+  return vite.transformIndexHtml(url, template);
 }

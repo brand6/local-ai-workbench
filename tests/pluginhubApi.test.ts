@@ -20,18 +20,18 @@ describe("PluginHub API", () => {
     context = new AppContext(directory);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
 
-    const cached = await request(app).get("/api/pluginhub").set("x-local-api-token", context.token).expect(200);
+    const cached = await request(app).get("/api/pluginhub").expect(200);
     expect(cached.body.sources).toEqual([]);
     expect(cached.body.plugins).toEqual([]);
 
-    const refreshed = await request(app).post("/api/pluginhub/discovery/refresh").set("x-local-api-token", context.token).expect(200);
+    const refreshed = await request(app).post("/api/pluginhub/discovery/refresh").expect(200);
     expect(refreshed.body.sources).toEqual([
       expect.objectContaining({ id: "pluginhub-source-caveman" }),
       expect.objectContaining({ id: "pluginhub-source-superpowers" })
     ]);
     expect(refreshed.body.plugins).toEqual([expect.objectContaining({ name: "caveman" }), expect.objectContaining({ name: "superpowers" })]);
 
-    const afterRefresh = await request(app).get("/api/pluginhub").set("x-local-api-token", context.token).expect(200);
+    const afterRefresh = await request(app).get("/api/pluginhub").expect(200);
     expect(afterRefresh.body.sources).toEqual([
       expect.objectContaining({ id: "pluginhub-source-caveman" }),
       expect.objectContaining({ id: "pluginhub-source-superpowers" })

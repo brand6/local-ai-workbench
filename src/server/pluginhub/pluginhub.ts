@@ -9,6 +9,7 @@ import type {
   AgentHubToolId,
   HookHubSupportedToolId,
   McpHubServer,
+  McpHubTargetToolId,
   PluginHubComponentRef,
   PluginHubCustomPluginInput,
   PluginHubDeleteFailure,
@@ -37,17 +38,21 @@ import type {
   SkillHubSource,
   ToolId
 } from "../../shared/types.js";
-import { isAgentHubToolId } from "../../shared/types.js";
+import { isAgentHubToolId, isMcpHubTargetToolId, isToolId } from "../../shared/types.js";
 import { openLocalPath } from "../core/localFilesystem.js";
 import { normalizeFsPath } from "../core/pathUtils.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";
-import { applyProjectAgentTarget, conversionPreview, importPluginHubAgentRoots, renderAgentForTool } from "../agenthub/agenthub.js";
+import { applyProjectAgentTarget, conversionPreview, importPluginHubAgentRoots, isLocalImportAgentCandidate, renderAgentForTool } from "../agenthub/agenthub.js";
 import { convertHookPayloadForTool, isHookHubSupportedToolId } from "../hookhub/hookhub.js";
 import { ensureSkillHub, parseGitHubInput } from "../skillhub/skillhub.js";
 import { createDirectoryLink, linkPointsTo, pathExists, removeDirectoryLink } from "../skillhub/links.js";
 import { listProjectToolTargets } from "../skillhub/projectSkills.js";
-import { importMcpHubJson, listMcpHub } from "../mcphub/mcphub.js";
+import { applyProjectMcpServer, disableProjectMcpServer, importMcpHubJson, listMcpHub } from "../mcphub/mcphub.js";
+
+type SessionProjectToolTarget = ProjectToolTarget & { toolId: ToolId };
+type PluginMcpTargetToolId = Extract<McpHubTargetToolId, ToolId>;
+type NativePluginToolId = Extract<ToolId, "claude" | "codex" | "qwen">;
 
 interface DiscoveredPlugin {
   name: string;
@@ -55,6 +60,17 @@ interface DiscoveredPlugin {
   description: string | null;
   directory: string;
   sourceRelativePath: string;
+  skills: DiscoveredPluginSkill[];
+  agentRoot: DiscoveredPluginAgentRoot | null;
+  mcpDocuments: DiscoveredPluginMcpDocument[];
+  privateFiles: DiscoveredPrivateFile[];
+}
+
+interface DiscoverPluginOptions {
+  preserveSourceRootInPackage?: boolean;
+}
+
+interface PluginFileRoutes {
   skills: DiscoveredPluginSkill[];
   agentRoot: DiscoveredPluginAgentRoot | null;
   mcpDocuments: DiscoveredPluginMcpDocument[];
@@ -86,6 +102,22 @@ interface DiscoveredPluginMcpDocument {
   sourceRelativePath: string;
   input: string;
 }
+
+interface DiscoveredPluginManifestFallback {
+  name: string | null;
+  displayName: string | null;
+  description: string | null;
+}
+
+interface DiscoveredMarketplacePlugin {
+  directory: string;
+  sourceRelativePath: string;
+  manifestFallback: DiscoveredPluginManifestFallback;
+}
+
+type PluginPackagePathPlugin = Pick<PluginHubPlugin, "name" | "privateFiles"> & {
+  source?: PluginHubSource | null;
+};
 
 interface ApplyOptions {
   conflictMode?: "overwrite" | "skip" | null;
@@ -141,8 +173,15 @@ interface AgentInstallPlan {
   targetPath: string;
 }
 
+interface McpInstallPlan {
+  ref: PluginHubComponentRef;
+  server: McpHubServer;
+  toolId: PluginMcpTargetToolId;
+  configPath: string;
+}
+
 interface NativePackageInstallPlan {
-  toolId: "claude" | "codex";
+  toolId: NativePluginToolId;
   ownerId: string;
   pluginName: string;
   packageRoot: string;
@@ -403,7 +442,7 @@ function importPluginHubSource(
         description: plugin.description,
         componentRefs,
         privateFiles,
-        harnessSupport: pluginHarnessSupport({ name: plugin.name, componentRefs, privateFiles })
+        harnessSupport: pluginHarnessSupport({ name: plugin.name, componentRefs, privateFiles, source })
       })
     );
   }
@@ -472,7 +511,7 @@ export function listProjectPluginState(database: AppDatabase, project: Project, 
   return {
     projectId: project.id,
     targetRootPath: project.rootPath,
-    toolTargets: listProjectToolTargets(database, project, config).filter((target) => target.enabled),
+    toolTargets: listProjectToolTargets(database, project, config).filter((target): target is SessionProjectToolTarget => target.enabled && isToolId(target.toolId)),
     plugins: database.listPluginHubPlugins().map(withResolvedPluginHarnessSupport),
     bindings,
     syncRequiredPluginIds: bindings.filter((binding) => binding.plugin && topologyHash(binding.plugin) !== binding.topologyHash).map((binding) => binding.pluginId)
@@ -667,16 +706,18 @@ function applyProjectPlugin(
   dataDir: string | null,
   project: Project,
   plugin: PluginHubPlugin,
-  toolTarget: ProjectToolTarget,
+  toolTarget: SessionProjectToolTarget,
   options: ApplyOptions
 ): ProjectPluginApplyResult {
   const existingBinding = database.getProjectPluginBinding(project.id, project.rootPath, toolTarget.toolId, plugin.id);
   const nativePackagePlans = nativePackageInstallPlans(project, plugin, toolTarget, existingBinding);
   const nativePackageMode = nativePackagePlans.length > 0;
   const skillPlans = nativePackageMode ? [] : skillInstallPlans(database, plugin, toolTarget);
-  const privatePlans = nativePackageMode ? [] : privateInstallPlans(project, plugin, existingBinding);
-  const nativeHookPlans = nativePackageMode && toolTarget.toolId !== "codex" ? [] : nativeHookInstallPlans(project, plugin, toolTarget, existingBinding);
-  const agentPlans = agentInstallPlans(database, project, plugin, toolTarget);
+  const privatePlans = nativePackageMode ? [] : privateInstallPlans(project, plugin, toolTarget, existingBinding);
+  const nativeHookPlans =
+    nativePackageMode && toolTarget.toolId !== "codex" && toolTarget.toolId !== "qwen" ? [] : nativeHookInstallPlans(database, project, plugin, toolTarget, existingBinding);
+  const mcpPlans = nativePackageMode ? [] : mcpInstallPlans(database, project, plugin, toolTarget);
+  const agentPlans = nativePackageMode && toolTarget.toolId !== "codex" ? [] : agentInstallPlans(database, project, plugin, toolTarget);
   const preview = previewProjectPluginPreflight(
     database,
     project,
@@ -686,6 +727,7 @@ function applyProjectPlugin(
     privatePlans,
     nativeHookPlans,
     nativePackagePlans,
+    mcpPlans,
     agentPlans
   );
   if (preview.preflight.length > 0 && !options.conflictMode) {
@@ -861,12 +903,40 @@ function applyProjectPlugin(
       });
       if (options.conflictMode === "skip") blocked = true;
       privateFileOwnership.push(hookOwnershipItem(plan, "blocked", "plugin-native hooks 必须覆盖或保持阻止"));
+      componentOwnership.push(...hookComponentOwnershipItems(database, plugin, plan, toolTarget.toolId, "existing", "plugin-native hooks 未覆盖"));
       continue;
     }
 
     if (needsOverwrite) backups.push(backupLocalTarget(project.rootPath, plan.configPath, "PluginHub", "hook"));
     writePluginHooksSection(toolTarget.toolId, plan.configPath, plan.hooks);
     privateFileOwnership.push(hookOwnershipItem(plan, "managed", hooksFingerprint(plan.hooks)));
+    componentOwnership.push(...hookComponentOwnershipItems(database, plugin, plan, toolTarget.toolId, "managed", null));
+  }
+
+  for (const plan of mcpPlans) {
+    const existingBindingForServer = database.getProjectMcpBinding(project.id, project.rootPath, plan.toolId, plan.server.serverId);
+    const localEntry = existingBindingForServer ? null : readPluginMcpConfigEntry(plan.configPath, plan.toolId, plan.server.serverId);
+    if (localEntry && options.conflictMode !== "overwrite") {
+      preflight.push({
+        targetPath: plan.configPath,
+        targetResourceType: "mcp",
+        existingOwnerType: "local",
+        overwriteReason: "目标工具已有未接管 MCP entry",
+        backupRequired: true,
+        required: plan.ref.required,
+        componentId: plan.server.serverId,
+        privateFileId: null
+      });
+      if (plan.ref.required && options.conflictMode === "skip") blocked = true;
+      componentOwnership.push(mcpOwnershipItem(plan, "existing", "沿用项目本地 MCP entry", plan.configPath));
+      continue;
+    }
+    if (localEntry) {
+      backups.push(backupLocalTarget(project.rootPath, plan.configPath, "PluginHub", "mcp"));
+      removePluginMcpConfigEntry(plan.configPath, plan.toolId, plan.server.serverId);
+    }
+    const applied = applyProjectMcpServer(database, project, plan.toolId, plan.server.serverId, options.config);
+    componentOwnership.push(mcpOwnershipItem(plan, "managed", null, applied.configPath));
   }
 
   for (const plan of agentPlans) {
@@ -953,12 +1023,13 @@ function applyProjectPlugin(
 function previewProjectPluginPreflight(
   database: AppDatabase,
   project: Project,
-  toolTarget: ProjectToolTarget,
+  toolTarget: SessionProjectToolTarget,
   existingBinding: ProjectPluginBinding | null,
   skillPlans: SkillInstallPlan[],
   privatePlans: PrivateInstallPlan[],
   nativeHookPlans: NativeHookInstallPlan[],
   nativePackagePlans: NativePackageInstallPlan[],
+  mcpPlans: McpInstallPlan[],
   agentPlans: AgentInstallPlan[]
 ): { preflight: ProjectPluginPreflightItem[]; blocked: boolean } {
   const preflight: ProjectPluginPreflightItem[] = [];
@@ -1058,6 +1129,23 @@ function previewProjectPluginPreflight(
       required: true,
       componentId: null,
       privateFileId: plan.ownerId
+    });
+  }
+
+  for (const plan of mcpPlans) {
+    const existingBindingForServer = database.getProjectMcpBinding(project.id, project.rootPath, plan.toolId, plan.server.serverId);
+    if (existingBindingForServer) continue;
+    const existingConfigEntry = readPluginMcpConfigEntry(plan.configPath, plan.toolId, plan.server.serverId);
+    if (!existingConfigEntry) continue;
+    preflight.push({
+      targetPath: plan.configPath,
+      targetResourceType: "mcp",
+      existingOwnerType: "local",
+      overwriteReason: "目标工具已有未接管 MCP entry",
+      backupRequired: true,
+      required: plan.ref.required,
+      componentId: plan.server.serverId,
+      privateFileId: null
     });
   }
 
@@ -1168,6 +1256,24 @@ function discoverPluginSource(
 } {
   const pluginsRoot = path.join(sourcePath, "plugins");
   const skipped: Array<{ path: string; reason: string }> = [];
+  if (!fs.existsSync(pluginsRoot) && hasPluginContent(sourcePath)) {
+    return {
+      kind: "single-plugin",
+      plugins: [
+        discoverPlugin(sourcePath, sourceIdentityName, { name: sourceIdentityName, displayName: sourceIdentityName, description: null }, {
+          preserveSourceRootInPackage: !hasNativePluginManifest(sourcePath)
+        })
+      ],
+      skipped
+    };
+  }
+
+  const marketplacePlugins = discoverMarketplacePlugins(sourcePath, skipped);
+  if (marketplacePlugins.length > 0) {
+    const plugins = marketplacePlugins.map((plugin) => discoverPlugin(plugin.directory, plugin.sourceRelativePath, plugin.manifestFallback));
+    return { kind: "library", plugins, skipped };
+  }
+
   if (fs.existsSync(pluginsRoot) && fs.statSync(pluginsRoot).isDirectory()) {
     const plugins = fs
       .readdirSync(pluginsRoot, { withFileTypes: true })
@@ -1180,28 +1286,123 @@ function discoverPluginSource(
     return { kind: "library", plugins, skipped };
   }
 
-  if (hasPluginContent(sourcePath)) {
-    return { kind: "single-plugin", plugins: [discoverPlugin(sourcePath, sourceIdentityName)], skipped };
-  }
-
   skipped.push({ path: sourcePath, reason: "未找到 plugins/、skills/ 或 plugin manifest" });
   return { kind: "library", plugins: [], skipped };
 }
 
-function discoverPlugin(pluginDir: string, sourceRelativePath: string): DiscoveredPlugin {
+function discoverMarketplacePlugins(sourcePath: string, skipped: Array<{ path: string; reason: string }>): DiscoveredMarketplacePlugin[] {
+  const plugins: DiscoveredMarketplacePlugin[] = [];
+  const seen = new Set<string>();
+  for (const marketplacePath of marketplaceManifestPaths(sourcePath)) {
+    if (!fs.existsSync(marketplacePath) || !fs.statSync(marketplacePath).isFile()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fs.readFileSync(marketplacePath, "utf8"));
+    } catch {
+      skipped.push({ path: marketplacePath, reason: "marketplace manifest JSON 解析失败" });
+      continue;
+    }
+    if (!isRecord(parsed) || !Array.isArray(parsed.plugins)) {
+      skipped.push({ path: marketplacePath, reason: "marketplace manifest 缺少 plugins 列表" });
+      continue;
+    }
+    for (const entry of parsed.plugins) {
+      if (!isRecord(entry)) continue;
+      const rawSource = marketplacePluginSourcePath(entry);
+      const entryName = stringValue(entry.name);
+      if (!rawSource) {
+        skipped.push({ path: marketplacePath, reason: `${entryName ?? "plugin"} 缺少 source 路径` });
+        continue;
+      }
+      let directory: string;
+      try {
+        directory = safeJoin(sourcePath, rawSource);
+      } catch (error) {
+        skipped.push({ path: marketplacePath, reason: error instanceof Error ? error.message : `${entryName ?? rawSource} source 路径无效` });
+        continue;
+      }
+      if (!fs.existsSync(directory) || !fs.statSync(directory).isDirectory()) {
+        skipped.push({ path: normalizeRelativePath(path.join(path.relative(sourcePath, marketplacePath), rawSource)), reason: "marketplace plugin source path not found" });
+        continue;
+      }
+      if (!hasPluginContent(directory)) {
+        skipped.push({ path: normalizeRelativePath(path.relative(sourcePath, directory)), reason: "marketplace plugin source 缺少 plugin content" });
+        continue;
+      }
+      const key = normalizeFsPath(directory);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      plugins.push({
+        directory,
+        sourceRelativePath: normalizeRelativePath(path.relative(sourcePath, directory)),
+        manifestFallback: marketplacePluginManifestFallback(entry)
+      });
+    }
+  }
+  return plugins;
+}
+
+function marketplaceManifestPaths(sourcePath: string): string[] {
+  return [
+    path.join(sourcePath, ".claude-plugin", "marketplace.json"),
+    path.join(sourcePath, ".agents", "plugins", "marketplace.json"),
+    path.join(sourcePath, ".cursor-plugin", "marketplace.json")
+  ];
+}
+
+function marketplacePluginSourcePath(entry: Record<string, unknown>): string | null {
+  const source = entry.source;
+  if (typeof source === "string" && source.trim()) return source.trim();
+  if (isRecord(source)) {
+    const localPath = stringValue(source.path);
+    if (localPath) return localPath.trim();
+  }
+  return stringValue(entry.path)?.trim() ?? null;
+}
+
+function marketplacePluginManifestFallback(entry: Record<string, unknown>): DiscoveredPluginManifestFallback {
+  const interfaceInfo = isRecord(entry.interface) ? entry.interface : {};
+  return {
+    name: stringValue(entry.name),
+    displayName: stringValue(entry.displayName) ?? stringValue(interfaceInfo.displayName) ?? stringValue(entry.title),
+    description: stringValue(entry.description) ?? stringValue(interfaceInfo.longDescription) ?? stringValue(interfaceInfo.shortDescription)
+  };
+}
+
+function discoverPlugin(
+  pluginDir: string,
+  sourceRelativePath: string,
+  manifestFallback: DiscoveredPluginManifestFallback = { name: null, displayName: null, description: null },
+  options: DiscoverPluginOptions = {}
+): DiscoveredPlugin {
   const manifest = readPluginManifest(pluginDir);
-  const name = safeName(manifest.name || path.basename(pluginDir));
-  const displayName = manifest.displayName || manifest.name || path.basename(pluginDir);
+  const rawName = manifest.name ?? manifestFallback.name ?? path.basename(pluginDir);
+  const name = safeName(rawName) || safeName(path.basename(pluginDir)) || "plugin";
+  const displayName = manifest.displayName ?? manifestFallback.displayName ?? manifest.name ?? manifestFallback.name ?? path.basename(pluginDir);
+  const routes = routePluginFiles(pluginDir, sourceRelativePath, name, options);
   return {
     name,
     displayName,
-    description: manifest.description,
+    description: manifest.description ?? manifestFallback.description,
     directory: pluginDir,
     sourceRelativePath,
-    skills: discoverPluginSkills(pluginDir, sourceRelativePath),
-    agentRoot: discoverPluginAgentRoot(pluginDir, sourceRelativePath),
-    mcpDocuments: discoverPluginMcpDocuments(pluginDir, sourceRelativePath),
-    privateFiles: discoverPrivateFiles(pluginDir, sourceRelativePath, name)
+    skills: routes.skills,
+    agentRoot: routes.agentRoot,
+    mcpDocuments: routes.mcpDocuments,
+    privateFiles: routes.privateFiles
+  };
+}
+
+function routePluginFiles(pluginDir: string, pluginSourceRelativePath: string, pluginName: string, options: DiscoverPluginOptions): PluginFileRoutes {
+  const skills = discoverPluginSkills(pluginDir, pluginSourceRelativePath);
+  const agentRoot = discoverPluginAgentRoot(pluginDir, pluginSourceRelativePath);
+  const mcpDocuments = discoverPluginMcpDocuments(pluginDir, pluginSourceRelativePath);
+  const routedComponentFiles = routedPluginComponentFiles(pluginDir, pluginSourceRelativePath, skills, agentRoot, mcpDocuments);
+  return {
+    skills,
+    agentRoot,
+    mcpDocuments,
+    privateFiles: discoverPrivateFiles(pluginDir, pluginSourceRelativePath, pluginName, options, routedComponentFiles)
   };
 }
 
@@ -1254,7 +1455,7 @@ function discoverPluginMcpDocuments(pluginDir: string, pluginSourceRelativePath:
     }
   }
 
-  for (const manifestPath of [path.join(pluginDir, ".codex-plugin", "plugin.json"), path.join(pluginDir, ".claude-plugin", "plugin.json")]) {
+  for (const manifestPath of [path.join(pluginDir, ".codex-plugin", "plugin.json"), path.join(pluginDir, ".claude-plugin", "plugin.json"), path.join(pluginDir, "qwen-extension.json")]) {
     if (!fs.existsSync(manifestPath) || !fs.statSync(manifestPath).isFile()) continue;
     try {
       const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
@@ -1286,21 +1487,71 @@ function discoverPluginMcpDocuments(pluginDir: string, pluginSourceRelativePath:
   });
 }
 
-function discoverPrivateFiles(pluginDir: string, pluginSourceRelativePath: string, pluginName: string): DiscoveredPrivateFile[] {
+function discoverPrivateFiles(
+  pluginDir: string,
+  pluginSourceRelativePath: string,
+  pluginName: string,
+  options: DiscoverPluginOptions = {},
+  routedComponentFiles: Set<string> = new Set()
+): DiscoveredPrivateFile[] {
   const files: DiscoveredPrivateFile[] = [];
   for (const file of listFiles(pluginDir)) {
     const relativeFromPlugin = normalizeRelativePath(path.relative(pluginDir, file));
-    if (relativeFromPlugin === "SKILL.md" || relativeFromPlugin.startsWith("skills/")) continue;
+    if (routedComponentFiles.has(relativeFromPlugin)) continue;
+    if (!options.preserveSourceRootInPackage && (relativeFromPlugin === "SKILL.md" || relativeFromPlugin.startsWith("skills/"))) continue;
     if (isRepositoryMaintenanceFile(relativeFromPlugin)) continue;
     const sourceRelativePath = normalizeRelativePath(path.join(pluginSourceRelativePath, relativeFromPlugin));
+    const targetPackagePath = options.preserveSourceRootInPackage ? sourceRelativePath : relativeFromPlugin;
     files.push({
       filePath: file,
       sourceRelativePath,
-      targetRelativePath: normalizeRelativePath(path.join(".agents", "plugins", pluginName, relativeFromPlugin)),
+      targetRelativePath: normalizeRelativePath(path.join(".agents", "plugins", pluginName, targetPackagePath)),
       contentHash: hashFile(file)
     });
   }
   return files;
+}
+
+function routedPluginComponentFiles(
+  pluginDir: string,
+  pluginSourceRelativePath: string,
+  skills: DiscoveredPluginSkill[],
+  agentRoot: DiscoveredPluginAgentRoot | null,
+  mcpDocuments: DiscoveredPluginMcpDocument[]
+): Set<string> {
+  const routed = new Set<string>();
+  for (const skill of skills) {
+    for (const file of listFiles(skill.directory)) routed.add(normalizeRelativePath(path.relative(pluginDir, file)));
+  }
+  if (agentRoot) {
+    for (const file of listFiles(agentRoot.rootPath)) {
+      const relativeFromAgentRoot = normalizeRelativePath(path.relative(agentRoot.rootPath, file));
+      const relativeFromPlugin = normalizeRelativePath(path.relative(pluginDir, file));
+      if (isPluginAgentComponentFile(agentRoot.rootPath, relativeFromAgentRoot, file)) routed.add(relativeFromPlugin);
+    }
+  }
+  for (const document of mcpDocuments) {
+    const relativeFromPlugin = relativeToPluginSource(pluginSourceRelativePath, document.sourceRelativePath);
+    if (relativeFromPlugin) routed.add(relativeFromPlugin);
+  }
+  return routed;
+}
+
+function isPluginAgentComponentFile(agentsRoot: string, relativeFromAgentRoot: string, filePath: string): boolean {
+  if (path.extname(relativeFromAgentRoot).toLowerCase() !== ".md") return false;
+  try {
+    return isLocalImportAgentCandidate(relativeFromAgentRoot, "claude", fs.readFileSync(filePath, "utf8"), agentsRoot);
+  } catch {
+    return false;
+  }
+}
+
+function relativeToPluginSource(pluginSourceRelativePath: string, sourceRelativePath: string): string | null {
+  const normalizedSource = normalizeRelativePath(sourceRelativePath);
+  const normalizedPlugin = normalizeRelativePath(pluginSourceRelativePath);
+  if (normalizedSource === normalizedPlugin) return "";
+  const prefix = `${normalizedPlugin}/`;
+  return normalizedSource.startsWith(prefix) ? normalizedSource.slice(prefix.length) : null;
 }
 
 function isRepositoryMaintenanceFile(relativePath: string): boolean {
@@ -1333,7 +1584,9 @@ function classifyPluginPrivateFile(sourceRelativePath: string): PluginHubPrivate
     normalized.includes("/.codex-plugin/") ||
     normalized.includes("/.claude-plugin/") ||
     normalized.includes("/.cursor-plugin/") ||
-    normalized.includes("/.opencode/")
+    normalized.includes("/.opencode/") ||
+    normalized === "qwen-extension.json" ||
+    normalized.endsWith("/qwen-extension.json")
   ) {
     return "native-manifest";
   }
@@ -1403,7 +1656,7 @@ function importDiscoveredPluginMcp(
   return serversByPlugin;
 }
 
-function skillInstallPlans(database: AppDatabase, plugin: PluginHubPlugin, toolTarget: ProjectToolTarget): SkillInstallPlan[] {
+function skillInstallPlans(database: AppDatabase, plugin: PluginHubPlugin, toolTarget: SessionProjectToolTarget): SkillInstallPlan[] {
   if (!toolTarget.skillDirectory) return [];
   return plugin.componentRefs.flatMap((ref) => {
     if (ref.type !== "skill") return [];
@@ -1413,8 +1666,8 @@ function skillInstallPlans(database: AppDatabase, plugin: PluginHubPlugin, toolT
   });
 }
 
-function privateInstallPlans(project: Project, plugin: PluginHubPlugin, existingBinding: ProjectPluginBinding | null): PrivateInstallPlan[] {
-  return plugin.privateFiles.map((file) => ({
+function privateInstallPlans(project: Project, plugin: PluginHubPlugin, toolTarget: SessionProjectToolTarget, existingBinding: ProjectPluginBinding | null): PrivateInstallPlan[] {
+  return plugin.privateFiles.filter((file) => toolTarget.toolId !== "kimi" || isKimiProjectPrivateFile(file)).map((file) => ({
     file,
     targetPath: safeJoin(project.rootPath, file.targetRelativePath),
     previousOwnership:
@@ -1424,46 +1677,60 @@ function privateInstallPlans(project: Project, plugin: PluginHubPlugin, existing
   }));
 }
 
-function agentInstallPlans(database: AppDatabase, project: Project, plugin: PluginHubPlugin, toolTarget: ProjectToolTarget): AgentInstallPlan[] {
-  if (toolTarget.toolId !== "codex") return [];
+function agentInstallPlans(database: AppDatabase, project: Project, plugin: PluginHubPlugin, toolTarget: SessionProjectToolTarget): AgentInstallPlan[] {
+  if (!isAgentHubToolId(toolTarget.toolId)) return [];
+  const toolId = toolTarget.toolId;
   return plugin.componentRefs.flatMap((ref) => {
     if (ref.type !== "agent") return [];
     const agent = database.getAgentHubAgent(ref.componentId);
     if (!agent) return [];
-    const preview = conversionPreview(agent, "codex", project.rootPath, "create");
-    return [{ ref, agent, toolId: "codex", targetPath: preview.targetPath }];
+    const preview = conversionPreview(agent, toolId, project.rootPath, "create");
+    return [{ ref, agent, toolId, targetPath: preview.targetPath }];
+  });
+}
+
+function mcpInstallPlans(database: AppDatabase, project: Project, plugin: PluginHubPlugin, toolTarget: SessionProjectToolTarget): McpInstallPlan[] {
+  if (!isPluginMcpTargetToolId(toolTarget.toolId)) return [];
+  const toolId = toolTarget.toolId;
+  return plugin.componentRefs.flatMap((ref) => {
+    if (ref.type !== "mcp") return [];
+    const server = database.getMcpHubServer(ref.componentId);
+    if (!server) return [];
+    return [{ ref, server, toolId, configPath: pluginMcpConfigPath(project.rootPath, toolId) }];
   });
 }
 
 function nativePackageInstallPlans(
   project: Project,
   plugin: PluginHubPlugin,
-  toolTarget: ProjectToolTarget,
+  toolTarget: SessionProjectToolTarget,
   existingBinding: ProjectPluginBinding | null
 ): NativePackageInstallPlan[] {
-  if (toolTarget.toolId !== "claude" && toolTarget.toolId !== "codex") return [];
+  if (toolTarget.toolId !== "claude" && toolTarget.toolId !== "codex" && toolTarget.toolId !== "qwen") return [];
   const toolId = toolTarget.toolId;
   const pluginName = safeName(plugin.name);
   const ownerId = stableId("pluginhub-native-plugin", plugin.id, toolId);
   const previous = existingBinding?.privateFileOwnership.find((item) => item.kind === "native-plugin" && item.privateFileId === ownerId) ?? null;
+  const packageRoot = nativePluginPackageRoot(project.rootPath, toolId, pluginName);
   return [
     {
       toolId,
       ownerId,
       pluginName,
-      packageRoot: nativePluginPackageRoot(project.rootPath, toolId, pluginName),
-      marketplacePath: nativePluginMarketplacePath(project.rootPath, toolId),
+      packageRoot,
+      marketplacePath: toolId === "qwen" ? path.join(packageRoot, "qwen-extension.json") : nativePluginMarketplacePath(project.rootPath, toolId),
       settingsPath: toolId === "claude" ? path.join(project.rootPath, ".claude", "settings.json") : null,
-      marketplaceName: toolId === "claude" ? "pluginhub" : "pluginhub",
+      marketplaceName: "pluginhub",
       previousPackageRoot: previous?.targetPath ?? null,
       previousOwnership: previous
     }
   ];
 }
 
-function nativePluginPackageRoot(projectRoot: string, toolId: "claude" | "codex", pluginName: string): string {
+function nativePluginPackageRoot(projectRoot: string, toolId: NativePluginToolId, pluginName: string): string {
   if (toolId === "claude") return path.join(projectRoot, ".pluginhub", "claude-marketplace", "plugins", pluginName);
-  return path.join(projectRoot, "plugins", pluginName);
+  if (toolId === "codex") return path.join(projectRoot, "plugins", pluginName);
+  return path.join(projectRoot, ".qwen", "extensions", pluginName);
 }
 
 function nativePluginMarketplacePath(projectRoot: string, toolId: "claude" | "codex"): string {
@@ -1480,7 +1747,7 @@ function materializeNativePluginPackage(database: AppDatabase, project: Project,
   writePluginMcpToNativePackage(database, plugin, plan);
   writePluginHooksToNativePackage(database, plugin, plan);
   ensureNativePluginManifest(plugin, plan);
-  upsertNativePluginMarketplace(plugin, plan);
+  if (plan.toolId !== "qwen") upsertNativePluginMarketplace(plugin, plan);
   if (plan.toolId === "claude") upsertClaudeProjectPluginSettings(plan);
 }
 
@@ -1498,26 +1765,41 @@ interface NativePackageFileSelection {
   prefixes: Set<string>;
 }
 
-function nativePackageFileSelection(plugin: Pick<PluginHubPlugin, "name" | "privateFiles">, toolId: "claude" | "codex"): NativePackageFileSelection {
+function nativePackageFileSelection(plugin: PluginPackagePathPlugin, toolId: NativePluginToolId): NativePackageFileSelection {
   const selection: NativePackageFileSelection = { exact: new Set(), prefixes: new Set() };
-  const manifestPath = toolId === "claude" ? ".claude-plugin/plugin.json" : ".codex-plugin/plugin.json";
-  addNativePackagePrefix(selection, toolId === "claude" ? ".claude-plugin/" : ".codex-plugin/");
   addNativePackagePrefix(selection, "assets/");
-  addManifestReferences(plugin, selection, manifestPath);
 
   if (toolId === "claude") {
+    const manifestPath = ".claude-plugin/plugin.json";
+    addNativePackagePrefix(selection, ".claude-plugin/");
+    addManifestReferences(plugin, selection, manifestPath);
     addNativePackagePrefix(selection, "commands/");
     addNativePackagePrefix(selection, "hooks/");
     addToolRootReferences(plugin, selection, "CLAUDE_PLUGIN_ROOT");
     return selection;
   }
 
+  if (toolId === "qwen") {
+    const manifestPath = "qwen-extension.json";
+    addNativePackageReference(selection, manifestPath);
+    addManifestReferences(plugin, selection, manifestPath);
+    addNativePackagePrefix(selection, "commands/");
+    if (nativeHookPayloadForTool(null, plugin, "qwen") !== null) addNativePackagePrefix(selection, "hooks/");
+    addToolRootReferences(plugin, selection, "CLAUDE_PLUGIN_ROOT");
+    addToolRootReferences(plugin, selection, "CODEX_PLUGIN_ROOT");
+    addToolRootReferences(plugin, selection, "QWEN_EXTENSION_ROOT");
+    addToolRootReferences(plugin, selection, "extensionPath");
+    return selection;
+  }
+
+  const manifestPath = ".codex-plugin/plugin.json";
+  addNativePackagePrefix(selection, ".codex-plugin/");
+  addManifestReferences(plugin, selection, manifestPath);
   if (hasCompatibleDefaultBundledHooks(plugin, "codex")) addNativePackagePrefix(selection, "hooks/");
   addToolRootReferences(plugin, selection, "CLAUDE_PLUGIN_ROOT");
   addToolRootReferences(plugin, selection, "CODEX_PLUGIN_ROOT");
   return selection;
 }
-
 function isSelectedNativePackageFile(relativePath: string, selection: NativePackageFileSelection): boolean {
   if (relativePath.startsWith("skills/")) return false;
   if (selection.exact.has(relativePath)) return true;
@@ -1532,6 +1814,8 @@ function isNeutralNativePackagePrivateFile(relativePath: string): boolean {
   if (relativePath.startsWith(".codex-plugin/")) return false;
   if (relativePath.startsWith(".cursor-plugin/")) return false;
   if (relativePath.startsWith(".opencode/")) return false;
+  if (relativePath.startsWith(".kimi-code/")) return false;
+  if (relativePath === "qwen-extension.json") return false;
   if (relativePath.startsWith("agents/")) return false;
   if (relativePath.startsWith("commands/")) return false;
   if (relativePath.startsWith("hooks/")) return false;
@@ -1542,7 +1826,7 @@ function isNeutralNativePackagePrivateFile(relativePath: string): boolean {
   return true;
 }
 
-function addManifestReferences(plugin: Pick<PluginHubPlugin, "name" | "privateFiles">, selection: NativePackageFileSelection, manifestPath: string): void {
+function addManifestReferences(plugin: PluginPackagePathPlugin, selection: NativePackageFileSelection, manifestPath: string): void {
   const manifest = plugin.privateFiles.find((file) => pluginPackageRelativePath(plugin, file.sourceRelativePath) === manifestPath);
   if (!manifest) return;
   try {
@@ -1562,7 +1846,11 @@ function collectPackagePathReferences(value: unknown): string[] {
   return [];
 }
 
-function addToolRootReferences(plugin: Pick<PluginHubPlugin, "name" | "privateFiles">, selection: NativePackageFileSelection, rootVariable: "CLAUDE_PLUGIN_ROOT" | "CODEX_PLUGIN_ROOT"): void {
+function addToolRootReferences(
+  plugin: PluginPackagePathPlugin,
+  selection: NativePackageFileSelection,
+  rootVariable: "CLAUDE_PLUGIN_ROOT" | "CODEX_PLUGIN_ROOT" | "QWEN_EXTENSION_ROOT" | "extensionPath"
+): void {
   const pattern = new RegExp(`\\$\\{${rootVariable}\\}/([A-Za-z0-9._/-]+)`, "g");
   for (const file of plugin.privateFiles) {
     const relativePath = pluginPackageRelativePath(plugin, file.sourceRelativePath);
@@ -1578,7 +1866,7 @@ function addToolRootReferences(plugin: Pick<PluginHubPlugin, "name" | "privateFi
   }
 }
 
-function hasCompatibleDefaultBundledHooks(plugin: Pick<PluginHubPlugin, "name" | "privateFiles">, toolId: "codex"): boolean {
+function hasCompatibleDefaultBundledHooks(plugin: PluginPackagePathPlugin, toolId: "codex"): boolean {
   const hooksFile = plugin.privateFiles.find((file) => pluginPackageRelativePath(plugin, file.sourceRelativePath) === "hooks/hooks.json");
   if (!hooksFile) return false;
   const hooksConfig = readTextIfPossible(hooksFile.contentPath);
@@ -1613,7 +1901,7 @@ function addNativePackagePrefix(selection: NativePackageFileSelection, prefix: s
 function normalizePackageReference(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed || /^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return null;
-  const withoutRoot = trimmed.replace(/^\$\{(?:CLAUDE_PLUGIN_ROOT|CODEX_PLUGIN_ROOT|CURSOR_PLUGIN_ROOT)\}\//, "");
+  const withoutRoot = trimmed.replace(/^\$\{(?:CLAUDE_PLUGIN_ROOT|CODEX_PLUGIN_ROOT|CURSOR_PLUGIN_ROOT|QWEN_EXTENSION_ROOT|extensionPath)\}\//, "");
   const withoutDot = withoutRoot.startsWith("./") ? withoutRoot.slice(2) : withoutRoot;
   const normalized = normalizeRelativePath(withoutDot);
   if (!normalized || normalized.startsWith("../") || path.isAbsolute(normalized)) return null;
@@ -1633,16 +1921,24 @@ function copyPluginSkillsToNativePackage(database: AppDatabase, plugin: PluginHu
     const skill = database.getSkillHubSkill(ref.componentId);
     if (!skill) continue;
     replaceDirectory(skill.libraryPath, safeJoin(plan.packageRoot, path.join("skills", skill.folderName)));
+    if (shouldPreserveSinglePluginSourceRoot(plugin) && skill.sourceRelativePath) {
+      replaceDirectory(skill.libraryPath, safeJoin(plan.packageRoot, skill.sourceRelativePath));
+    }
   }
 }
 
 function copyPluginAgentsToNativePackage(database: AppDatabase, project: Project, plugin: PluginHubPlugin, plan: NativePackageInstallPlan): void {
-  if (plan.toolId !== "claude") return;
+  if (plan.toolId !== "claude" && plan.toolId !== "qwen") return;
   for (const ref of plugin.componentRefs.filter((item) => item.type === "agent")) {
-    const rendered = renderAgentForTool(database, ref.componentId, "claude", project.rootPath);
+    const rendered = renderAgentForTool(database, ref.componentId, plan.toolId, project.rootPath);
     const targetPath = safeJoin(plan.packageRoot, path.join("agents", `${rendered.agent.slug}.md`));
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
     fs.writeFileSync(targetPath, rendered.content, "utf8");
+    if (shouldPreserveSinglePluginSourceRoot(plugin) && rendered.agent.sourceRelativePath) {
+      const sourceRootTargetPath = safeJoin(plan.packageRoot, rendered.agent.sourceRelativePath);
+      fs.mkdirSync(path.dirname(sourceRootTargetPath), { recursive: true });
+      fs.writeFileSync(sourceRootTargetPath, rendered.content, "utf8");
+    }
   }
 }
 
@@ -1653,16 +1949,20 @@ function writePluginMcpToNativePackage(database: AppDatabase, plugin: PluginHubP
     return server ? [server] : [];
   });
   if (servers.length === 0) return;
-  const configPath = safeJoin(plan.packageRoot, ".mcp.json");
+  const configPath = nativePackageMcpConfigPath(plan);
   const existing = readJsonObject(configPath);
   const mcpServers = isRecord(existing.mcpServers) ? { ...existing.mcpServers } : {};
   for (const server of servers) {
-    mcpServers[server.serverId] = mcpServerPluginPayload(server);
+    mcpServers[server.serverId] = mcpServerPluginPayloadForTool(server, plan.toolId);
   }
   writeJsonObject(configPath, { ...existing, mcpServers });
 }
 
+function nativePackageMcpConfigPath(plan: NativePackageInstallPlan): string {
+  return plan.toolId === "qwen" ? safeJoin(plan.packageRoot, "qwen-extension.json") : safeJoin(plan.packageRoot, ".mcp.json");
+}
 function writePluginHooksToNativePackage(database: AppDatabase, plugin: PluginHubPlugin, plan: NativePackageInstallPlan): void {
+  if (plan.toolId === "qwen") return;
   if (!isHookHubSupportedToolId(plan.toolId)) return;
   const hooks = plugin.componentRefs.flatMap((ref) => {
     if (ref.type !== "hook") return [];
@@ -1689,6 +1989,18 @@ function ensureNativePluginManifest(plugin: PluginHubPlugin, plan: NativePackage
     return;
   }
 
+  if (plan.toolId === "qwen") {
+    const manifestPath = safeJoin(plan.packageRoot, "qwen-extension.json");
+    const existing = readJsonObject(manifestPath);
+    writeJsonObject(manifestPath, {
+      ...existing,
+      name: plan.pluginName,
+      version: stringValue(existing.version) ?? "1.0.0",
+      description: stringValue(existing.description) ?? plugin.description ?? plugin.displayName
+    });
+    return;
+  }
+
   const manifestPath = safeJoin(plan.packageRoot, path.join(".codex-plugin", "plugin.json"));
   const existing = readJsonObject(manifestPath);
   const next: Record<string, unknown> = {
@@ -1701,7 +2013,6 @@ function ensureNativePluginManifest(plugin: PluginHubPlugin, plan: NativePackage
   if (fs.existsSync(safeJoin(plan.packageRoot, ".mcp.json"))) next.mcpServers = stringValue(next.mcpServers) ?? "./.mcp.json";
   writeJsonObject(manifestPath, next);
 }
-
 function upsertNativePluginMarketplace(plugin: PluginHubPlugin, plan: NativePackageInstallPlan): void {
   if (plan.toolId === "claude") {
     const marketplace = readJsonObject(plan.marketplacePath);
@@ -1748,6 +2059,25 @@ function upsertClaudeProjectPluginSettings(plan: NativePackageInstallPlan): void
   writeJsonObject(plan.settingsPath, { ...settings, extraKnownMarketplaces, enabledPlugins });
 }
 
+function mcpServerPluginPayloadForTool(server: McpHubServer, toolId: NativePluginToolId): Record<string, unknown> {
+  if (toolId !== "qwen") return mcpServerPluginPayload(server);
+  if (server.transport === "http") {
+    return {
+      ...(server.name ? { name: server.name } : {}),
+      ...(server.description ? { description: server.description } : {}),
+      ...(server.url ? { httpUrl: server.url } : {}),
+      ...(Object.keys(server.headers).length > 0 ? { headers: server.headers } : {}),
+      ...(Object.keys(server.env).length > 0 ? { env: server.env } : {})
+    };
+  }
+  return {
+    ...(server.name ? { name: server.name } : {}),
+    ...(server.description ? { description: server.description } : {}),
+    command: server.command,
+    args: server.args,
+    ...(Object.keys(server.env).length > 0 ? { env: server.env } : {})
+  };
+}
 function mcpServerPluginPayload(server: McpHubServer): Record<string, unknown> {
   if (server.transport === "http") {
     return {
@@ -1770,6 +2100,7 @@ function mcpServerPluginPayload(server: McpHubServer): Record<string, unknown> {
 }
 
 function mergeHookPayloads(payloads: unknown[]): unknown {
+  if (payloads.every(Array.isArray)) return payloads.flat();
   const records = payloads.filter(isRecord);
   if (records.length !== payloads.length) return payloads.length === 1 ? payloads[0] : payloads;
   const merged: Record<string, unknown> = {};
@@ -1783,12 +2114,13 @@ function mergeHookPayloads(payloads: unknown[]): unknown {
 }
 
 function nativeHookInstallPlans(
+  database: AppDatabase,
   project: Project,
   plugin: PluginHubPlugin,
-  toolTarget: ProjectToolTarget,
+  toolTarget: SessionProjectToolTarget,
   existingBinding: ProjectPluginBinding | null
 ): NativeHookInstallPlan[] {
-  const hooks = nativeHooksForTool(project, plugin, toolTarget.toolId);
+  const hooks = nativeHooksForTool(database, project, plugin, toolTarget.toolId);
   if (hooks === null) return [];
   const configPath = pluginHookConfigPath(project.rootPath, toolTarget.toolId);
   const ownerId = stableId("pluginhub-hook", plugin.id, toolTarget.toolId, configPath);
@@ -1806,25 +2138,61 @@ function nativeHookInstallPlans(
   ];
 }
 
-function nativeHooksForTool(project: Project, plugin: PluginHubPlugin, toolId: ToolId): unknown | null {
-  if (!isHookHubSupportedToolId(toolId)) return null;
-  const hooks = nativeHookPayloadForTool(plugin, toolId);
+function nativeHooksForTool(database: AppDatabase, project: Project, plugin: PluginHubPlugin, toolId: ToolId): unknown | null {
+  if (toolId === "kimi" || !isHookHubSupportedToolId(toolId)) return null;
+  const hooks = nativeHookPayloadForTool(database, plugin, toolId);
   if (hooks === null) return null;
   return rewritePluginHookPayload(hooks, pluginHookRuntimeRoot(project.rootPath, plugin.name, toolId));
 }
 
-function nativeHookPayloadForTool(plugin: PluginHubPlugin | Pick<PluginHubPlugin, "name" | "privateFiles">, toolId: ToolId): unknown | null {
+function nativeHookPayloadForTool(database: AppDatabase | null, plugin: PluginHubPlugin | PluginPackagePathPlugin, toolId: ToolId): unknown | null {
   if (!isHookHubSupportedToolId(toolId)) return null;
-  const direct = toolId === "claude" || toolId === "codex" ? readPluginNativeHooks(plugin, toolId) : null;
-  if (direct !== null) return direct;
-  if (toolId === "codex") {
-    const claude = readPluginNativeHooks(plugin, "claude");
-    return claude === null ? null : convertHookPayloadForTool(claude, "claude", "codex");
+  const payloads: unknown[] = [];
+  const direct = pluginNativeHookPayloadForTool(plugin, toolId);
+  if (direct !== null) payloads.push(direct);
+  if (database && hasComponentRefs(plugin)) {
+    for (const ref of plugin.componentRefs) {
+      if (ref.type !== "hook") continue;
+      const suite = database.getHookHubSuite(ref.componentId);
+      const payload = suite ? hookSuitePayloadForTool(suite.payloads, toolId) : null;
+      if (payload !== null) payloads.push(payload);
+    }
+  }
+  return payloads.length === 0 ? null : mergeHookPayloads(payloads);
+}
+
+function pluginNativeHookPayloadForTool(plugin: PluginHubPlugin | PluginPackagePathPlugin, toolId: HookHubSupportedToolId): unknown | null {
+  if (toolId === "claude" || toolId === "codex") {
+    const direct = readPluginNativeHooks(plugin, toolId);
+    if (direct !== null) return direct;
+  }
+  const convertibleSources: Array<"claude" | "codex"> = ["claude", "codex"];
+  for (const sourceToolId of convertibleSources) {
+    if (sourceToolId === toolId) continue;
+    const source = readPluginNativeHooks(plugin, sourceToolId);
+    if (source === null) continue;
+    return convertHookPayloadForTool(source, sourceToolId, toolId);
   }
   return null;
 }
 
-function readPluginNativeHooks(plugin: Pick<PluginHubPlugin, "name" | "privateFiles">, toolId: "claude" | "codex"): unknown | null {
+function hookSuitePayloadForTool(payloads: Partial<Record<HookHubSupportedToolId, unknown>>, targetToolId: HookHubSupportedToolId): unknown | null {
+  const direct = payloads[targetToolId];
+  if (direct !== undefined) return direct;
+  const sourceOrder: HookHubSupportedToolId[] = ["claude", "codebuddy", "codex", "qwen", "qoder", "kimi"];
+  for (const sourceToolId of sourceOrder) {
+    const source = payloads[sourceToolId];
+    if (source === undefined) continue;
+    return convertHookPayloadForTool(source, sourceToolId, targetToolId);
+  }
+  return null;
+}
+
+function hasComponentRefs(plugin: PluginHubPlugin | PluginPackagePathPlugin): plugin is PluginHubPlugin {
+  return Array.isArray((plugin as PluginHubPlugin).componentRefs);
+}
+
+function readPluginNativeHooks(plugin: PluginPackagePathPlugin, toolId: "claude" | "codex"): unknown | null {
   const manifest = plugin.privateFiles.find((file) => isPluginNativeManifest(file, toolId === "claude" ? ".claude-plugin/plugin.json" : ".codex-plugin/plugin.json"));
   if (manifest) {
     try {
@@ -1858,11 +2226,12 @@ function isPluginNativeManifest(file: PluginHubPrivateFile, relativePath: string
 function pluginHookRuntimeRoot(projectRoot: string, pluginName: string, toolId: ToolId): string {
   if (toolId === "codex") return nativePluginPackageRoot(projectRoot, "codex", safeName(pluginName));
   if (toolId === "claude") return nativePluginPackageRoot(projectRoot, "claude", safeName(pluginName));
+  if (toolId === "qwen") return nativePluginPackageRoot(projectRoot, "qwen", safeName(pluginName));
   return safeJoin(projectRoot, path.join(".agents", "plugins", safeName(pluginName)));
 }
 
 function rewritePluginHookPayload(value: unknown, pluginRoot: string): unknown {
-  if (typeof value === "string") return value.replace(/\$\{(?:CLAUDE_PLUGIN_ROOT|CODEX_PLUGIN_ROOT)\}/g, pluginRoot);
+  if (typeof value === "string") return value.replace(/\$\{(?:CLAUDE_PLUGIN_ROOT|CODEX_PLUGIN_ROOT|QWEN_EXTENSION_ROOT|extensionPath)\}/g, pluginRoot);
   if (Array.isArray(value)) return value.map((item) => rewritePluginHookPayload(item, pluginRoot));
   if (isRecord(value)) {
     const output: Record<string, unknown> = {};
@@ -1902,6 +2271,11 @@ function releaseRemovedOwnership(database: AppDatabase, previous: ProjectPluginB
     }
     if (component.type === "agent" && isAgentHubToolId(component.toolId)) {
       const failure = releasePluginAgentOwnership(database, previous, component);
+      if (failure) failures.push(failure);
+      continue;
+    }
+    if (component.type === "mcp" && isMcpHubTargetToolId(component.toolId)) {
+      const failure = releasePluginMcpOwnership(database, previous, component);
       if (failure) failures.push(failure);
     }
   }
@@ -2036,9 +2410,56 @@ function agentOwnershipItem(
   };
 }
 
+function hookComponentOwnershipItems(
+  database: AppDatabase,
+  plugin: PluginHubPlugin,
+  plan: NativeHookInstallPlan,
+  toolId: ToolId,
+  ownerState: ProjectPluginComponentOwnership["ownerState"],
+  reason: string | null
+): ProjectPluginComponentOwnership[] {
+  if (!isHookHubSupportedToolId(toolId)) return [];
+  return plugin.componentRefs.flatMap((ref) => {
+    if (ref.type !== "hook") return [];
+    const suite = database.getHookHubSuite(ref.componentId);
+    if (!suite || hookSuitePayloadForTool(suite.payloads, toolId) === null) return [];
+    return [
+      {
+        type: "hook",
+        componentId: ref.componentId,
+        toolId,
+        targetPath: plan.configPath,
+        linkPath: plan.configPath,
+        ownerState,
+        required: ref.required,
+        reason
+      }
+    ];
+  });
+}
+
+function mcpOwnershipItem(
+  plan: McpInstallPlan,
+  ownerState: ProjectPluginComponentOwnership["ownerState"],
+  reason: string | null,
+  configPath: string
+): ProjectPluginComponentOwnership {
+  return {
+    type: "mcp",
+    componentId: plan.server.serverId,
+    toolId: plan.toolId,
+    targetPath: configPath,
+    linkPath: configPath,
+    ownerState,
+    required: plan.ref.required,
+    reason
+  };
+}
+
 function nativePackageComponentOwnership(database: AppDatabase, plugin: PluginHubPlugin, plan: NativePackageInstallPlan): ProjectPluginComponentOwnership[] {
   return plugin.componentRefs.flatMap((ref) => {
     if (plan.toolId === "codex" && ref.type === "agent") return [];
+    if (plan.toolId === "qwen" && ref.type === "hook") return [];
     const targetPath = nativePackageComponentTargetPath(database, ref, plan);
     if (!targetPath) return [];
     return [
@@ -2065,7 +2486,7 @@ function nativePackageComponentTargetPath(database: AppDatabase, ref: PluginHubC
     const agent = database.getAgentHubAgent(ref.componentId);
     return agent ? safeJoin(plan.packageRoot, path.join("agents", `${agent.slug}.md`)) : null;
   }
-  if (ref.type === "mcp") return safeJoin(plan.packageRoot, ".mcp.json");
+  if (ref.type === "mcp") return nativePackageMcpConfigPath(plan);
   if (ref.type === "hook") return safeJoin(plan.packageRoot, path.join("hooks", "hooks.json"));
   return null;
 }
@@ -2169,6 +2590,22 @@ function releasePluginAgentOwnership(
   return null;
 }
 
+function releasePluginMcpOwnership(
+  database: AppDatabase,
+  binding: ProjectPluginBinding,
+  owner: ProjectPluginComponentOwnership
+): PluginHubDeleteFailure | null {
+  if (!isMcpHubTargetToolId(owner.toolId)) return null;
+  try {
+    const storedProject = database.getProject(binding.projectId);
+    const project = storedProject ? { ...storedProject, rootPath: binding.targetRootPath } : ({ id: binding.projectId, rootPath: binding.targetRootPath } as Project);
+    disableProjectMcpServer(database, project, owner.toolId, owner.componentId);
+    return null;
+  } catch (error) {
+    return { path: owner.targetPath, reason: error instanceof Error ? error.message : "PluginHub 管理的 MCP entry 删除失败" };
+  }
+}
+
 function releasePluginHookOwnership(owner: ProjectPluginPrivateFileOwnership): PluginHubDeleteFailure | null {
   const current = readPluginHookConfig(owner.toolId, owner.targetPath);
   if (hooksFingerprint(current.hooks) !== owner.reason) {
@@ -2210,6 +2647,40 @@ function releaseNativePluginOwnership(binding: ProjectPluginBinding, owner: Proj
   }
 }
 
+function isPluginMcpTargetToolId(toolId: ToolId): toolId is PluginMcpTargetToolId {
+  return isMcpHubTargetToolId(toolId);
+}
+
+function pluginMcpConfigPath(projectRoot: string, toolId: PluginMcpTargetToolId): string {
+  if (toolId === "claude") return path.join(projectRoot, ".mcp.json");
+  if (toolId === "codex") return path.join(projectRoot, ".codex", "config.toml");
+  if (toolId === "opencode") return path.join(projectRoot, "opencode.json");
+  if (toolId === "codebuddy") return path.join(projectRoot, ".mcp.json");
+  if (toolId === "cursor") return path.join(projectRoot, ".cursor", "mcp.json");
+  if (toolId === "antigravity") return path.join(projectRoot, ".agents", "mcp_config.json");
+  if (toolId === "qwen") return path.join(projectRoot, ".qwen", "settings.json");
+  return path.join(projectRoot, ".kimi-code", "mcp.json");
+}
+
+function readPluginMcpConfigEntry(configPath: string, toolId: McpHubTargetToolId, serverId: string): unknown | null {
+  if (!fs.existsSync(configPath) || toolId === "codex") return null;
+  const root = readJsonObject(configPath);
+  const key = toolId === "opencode" ? "mcp" : "mcpServers";
+  const serverMap = root[key];
+  if (!isRecord(serverMap) || !(serverId in serverMap)) return null;
+  return serverMap[serverId];
+}
+
+function removePluginMcpConfigEntry(configPath: string, toolId: McpHubTargetToolId, serverId: string): void {
+  if (!fs.existsSync(configPath) || toolId === "codex") return;
+  const root = readJsonObject(configPath);
+  const key = toolId === "opencode" ? "mcp" : "mcpServers";
+  if (!isRecord(root[key]) || !(serverId in root[key])) return;
+  const serverMap = { ...root[key] };
+  delete serverMap[serverId];
+  writeJsonObject(configPath, { ...root, [key]: serverMap });
+}
+
 function pluginHookConfigPath(projectRoot: string, toolId: ToolId): string {
   const candidates = pluginHookConfigCandidates(projectRoot, toolId);
   const withHooks = candidates.find((candidate) => !isEmptyHooks(readPluginHookConfig(toolId, candidate).hooks));
@@ -2221,6 +2692,8 @@ function pluginHookConfigCandidates(projectRoot: string, toolId: ToolId): string
   if (toolId === "claude") return [path.join(projectRoot, ".claude", "settings.local.json"), path.join(projectRoot, ".claude", "settings.json")];
   if (toolId === "qwen") return [path.join(projectRoot, ".qwen", "settings.local.json"), path.join(projectRoot, ".qwen", "settings.json")];
   if (toolId === "qoder") return [path.join(projectRoot, ".qoder", "settings.local.json"), path.join(projectRoot, ".qoder", "settings.json")];
+  if (toolId === "codebuddy") return [path.join(projectRoot, ".codebuddy", "settings.local.json"), path.join(projectRoot, ".codebuddy", "settings.json")];
+  if (toolId === "kimi") return [pluginHookDefaultConfigPath(projectRoot, toolId)];
   return [pluginHookDefaultConfigPath(projectRoot, toolId)];
 }
 
@@ -2229,11 +2702,17 @@ function pluginHookDefaultConfigPath(projectRoot: string, toolId: ToolId): strin
   if (toolId === "claude") return path.join(projectRoot, ".claude", "settings.json");
   if (toolId === "qwen") return path.join(projectRoot, ".qwen", "settings.json");
   if (toolId === "qoder") return path.join(projectRoot, ".qoder", "settings.json");
+  if (toolId === "kimi") return path.join(projectRoot, ".kimi-code", "config.toml");
+  if (toolId === "codebuddy") return path.join(projectRoot, ".codebuddy", "settings.json");
   return path.join(projectRoot, ".agents", "plugins", "hooks.json");
 }
 
 function readPluginHookConfig(toolId: ToolId, configPath: string): { value: Record<string, unknown>; hooks: unknown | null; error: string | null } {
   if (!fs.existsSync(configPath)) return { value: {}, hooks: null, error: null };
+  if (toolId === "kimi") {
+    const text = fs.readFileSync(configPath, "utf8");
+    return { value: { __kimiConfigText: text }, hooks: parsePluginKimiHookRules(text), error: null };
+  }
   try {
     const parsed = JSON.parse(stripJsonComments(fs.readFileSync(configPath, "utf8")));
     const value = isRecord(parsed) ? parsed : {};
@@ -2256,6 +2735,11 @@ function extractPluginHooksPayload(toolId: ToolId, value: unknown): unknown | nu
 
 function writePluginHooksSection(toolId: ToolId, configPath: string, hooks: unknown): void {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  if (toolId === "kimi") {
+    const existing = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
+    fs.writeFileSync(configPath, serializePluginKimiHooksConfig(existing, hooks), "utf8");
+    return;
+  }
   const current = readPluginHookConfig(toolId, configPath);
   const base = { ...current.value };
   if (toolId === "codex" && !Object.prototype.hasOwnProperty.call(base, "hooks") && Object.keys(base).length === 0) {
@@ -2268,6 +2752,12 @@ function writePluginHooksSection(toolId: ToolId, configPath: string, hooks: unkn
 
 function removePluginHooksSection(toolId: ToolId, configPath: string): void {
   if (!fs.existsSync(configPath)) return;
+  if (toolId === "kimi") {
+    const next = removePluginKimiHookBlocks(fs.readFileSync(configPath, "utf8")).trimEnd();
+    if (next) fs.writeFileSync(configPath, `${next}\n`, "utf8");
+    else removeAnyPath(configPath);
+    return;
+  }
   const current = readPluginHookConfig(toolId, configPath);
   const base = { ...current.value };
   if (toolId === "codex" && !Object.prototype.hasOwnProperty.call(base, "hooks")) {
@@ -2282,6 +2772,147 @@ function removePluginHooksSection(toolId: ToolId, configPath: string): void {
   fs.writeFileSync(configPath, `${stableJson(base, 2)}\n`, "utf8");
 }
 
+function parsePluginKimiHookRules(input: string): Record<string, unknown>[] {
+  const rules: Record<string, unknown>[] = [];
+  let current: Record<string, unknown> | null = null;
+
+  for (const rawLine of input.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line === "[[hooks]]") {
+      if (current) rules.push(current);
+      current = {};
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith("[")) {
+      if (current) rules.push(current);
+      current = null;
+      continue;
+    }
+    const match = /^([A-Za-z0-9_-]+)\s*=\s*(.+)$/.exec(line);
+    if (!match?.[1]) continue;
+    current[match[1]] = parsePluginKimiTomlScalar(match[2] ?? "");
+  }
+
+  if (current) rules.push(current);
+  return normalizePluginKimiHookRules(rules);
+}
+
+function serializePluginKimiHooksConfig(existing: string, hooks: unknown): string {
+  const base = removePluginKimiHookBlocks(existing).trimEnd();
+  const rules = normalizePluginKimiHookRules(hooks);
+  const hookText = rules.map(pluginKimiHookRuleToml).join("\n\n");
+  const next = [base, hookText].filter((part) => part.trim()).join("\n\n");
+  return next.trimEnd() ? `${next.trimEnd()}\n` : "";
+}
+
+function removePluginKimiHookBlocks(input: string): string {
+  const output: string[] = [];
+  let skippingHook = false;
+  for (const line of input.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === "[[hooks]]") {
+      skippingHook = true;
+      continue;
+    }
+    if (skippingHook && trimmed.startsWith("[")) {
+      if (trimmed === "[[hooks]]") continue;
+      skippingHook = false;
+    }
+    if (!skippingHook) output.push(line);
+  }
+  return output.join("\n");
+}
+
+function pluginKimiHookRuleToml(rule: Record<string, unknown>): string {
+  const lines = ["[[hooks]]"];
+  lines.push(`event = ${pluginKimiTomlValue(String(rule.event ?? ""))}`);
+  if (typeof rule.matcher === "string" && rule.matcher.trim()) lines.push(`matcher = ${pluginKimiTomlValue(rule.matcher.trim())}`);
+  lines.push(`command = ${pluginKimiTomlValue(String(rule.command ?? ""))}`);
+  if (typeof rule.timeout === "number" && Number.isFinite(rule.timeout)) lines.push(`timeout = ${Math.max(1, Math.floor(rule.timeout))}`);
+  return lines.join("\n");
+}
+
+function normalizePluginKimiHookRules(hooks: unknown): Record<string, unknown>[] {
+  const rules: Record<string, unknown>[] = [];
+  if (Array.isArray(hooks)) {
+    for (const item of hooks) pushPluginKimiHookRule(rules, null, item);
+  } else if (isRecord(hooks)) {
+    for (const [event, value] of Object.entries(hooks)) {
+      if (Array.isArray(value)) {
+        for (const item of value) pushPluginKimiHookRule(rules, event, item);
+      } else {
+        pushPluginKimiHookRule(rules, event, value);
+      }
+    }
+  }
+  return rules;
+}
+
+function pushPluginKimiHookRule(output: Record<string, unknown>[], eventHint: string | null, value: unknown): void {
+  if (typeof value === "string") {
+    const event = pluginKimiHookEventName(eventHint ?? "Stop");
+    if (value.trim()) output.push({ event, command: value.trim() });
+    return;
+  }
+  if (!isRecord(value)) return;
+  const event = pluginKimiHookEventName(stringValue(value.event) ?? eventHint ?? "Stop");
+  const directCommand = stringValue(value.command);
+  if (directCommand) {
+    output.push(pluginKimiHookRule(event, value, directCommand));
+    return;
+  }
+  const nestedHooks = Array.isArray(value.hooks) ? value.hooks : [];
+  for (const hook of nestedHooks) {
+    if (!isRecord(hook)) continue;
+    const command = stringValue(hook.command);
+    if (command) output.push(pluginKimiHookRule(event, { ...value, timeout: hook.timeout }, command));
+  }
+}
+
+function pluginKimiHookRule(event: string, source: Record<string, unknown>, command: string): Record<string, unknown> {
+  return {
+    event,
+    ...(typeof source.matcher === "string" && source.matcher.trim() ? { matcher: source.matcher.trim() } : {}),
+    command,
+    ...(typeof source.timeout === "number" ? { timeout: source.timeout } : {})
+  };
+}
+
+function pluginKimiHookEventName(eventName: string): string {
+  const known: Record<string, string> = {
+    pre: "PreToolUse",
+    post: "PostToolUse",
+    stop: "Stop",
+    session_start: "SessionStart",
+    user_prompt_submit: "UserPromptSubmit",
+    notification: "Notification",
+    subagent_stop: "SubagentStop",
+    pre_compact: "PreCompact",
+    post_compact: "PostCompact"
+  };
+  return known[eventName] ?? eventName;
+}
+
+function parsePluginKimiTomlScalar(value: string): unknown {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    try {
+      return trimmed.startsWith('"') ? JSON.parse(trimmed) : trimmed.slice(1, -1);
+    } catch {
+      return trimmed.slice(1, -1);
+    }
+  }
+  if (trimmed === "true") return true;
+  if (trimmed === "false") return false;
+  const numeric = Number(trimmed);
+  return Number.isFinite(numeric) ? numeric : trimmed;
+}
+
+function pluginKimiTomlValue(value: string): string {
+  return JSON.stringify(value);
+}
 function isEmptyHooks(hooks: unknown): boolean {
   if (hooks === null || hooks === undefined) return true;
   if (Array.isArray(hooks)) return hooks.length === 0;
@@ -2330,20 +2961,39 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-function pluginPackageRelativePath(plugin: Pick<PluginHubPlugin, "name">, sourceRelativePath: string): string {
+function pluginPackageRelativePath(plugin: PluginPackagePathPlugin, sourceRelativePath: string): string {
   const normalized = normalizeRelativePath(sourceRelativePath);
+  if (shouldPreserveSinglePluginSourceRoot(plugin)) return normalized;
   for (const prefix of [`plugins/${plugin.name}/`, `${plugin.name}/`]) {
     if (normalized.startsWith(prefix)) return normalized.slice(prefix.length);
   }
-  for (const marker of [".codex-plugin/", ".claude-plugin/", "skills/", "commands/", "agents/", "hooks/", "bin/", "src/"]) {
+  for (const marker of [".codex-plugin/", ".claude-plugin/", ".kimi-code/", "skills/", "commands/", "agents/", "hooks/", "bin/", "src/"]) {
     const index = normalized.indexOf(marker);
     if (index >= 0) return normalized.slice(index);
   }
-  for (const exact of [".mcp.json", "mcp.json", "settings.json"]) {
+  for (const exact of [".mcp.json", "mcp.json", "settings.json", "qwen-extension.json"]) {
     if (normalized === exact || normalized.endsWith(`/${exact}`)) return exact;
   }
   const parts = normalized.split("/");
   return parts.length > 1 ? parts.slice(1).join("/") : normalized;
+}
+
+function shouldPreserveSinglePluginSourceRoot(plugin: PluginPackagePathPlugin): boolean {
+  return plugin.source?.kind === "single-plugin" && !hasPluginNativeManifestPrivateFiles(plugin);
+}
+
+function hasPluginNativeManifestPrivateFiles(plugin: PluginPackagePathPlugin): boolean {
+  return plugin.privateFiles.some((file) => {
+    const normalized = normalizeRelativePath(file.sourceRelativePath);
+    return (
+      normalized.endsWith("/.codex-plugin/plugin.json") ||
+      normalized.endsWith("/.claude-plugin/plugin.json") ||
+      normalized.endsWith("/qwen-extension.json") ||
+      normalized === ".codex-plugin/plugin.json" ||
+      normalized === ".claude-plugin/plugin.json" ||
+      normalized === "qwen-extension.json"
+    );
+  });
 }
 
 function nativePackageOwnershipReason(plan: NativePackageInstallPlan, packageHash: string | null): string {
@@ -2509,16 +3159,19 @@ function upsertPluginSkillSource(database: AppDatabase, source: PluginHubSource)
   });
 }
 
-function projectToolTarget(database: AppDatabase, project: Project, toolId: ToolId, config?: AppConfig): ProjectToolTarget | null {
-  return listProjectToolTargets(database, project, config).find((target) => target.toolId === toolId) ?? null;
+function projectToolTarget(database: AppDatabase, project: Project, toolId: ToolId, config?: AppConfig): SessionProjectToolTarget | null {
+  return listProjectToolTargets(database, project, config).find((target): target is SessionProjectToolTarget => isToolId(target.toolId) && target.toolId === toolId) ?? null;
 }
 
-function pluginHarnessSupport(plugin: Pick<PluginHubPlugin, "name" | "componentRefs" | "privateFiles">): PluginHubPlugin["harnessSupport"] {
+function pluginHarnessSupport(plugin: Pick<PluginHubPlugin, "name" | "componentRefs" | "privateFiles"> & { source?: PluginHubSource | null }): PluginHubPlugin["harnessSupport"] {
   return {
     codex: canMaterializeNativePluginPackage(plugin, "codex") ? "native" : "unsupported",
     claude: canMaterializeNativePluginPackage(plugin, "claude") ? "native" : "unsupported",
+    qwen: canMaterializeNativePluginPackage(plugin, "qwen") ? "native" : "unsupported",
+    kimi: canInstallKimiPluginComponents(plugin) ? "component-only" : "unsupported",
     cursor: hasNativePackagePrefix(plugin, ".cursor-plugin/") || hasNativePackagePrefix(plugin, ".claude-plugin/") ? "planned" : "unsupported",
-    opencode: hasNativePackagePrefix(plugin, ".opencode/") ? "planned" : "unsupported",
+    opencode: hasNativePackagePrefix(plugin, ".opencode/") ? "planned" : canInstallComponentOnlyPlugin(plugin, "opencode") ? "component-only" : "unsupported",
+    codebuddy: canInstallComponentOnlyPlugin(plugin, "codebuddy") ? "component-only" : "unsupported",
     copilot: hasNativePackagePrefix(plugin, ".github/") ? "planned" : "unsupported"
   };
 }
@@ -2536,14 +3189,37 @@ function canInstallPluginForTool(plugin: PluginHubPlugin, toolId: ToolId): boole
   return support === "native" || support === "component-only";
 }
 
-function canMaterializeNativePluginPackage(plugin: Pick<PluginHubPlugin, "name" | "componentRefs" | "privateFiles">, toolId: "claude" | "codex"): boolean {
+function canInstallComponentOnlyPlugin(plugin: Pick<PluginHubPlugin, "name" | "componentRefs" | "privateFiles"> & { source?: PluginHubSource | null }, toolId: ToolId): boolean {
+  const supportedRefs = plugin.componentRefs.filter((ref) => isComponentOnlyRefSupported(toolId, ref));
+  if (supportedRefs.length === 0) return false;
+  return plugin.componentRefs.every((ref) => !ref.required || isComponentOnlyRefSupported(toolId, ref));
+}
+
+function isComponentOnlyRefSupported(toolId: ToolId, ref: PluginHubComponentRef): boolean {
+  if (ref.type === "skill") return true;
+  if (ref.type === "agent") return isAgentHubToolId(toolId);
+  if (ref.type === "mcp") return isMcpHubTargetToolId(toolId) && isToolId(toolId);
+  if (ref.type === "hook") return toolId !== "kimi" && isHookHubSupportedToolId(toolId);
+  return false;
+}
+
+function canInstallKimiPluginComponents(plugin: Pick<PluginHubPlugin, "name" | "componentRefs" | "privateFiles"> & { source?: PluginHubSource | null }): boolean {
+  return canInstallComponentOnlyPlugin(plugin, "kimi") || plugin.privateFiles.some(isKimiProjectPrivateFile);
+}
+
+function isKimiProjectPrivateFile(file: Pick<PluginHubPrivateFile, "targetRelativePath">): boolean {
+  const target = normalizeRelativePath(file.targetRelativePath);
+  return target.startsWith(".kimi-code/") && target !== ".kimi-code/config.toml";
+}
+
+function canMaterializeNativePluginPackage(plugin: Pick<PluginHubPlugin, "name" | "componentRefs" | "privateFiles"> & { source?: PluginHubSource | null }, toolId: NativePluginToolId): boolean {
   if (plugin.componentRefs.length > 0) return true;
-  if (nativeHookPayloadForTool(plugin, toolId) !== null) return true;
+  if (nativeHookPayloadForTool(null, plugin, toolId) !== null) return true;
   const selection = nativePackageFileSelection(plugin, toolId);
   return plugin.privateFiles.some((file) => isSelectedNativePackageFile(pluginPackageRelativePath(plugin, file.sourceRelativePath), selection));
 }
 
-function hasNativePackagePrefix(plugin: Pick<PluginHubPlugin, "name" | "privateFiles">, prefix: string): boolean {
+function hasNativePackagePrefix(plugin: PluginPackagePathPlugin, prefix: string): boolean {
   return plugin.privateFiles.some((file) => pluginPackageRelativePath(plugin, file.sourceRelativePath).startsWith(prefix));
 }
 
@@ -2566,16 +3242,25 @@ function topologyHash(plugin: PluginHubPlugin): string {
 
 function hasPluginContent(directory: string): boolean {
   return (
-    fs.existsSync(path.join(directory, ".codex-plugin", "plugin.json")) ||
-    fs.existsSync(path.join(directory, ".claude-plugin", "plugin.json")) ||
+    hasNativePluginManifest(directory) ||
     fs.existsSync(path.join(directory, "skills")) ||
     fs.existsSync(path.join(directory, "agents")) ||
-    fs.existsSync(path.join(directory, "commands"))
+    fs.existsSync(path.join(directory, "commands")) ||
+    fs.existsSync(path.join(directory, ".kimi-code")) ||
+    fs.existsSync(path.join(directory, "qwen-extension.json"))
+  );
+}
+
+function hasNativePluginManifest(directory: string): boolean {
+  return (
+    fs.existsSync(path.join(directory, ".codex-plugin", "plugin.json")) ||
+    fs.existsSync(path.join(directory, ".claude-plugin", "plugin.json")) ||
+    fs.existsSync(path.join(directory, "qwen-extension.json"))
   );
 }
 
 function readPluginManifest(directory: string): { name: string | null; displayName: string | null; description: string | null } {
-  const candidates = [path.join(directory, ".codex-plugin", "plugin.json"), path.join(directory, ".claude-plugin", "plugin.json")];
+  const candidates = [path.join(directory, ".codex-plugin", "plugin.json"), path.join(directory, ".claude-plugin", "plugin.json"), path.join(directory, "qwen-extension.json")];
   for (const candidate of candidates) {
     if (!fs.existsSync(candidate)) continue;
     try {
@@ -2608,14 +3293,48 @@ function readPluginManifest(directory: string): { name: string | null; displayNa
 }
 
 function readSkillMetadata(skillFile: string): { name: string | null; description: string | null } {
-  const text = fs.readFileSync(skillFile, "utf8");
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? "";
-  const name = /^name:\s*(.+)$/m.exec(frontmatter)?.[1]?.trim() ?? /^#\s+(.+)$/m.exec(text)?.[1]?.trim() ?? null;
-  const descriptionLine = /^description:\s*(.+)$/m.exec(frontmatter)?.[1]?.trim();
+  const text = stripUtf8Bom(fs.readFileSync(skillFile, "utf8"));
+  const metadataBlock = skillMetadataBlock(text);
+  const name = /^name:\s*(.+)$/m.exec(metadataBlock)?.[1]?.trim() ?? /^#\s+(.+)$/m.exec(text)?.[1]?.trim() ?? null;
+  const descriptionValue = /^description:\s*(.+)$/m.exec(metadataBlock)?.[1]?.trim();
+  const descriptionLine = descriptionValue && !/^[>|]\s*$/.test(descriptionValue) ? descriptionValue : null;
+  const foldedDescription = /^description:\s*[>|]\s*\r?\n((?:\s+.+\r?\n?)+)/m.exec(metadataBlock)?.[1];
+  const description = descriptionLine
+    ? stripYamlQuotes(descriptionLine)
+    : foldedDescription
+      ? foldedDescription
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .join(" ")
+      : null;
   return {
     name: name ? stripYamlQuotes(name) : null,
-    description: descriptionLine ? stripYamlQuotes(descriptionLine) : null
+    description
   };
+}
+
+function stripUtf8Bom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+function skillMetadataBlock(text: string): string {
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1];
+  if (frontmatter !== undefined) return frontmatter;
+
+  const lines = text.split(/\r?\n/);
+  const metadataLines: string[] = [];
+  let collecting = false;
+  for (const line of lines) {
+    if (!collecting && /^\s*$/.test(line)) continue;
+    if (/^(name|description):\s*/.test(line) || (collecting && /^\s+/.test(line))) {
+      metadataLines.push(line);
+      collecting = true;
+      continue;
+    }
+    break;
+  }
+  return metadataLines.join("\n");
 }
 
 function hasSkillMarker(directory: string): boolean {

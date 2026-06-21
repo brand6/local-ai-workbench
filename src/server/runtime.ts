@@ -40,6 +40,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<Runni
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : options.port;
   const url = `http://${host}:${port}`;
+  process.env.APP_RUNTIME_URL = url;
   const startupTimer = setTimeout(() => context.startBackgroundServices(), 0);
   startupTimer.unref?.();
 

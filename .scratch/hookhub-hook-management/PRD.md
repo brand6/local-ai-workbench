@@ -12,7 +12,7 @@ Hook 也不适合按“单个 hook 组件”管理。一个功能往往需要一
 
 ## Solution
 
-新增 `HookHub`。顶层 `HookHub` 是 hook suite 复用库。一个 suite 有稳定 `suiteId` 和全局唯一 `name`，并可包含多个工具的 hooks payload，例如 Claude hooks、Codex hooks、Qwen hooks、Qoder hooks。`name` 是用户识别和选择 suite 的主要字段，必须全局唯一，但内部绑定仍使用 `suiteId`，所以改名不会破坏项目绑定。
+新增 `HookHub`。顶层 `HookHub` 是 hook suite 复用库。一个 suite 有稳定 `suiteId` 和全局唯一 `name`，并可包含多个工具的 hooks payload，例如 Claude hooks、CodeBuddy hooks、Codex hooks、Qwen hooks、Qoder hooks。`name` 是用户识别和选择 suite 的主要字段，必须全局唯一，但内部绑定仍使用 `suiteId`，所以改名不会破坏项目绑定。
 
 HookHub 支持从 0 结构化创建和编辑一套完整 suite。Suite 可以一开始只包含一个工具的 hooks payload，之后在 HookHub 内继续补其它工具 payload。HookHub 也支持显式分发：用户选择 suite、项目 root/subproject group、目标工具和 scope 后，应用该 suite 对应工具的 hooks payload。
 
@@ -49,9 +49,10 @@ HookHub suite 更新后，HookHub 页面支持“同步到所有已启用项目�
 - 如果不是 Git-managed 可恢复场景，在项目内写本地备份，例如 `.hookhub/backups/<timestamp>/...`。
 - 本地备份保存整个配置文件，metadata 标明本次操作只覆盖 `hooks` section。
 
-MVP 优先支持项目级 Claude Code、Codex、Qwen、Qoder hook 配置：
+MVP 优先支持项目级 Claude Code、CodeBuddy Code、Codex、Qwen、Qoder hook 配置：
 
 - `claude`：读取和写入 `<groupPath>/.claude/settings.json` 或 `<groupPath>/.claude/settings.local.json` 的 `hooks`。
+- `codebuddy`：读取和写入 `<groupPath>/.codebuddy/settings.json` 或 `<groupPath>/.codebuddy/settings.local.json` 的 `hooks`；payload 采用 CodeBuddy 官方 Claude Code Hooks 兼容格式。
 - `codex`：优先读取和写入 `<groupPath>/.codex/hooks.json`。
 - `qwen`：读取和写入 `<groupPath>/.qwen/settings.json` 或 `<groupPath>/.qwen/settings.local.json` 的 `hooks`。
 - `qoder`：读取和写入 `<groupPath>/.qoder/settings.json` 或 `<groupPath>/.qoder/settings.local.json` 的 `hooks`。
@@ -70,7 +71,7 @@ HookHub 不保存真实 secret，不写系统或用户级环境变量。结构�
 
 1. As a local AI tool user, I want a top-level `HookHub` entry, so that I can manage reusable hook suites from one place.
 2. As a local AI tool user, I want HookHub suite names to be globally unique, so that I can identify a suite without ambiguity.
-3. As a local AI tool user, I want a suite to support multiple tools, so that one reusable idea can carry Claude, Codex, Qwen, and Qoder hooks.
+3. As a local AI tool user, I want a suite to support multiple tools, so that one reusable idea can carry Claude, CodeBuddy, Codex, Qwen, and Qoder hooks.
 4. As a local AI tool user, I want to create a suite from 0 in HookHub, so that stable hooks can be prepared before choosing a project.
 5. As a local AI tool user, I want to edit a suite in HookHub, so that its tool payloads can evolve over time.
 6. As a local AI tool user, I want project groups to have a `Hooks` entry, so that I can manage hooks for the exact root/subproject directory where tools run.
@@ -133,7 +134,7 @@ HookHub 不保存真实 secret，不写系统或用户级环境变量。结构�
 - Git-managed clean config files can be overwritten directly.
 - Git repo untracked config files are not automatically committed; the UI offers an explicit commit action and still creates a local backup by default.
 - Local backups store the whole config file under a project `.hookhub/backups/` path with metadata.
-- MVP supports structured hooks-section management for `claude`, `codex`, `qwen`, and `qoder`.
+- MVP supports structured hooks-section management for `claude`, `codebuddy`, `codex`, `qwen`, and `qoder`.
 - `opencode` and `copilot` are discovery/planning targets only in MVP.
 - HookHub suite JSON import can overwrite an existing suite, import as renamed new suite, or cancel on name conflict.
 - Native tool hook import always creates a new suite and never imports into an existing suite.
@@ -145,7 +146,7 @@ HookHub 不保存真实 secret，不写系统或用户级环境变量。结构�
 
 - Tests should verify external behavior at storage, API, renderer, discovery, backup, import/export, sync, and UI seams rather than implementation details.
 - Storage tests should cover suite uniqueness, multi-tool payloads, one-suite-per-project-group-tool bindings, fingerprints, and cleanup behavior.
-- Renderer tests should cover replacing only `hooks` sections for Claude, Codex, Qwen, and Qoder while preserving unrelated settings.
+- Renderer tests should cover replacing only `hooks` sections for Claude, CodeBuddy, Codex, Qwen, and Qoder while preserving unrelated settings.
 - Discovery tests should cover `current`, `outdated`, `drifted`, `missing`, `unmanaged`, and `invalid` states.
 - Backup tests should cover Git-managed dirty checkpoint commits, Git-managed clean overwrites, Git repo untracked files, and non-Git local backup files.
 - API tests should cover listing HookHub suites, creating/editing suites, listing project hooks, applying suites, replacing existing hooks, sharing current hooks to a new suite, syncing outdated bindings, skipping drifted bindings, import, and export.

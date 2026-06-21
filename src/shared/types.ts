@@ -11,13 +11,23 @@ export const toolIds = [
   "copilot",
   "cursor",
   "antigravity",
+  "trae",
   "deepcode",
   "reasonix"
 ] as const;
 export type ToolId = (typeof toolIds)[number];
 
+export const nonCliProjectConfigTargetIds = ["zcode", "workbuddy", "trae-solo"] as const;
+export type NonCliProjectConfigTargetId = (typeof nonCliProjectConfigTargetIds)[number];
+export const projectConfigTargetIds = [...toolIds, ...nonCliProjectConfigTargetIds] as const;
+export type ProjectConfigTargetId = (typeof projectConfigTargetIds)[number];
+
 export function isToolId(value: unknown): value is ToolId {
   return typeof value === "string" && (toolIds as readonly string[]).includes(value);
+}
+
+export function isProjectConfigTargetId(value: unknown): value is ProjectConfigTargetId {
+  return typeof value === "string" && (projectConfigTargetIds as readonly string[]).includes(value);
 }
 export type RefreshMode = "incremental" | "full";
 export const terminalModes = ["new-window", "per-tool", "per-project"] as const;
@@ -218,6 +228,8 @@ export interface ProjectCliAction {
   writesProject: boolean;
   requiresConfirmation: boolean;
   affectedPaths: string[];
+  localPath: string | null;
+  resolvedPaths: string[];
   availability: ProjectCliActionAvailability;
 }
 
@@ -276,6 +288,46 @@ export interface ProjectCliActionRunResult {
   launch: LaunchResponse | null;
 }
 
+export type ProjectServiceStatus = "stopped" | "running" | "exited";
+
+export interface ProjectService {
+  serviceId: string;
+  projectId: string;
+  projectLabel: string;
+  projectRootPath: string;
+  targetRootPath: string;
+  targetLabel: string;
+  packageName: string | null;
+  packageJsonPath: string;
+  scriptName: string;
+  scriptCommand: string;
+  packageManager: "npm" | "pnpm" | "yarn" | "bun";
+  command: string;
+  args: string[];
+  commandText: string;
+  cwd: string;
+  status: ProjectServiceStatus;
+  pid: number | null;
+  startedAt: string | null;
+  stoppedAt: string | null;
+  exitCode: number | null;
+}
+
+export interface ProjectServiceList {
+  services: ProjectService[];
+}
+
+export interface ProjectServiceStartResult {
+  service: ProjectService;
+  alreadyRunning: boolean;
+  startedAt: string;
+}
+
+export interface ProjectServiceStopResult {
+  service: ProjectService;
+  stoppedAt: string;
+}
+
 export type SkillHubSourceType = "local" | "github" | "plugin";
 
 export interface SkillHubConfig {
@@ -322,8 +374,8 @@ export interface SkillHubList {
   sources: SkillHubSource[];
 }
 
-export type AgentHubToolId = Extract<ToolId, "claude" | "codex" | "opencode" | "cursor" | "qwen">;
-export const agentHubToolIds = ["claude", "codex", "opencode", "cursor", "qwen"] as const;
+export type AgentHubToolId = Extract<ToolId, "claude" | "codex" | "opencode" | "codebuddy" | "cursor" | "qwen" | "kimi">;
+export const agentHubToolIds = ["claude", "codex", "opencode", "codebuddy", "cursor", "qwen", "kimi"] as const;
 
 export function isAgentHubToolId(value: unknown): value is AgentHubToolId {
   return typeof value === "string" && (agentHubToolIds as readonly string[]).includes(value);
@@ -600,7 +652,7 @@ export interface PluginHubPlugin {
   description: string | null;
   componentRefs: PluginHubComponentRef[];
   privateFiles: PluginHubPrivateFile[];
-  harnessSupport: Partial<Record<ToolId, PluginHubHarnessSupport>>;
+  harnessSupport: Partial<Record<ProjectConfigTargetId, PluginHubHarnessSupport>>;
   createdAt: string;
   updatedAt: string;
   source: PluginHubSource | null;
@@ -765,7 +817,7 @@ export interface SkillHubImportResult {
 
 export interface ProjectToolTarget {
   projectId: string;
-  toolId: ToolId;
+  toolId: ProjectConfigTargetId;
   enabled: boolean;
   inferred: boolean;
   supported: boolean;
@@ -776,7 +828,7 @@ export interface ProjectToolTarget {
 
 export interface ProjectSkillTarget {
   projectId: string;
-  toolId: ToolId;
+  toolId: ProjectConfigTargetId;
   skillId: string;
   linkPath: string;
   targetPath: string;
@@ -785,7 +837,7 @@ export interface ProjectSkillTarget {
 }
 
 export interface ProjectSkillConflict {
-  toolId: ToolId;
+  toolId: ProjectConfigTargetId;
   linkPath: string;
   existingSkill: SkillHubSkill | null;
   requestedSkill: SkillHubSkill;
@@ -793,7 +845,7 @@ export interface ProjectSkillConflict {
 
 export interface ProjectSkillLinkFailure {
   projectId: string;
-  toolId: ToolId;
+  toolId: ProjectConfigTargetId;
   skillId: string;
   linkPath: string;
   targetPath: string;
@@ -826,7 +878,7 @@ export type ProjectLocalSkillMigrationTarget =
 
 export interface ProjectLocalSkill {
   projectId: string;
-  toolId: ToolId;
+  toolId: ProjectConfigTargetId;
   type: ProjectLocalSkillType;
   folderName: string;
   skillName: string | null;
@@ -857,7 +909,20 @@ export interface ProjectLocalSkillMigrationResult {
 }
 
 export type McpHubTransport = "stdio" | "http";
-export const mcpHubTargetToolIds = ["claude", "codex", "opencode", "cursor", "antigravity"] as const;
+export const mcpHubTargetToolIds = [
+  "claude",
+  "codex",
+  "qwen",
+  "opencode",
+  "codebuddy",
+  "cursor",
+  "antigravity",
+  "trae",
+  "kimi",
+  "zcode",
+  "workbuddy",
+  "trae-solo"
+] as const;
 export type McpHubTargetToolId = (typeof mcpHubTargetToolIds)[number];
 
 export function isMcpHubTargetToolId(value: unknown): value is McpHubTargetToolId {
@@ -922,7 +987,7 @@ export interface ProjectLocalMcpEntry {
 }
 
 export interface ProjectMcpTarget {
-  toolId: ToolId;
+  toolId: ProjectConfigTargetId;
   label: string;
   enabled: boolean;
   inferred: boolean;
@@ -986,8 +1051,8 @@ export interface ProjectLocalMcpMigrationResult {
   message: string | null;
 }
 
-export type HookHubSupportedToolId = Extract<ToolId, "claude" | "codex" | "qwen" | "qoder">;
-export type HookHubDiscoveryToolId = Extract<ToolId, "claude" | "codex" | "qwen" | "qoder" | "opencode" | "copilot">;
+export type HookHubSupportedToolId = Extract<ToolId, "claude" | "codex" | "qwen" | "qoder" | "kimi" | "codebuddy">;
+export type HookHubDiscoveryToolId = Extract<ToolId, "claude" | "codex" | "qwen" | "qoder" | "kimi" | "opencode" | "copilot">;
 export type HookHubProjectStatus = "current" | "outdated" | "drifted" | "missing" | "unmanaged" | "invalid" | "unsupported";
 export type HookHubScope = "project";
 export type HookHubApplyMode = "overwrite" | "upload-then-overwrite" | "update-bound-suite-then-overwrite" | "save-as-new-suite-then-overwrite";
@@ -1145,6 +1210,13 @@ export interface SkillHubDeletePreview {
   skill: SkillHubSkill;
   affectedTargets: ProjectSkillTarget[];
   brokenTargets: ProjectSkillTarget[];
+  failures: ProjectSkillLinkFailure[];
+}
+
+export interface SkillHubSourceDeleteResult {
+  source: SkillHubSource;
+  skills: SkillHubSkill[];
+  affectedTargets: ProjectSkillTarget[];
   failures: ProjectSkillLinkFailure[];
 }
 

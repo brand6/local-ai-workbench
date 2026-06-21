@@ -21,18 +21,19 @@ import type {
   SkillHubOpenTarget,
   SkillHubSkill,
   SkillHubSource,
+  SkillHubSourceDeleteResult,
   SkillHubSourceUpdatePreview,
   SkillHubUpdateCheckResult,
   SkillHubUpdateItem,
   LocalOpenResponse,
-  ToolId
+  ProjectConfigTargetId
 } from "../../shared/types.js";
 import type { AppDatabase } from "../storage/database.js";
 import { nowIso } from "../core/time.js";
 import { openLocalPath } from "../core/localFilesystem.js";
 import { normalizeFsPath } from "../core/pathUtils.js";
 import { createDirectoryLink, linkPointsTo, pathExists, removeDirectoryLink, resolveDirectoryLinkTarget } from "./links.js";
-import { listProjectToolTargets } from "./projectSkills.js";
+import { listProjectSkillTargetsState, listProjectToolTargets } from "./projectSkills.js";
 
 interface ImportOptions {
   overwrite?: boolean;
@@ -93,11 +94,43 @@ export function listSkillHub(database: AppDatabase, config: AppConfig, dataDir: 
   assignDirectLibrarySkillsSource(database, resolved.libraryDir);
   assignPluginHubSkillsSourceType(database);
   repairGitHubRootSkillMetadata(database);
+  repairSkillHubSkillMetadata(database);
   return {
     config: resolved,
     sources: database.listSkillHubSources(),
     skills: database.listSkillHubSkills(query)
   };
+}
+
+export function repairSkillHubSkillMetadata(database: AppDatabase): void {
+  for (const skill of database.listSkillHubSkills()) {
+    if (!needsSkillHubMetadataRepair(skill)) continue;
+    const skillFile = path.join(skill.libraryPath, "SKILL.md");
+    if (!fs.existsSync(skillFile)) continue;
+    const metadata = readSkillMetadata(skillFile);
+    if (skill.skillName === metadata.name && skill.description === metadata.description) continue;
+    database.upsertSkillHubSkill({
+      id: skill.id,
+      sourceId: skill.sourceId,
+      sourceType: skill.sourceType,
+      folderName: skill.folderName,
+      skillName: metadata.name,
+      description: metadata.description,
+      libraryRelativePath: skill.libraryRelativePath,
+      libraryPath: skill.libraryPath,
+      sourceRelativePath: skill.sourceRelativePath,
+      contentHash: skill.contentHash,
+      createdAt: skill.createdAt
+    });
+  }
+}
+
+function needsSkillHubMetadataRepair(skill: SkillHubSkill): boolean {
+  return !skill.skillName?.trim() || isGenericSkillMetadataName(skill.skillName) || !skill.description?.trim() || /^[>|]$/.test(skill.description.trim());
+}
+
+function isGenericSkillMetadataName(name: string): boolean {
+  return name.trim().toLowerCase() === "skill instructions";
 }
 
 export function seedDefaultSkillHubSources(database: AppDatabase, config: AppConfig, dataDir: string): void {
@@ -280,10 +313,67 @@ export function deleteSkillHubSkill(database: AppDatabase, skillId: string): Ski
   return { ...preview, failures };
 }
 
+export function deleteSkillHubSource(database: AppDatabase, config: AppConfig, dataDir: string, sourceId: string): SkillHubSourceDeleteResult {
+  const resolved = ensureSkillHub(config, dataDir);
+  const source = database.getSkillHubSource(sourceId);
+  if (!source) throw new Error("SkillHub source not found");
+  assertSkillHubSourceDeletable(source);
+
+  const skills = database.listSkillHubSkillsForSource(sourceId);
+  for (const skill of skills) {
+    assertSkillHubSkillDeletable(skill);
+    if (!isPathInsideOrEqual(resolved.libraryDir, skill.libraryPath)) {
+      throw new Error(`SkillHub skill path outside library: ${skill.libraryPath}`);
+    }
+  }
+
+  const affectedTargets = skills.flatMap((skill) => database.listProjectSkillTargetsForSkill(skill.id));
+  const failures = removeTargets(database, affectedTargets);
+  if (failures.length > 0) {
+    return { source, skills, affectedTargets, failures };
+  }
+
+  for (const skill of skills) {
+    fs.rmSync(skill.libraryPath, { recursive: true, force: true });
+    pruneEmptyLibraryAncestors(skill.libraryPath, resolved.libraryDir);
+    database.deleteSkillHubSkill(skill.id);
+  }
+  database.deleteSkillHubSource(sourceId);
+  removeSkillHubSourceMaterial(source, resolved.rootDir, resolved.libraryDir);
+  return { source, skills, affectedTargets, failures };
+}
+
 export function openSkillHubSkill(database: AppDatabase, skillId: string, target: SkillHubOpenTarget): LocalOpenResponse {
   const skill = database.getSkillHubSkill(skillId);
   if (!skill) throw new Error("SkillHub skill not found");
   return openLocalPath(target === "document" ? path.join(skill.libraryPath, "SKILL.md") : skill.libraryPath);
+}
+
+export function openProjectSkillTarget(
+  database: AppDatabase,
+  project: Project,
+  skillId: string,
+  toolId: ProjectConfigTargetId,
+  target: SkillHubOpenTarget,
+  config?: AppConfig
+): LocalOpenResponse {
+  const state = listProjectSkillTargetsState(database, project, config);
+  const skillTarget = state.skillTargets.find((item) => item.skillId === skillId && item.toolId === toolId);
+  if (!skillTarget) throw new Error("项目 SkillHub target 不存在");
+  return openLocalPath(target === "document" ? path.join(skillTarget.linkPath, "SKILL.md") : skillTarget.linkPath);
+}
+
+export function openProjectLocalSkill(
+  database: AppDatabase,
+  project: Project,
+  toolId: ProjectConfigTargetId,
+  folderName: string,
+  target: SkillHubOpenTarget,
+  config?: AppConfig
+): LocalOpenResponse {
+  const localSkill = findProjectLocalSkill(database, project, toolId, folderName, config);
+  if (!localSkill) throw new Error("项目本地技能不存在");
+  return openLocalPath(target === "document" ? path.join(localSkill.skillPath, "SKILL.md") : localSkill.skillPath);
 }
 
 export function listProjectLocalSkillsState(database: AppDatabase, project: Project, config?: AppConfig): ProjectLocalSkillsState {
@@ -338,7 +428,7 @@ function resolveLocalSkillLinkTarget(skillPath: string): string | null {
   }
 }
 
-function findPluginSkillOwner(database: AppDatabase, projectId: string, toolId: ToolId, linkPath: string, skillId: string) {
+function findPluginSkillOwner(database: AppDatabase, projectId: string, toolId: ProjectConfigTargetId, linkPath: string, skillId: string) {
   return (
     database
       .listProjectPluginBindings(projectId)
@@ -360,7 +450,7 @@ export function migrateProjectLocalSkill(
   config: AppConfig,
   dataDir: string,
   project: Project,
-  toolId: ToolId,
+  toolId: ProjectConfigTargetId,
   folderName: string,
   mode: ProjectLocalSkillMigrationMode | null = null,
   target: ProjectLocalSkillMigrationTarget | null = null
@@ -486,7 +576,7 @@ export function migrateProjectLocalSkill(
   };
 }
 
-function findProjectLocalSkill(database: AppDatabase, project: Project, toolId: ToolId, folderName: string, config?: AppConfig): ProjectLocalSkill | null {
+function findProjectLocalSkill(database: AppDatabase, project: Project, toolId: ProjectConfigTargetId, folderName: string, config?: AppConfig): ProjectLocalSkill | null {
   if (!isSafeSkillFolderName(folderName)) return null;
   return listProjectLocalSkillsState(database, project, config).skills.find((skill) => skill.toolId === toolId && skill.folderName === folderName) ?? null;
 }
@@ -866,12 +956,12 @@ function discoveredSkill(directory: string, sourceRelativePath: string | null, l
 }
 
 function readSkillMetadata(skillFile: string): { name: string | null; description: string | null } {
-  const text = fs.readFileSync(skillFile, "utf8");
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? "";
-  const name = /^name:\s*(.+)$/m.exec(frontmatter)?.[1]?.trim() ?? /^#\s+(.+)$/m.exec(text)?.[1]?.trim() ?? null;
-  const descriptionValue = /^description:\s*(.+)$/m.exec(frontmatter)?.[1]?.trim();
+  const text = stripUtf8Bom(fs.readFileSync(skillFile, "utf8"));
+  const metadataBlock = skillMetadataBlock(text);
+  const name = /^name:\s*(.+)$/m.exec(metadataBlock)?.[1]?.trim() ?? /^#\s+(.+)$/m.exec(text)?.[1]?.trim() ?? null;
+  const descriptionValue = /^description:\s*(.+)$/m.exec(metadataBlock)?.[1]?.trim();
   const descriptionLine = descriptionValue && !/^[>|]\s*$/.test(descriptionValue) ? descriptionValue : null;
-  const foldedDescription = /^description:\s*[>|]\s*\r?\n((?:\s+.+\r?\n?)+)/m.exec(frontmatter)?.[1];
+  const foldedDescription = /^description:\s*[>|]\s*\r?\n((?:\s+.+\r?\n?)+)/m.exec(metadataBlock)?.[1];
   const description = descriptionLine
     ? stripYamlQuotes(descriptionLine)
     : foldedDescription
@@ -882,6 +972,29 @@ function readSkillMetadata(skillFile: string): { name: string | null; descriptio
           .join(" ")
       : null;
   return { name: name ? stripYamlQuotes(name) : null, description };
+}
+
+function stripUtf8Bom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+function skillMetadataBlock(text: string): string {
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1];
+  if (frontmatter !== undefined) return frontmatter;
+
+  const lines = text.split(/\r?\n/);
+  const metadataLines: string[] = [];
+  let collecting = false;
+  for (const line of lines) {
+    if (!collecting && /^\s*$/.test(line)) continue;
+    if (/^(name|description):\s*/.test(line) || (collecting && /^\s+/.test(line))) {
+      metadataLines.push(line);
+      collecting = true;
+      continue;
+    }
+    break;
+  }
+  return metadataLines.join("\n");
 }
 
 function hashDirectory(directory: string): string {
@@ -1105,7 +1218,7 @@ function removeTargets(database: AppDatabase, targets: ProjectSkillTarget[]): Pr
 function skillLinkFailure(target: ProjectSkillTarget, reason: string): ProjectSkillLinkFailure {
   return {
     projectId: target.projectId,
-    toolId: target.toolId as ToolId,
+    toolId: target.toolId,
     skillId: target.skillId,
     linkPath: target.linkPath,
     targetPath: target.targetPath,
@@ -1232,6 +1345,34 @@ function isPluginHubSkill(skill: SkillHubSkill): boolean {
 
 function assertSkillHubSkillDeletable(skill: SkillHubSkill): void {
   if (isPluginHubSkill(skill)) throw new Error(PLUGIN_SKILL_DELETE_ERROR);
+}
+
+function assertSkillHubSourceDeletable(source: SkillHubSource): void {
+  if (source.type === "plugin") throw new Error(PLUGIN_SKILL_DELETE_ERROR);
+}
+
+function removeSkillHubSourceMaterial(source: SkillHubSource, rootDir: string, libraryDir: string): void {
+  pruneEmptyLibraryAncestors(path.join(libraryDir, source.id, "__source__"), libraryDir);
+  if (source.checkoutPath) removeOwnedDirectory(rootDir, source.checkoutPath);
+  removeOwnedDirectory(rootDir, path.join(rootDir, "sources", source.id));
+}
+
+function removeOwnedDirectory(ownerRoot: string, candidate: string): void {
+  if (normalizeFsPath(ownerRoot) === normalizeFsPath(candidate)) return;
+  if (!isPathInsideOrEqual(ownerRoot, candidate)) return;
+  fs.rmSync(candidate, { recursive: true, force: true });
+}
+
+function pruneEmptyLibraryAncestors(deletedPath: string, libraryDir: string): void {
+  let current = path.dirname(deletedPath);
+  while (normalizeFsPath(current) !== normalizeFsPath(libraryDir) && isPathInsideOrEqual(libraryDir, current)) {
+    try {
+      fs.rmdirSync(current);
+    } catch {
+      return;
+    }
+    current = path.dirname(current);
+  }
 }
 
 function upsertDirectSkillsSource(database: AppDatabase, libraryDir: string): SkillHubSource {

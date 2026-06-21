@@ -55,6 +55,7 @@ export function defaultAppConfig(): AppConfig {
     copilot: { command: "copilot" },
     cursor: { command: "cursor-agent" },
     antigravity: { command: "agy" },
+    trae: { command: "traecli" },
     deepcode: { command: "deepcode" },
     reasonix: { command: "reasonix" }
   };

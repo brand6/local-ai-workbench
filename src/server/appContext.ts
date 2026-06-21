@@ -1,8 +1,8 @@
-import crypto from "node:crypto";
 import type { AppConfig, BootstrapState, DirectoryPickResponse } from "../shared/types.js";
 import { ensureConfigFiles, normalizeConfig, resolveBootstrapState, writeAppConfig, writeBootstrap } from "./core/bootstrap.js";
 import { pickDirectory } from "./core/localFilesystem.js";
 import { AppEventHub } from "./events/appEvents.js";
+import { ProjectServiceRuntime } from "./projectServices/projectServices.js";
 import { SessionIndexService } from "./scanning/sessionIndexService.js";
 import { AppDatabase } from "./storage/database.js";
 import type { CliHubRuntimeOptions } from "./clihub/clihub.js";
@@ -13,10 +13,10 @@ export interface AppContextOptions {
 }
 
 export class AppContext {
-  readonly token = crypto.randomBytes(24).toString("base64url");
   private readonly events = new AppEventHub();
   private readonly pickDirectoryHandler: () => DirectoryPickResponse | Promise<DirectoryPickResponse>;
   private readonly cliHubRuntime: CliHubRuntimeOptions;
+  private readonly projectServiceRuntime = new ProjectServiceRuntime();
   private state: BootstrapState;
   private databaseInstance: AppDatabase | null = null;
   private configInstance: AppConfig | null = null;
@@ -83,7 +83,12 @@ export class AppContext {
     return this.cliHubRuntime;
   }
 
+  projectServices(): ProjectServiceRuntime {
+    return this.projectServiceRuntime;
+  }
+
   sessionIndexer(): SessionIndexService {
+
     if (!this.sessionIndexService) {
       throw new Error("Data directory is not initialized");
     }
@@ -97,11 +102,13 @@ export class AppContext {
   }
 
   close(): void {
+    this.projectServiceRuntime.stopAll();
     this.sessionIndexService?.stop();
     this.databaseInstance?.close();
   }
 
   private initializeDataDir(dataDir: string, persistBootstrap: boolean): void {
+    this.projectServiceRuntime.stopAll();
     this.sessionIndexService?.stop();
     this.databaseInstance?.close();
     this.configInstance = ensureConfigFiles(dataDir);

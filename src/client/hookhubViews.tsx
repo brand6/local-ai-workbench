@@ -12,7 +12,7 @@ import type {
   ProjectHookToolState
 } from "../shared/types.js";
 
-const supportedToolIds: HookHubSupportedToolId[] = ["claude", "codex", "qwen", "qoder"];
+const supportedToolIds: HookHubSupportedToolId[] = ["claude", "codex", "qwen", "qoder", "kimi", "codebuddy"];
 
 export function HookHubPage({
   hookhub,
@@ -309,6 +309,7 @@ export function ProjectHooksPanel({
   onShareHooks,
   onApplySuite,
   onSyncTool,
+  onOpenConfig,
   onRemoveBinding,
   onSyncAll
 }: {
@@ -319,12 +320,13 @@ export function ProjectHooksPanel({
   onShareHooks: (toolId: HookHubSupportedToolId, input: HookHubSuiteInput) => void;
   onApplySuite: (toolId: HookHubSupportedToolId, suiteId: string, options?: ApplyPromptResult) => void;
   onSyncTool: (toolId: HookHubSupportedToolId) => void;
+  onOpenConfig: (toolId: HookHubSupportedToolId, target: "document" | "folder") => void;
   onRemoveBinding: (toolId: HookHubSupportedToolId) => void;
   onSyncAll: () => void;
 }) {
   return (
     <aside className="side-panel project-hooks-panel" aria-label="项目 Hooks 管理">
-      <header>
+      <header className="project-hooks-header">
         <div>
           <span className="eyebrow">HookHub</span>
           <h2>项目 Hooks</h2>
@@ -338,12 +340,12 @@ export function ProjectHooksPanel({
         <div className="muted">正在读取项目 hooks...</div>
       ) : (
         <>
-          <p className="path-line">{state.targetRootPath}</p>
-          <div className="inline-actions">
+          <section className="project-hooks-target" aria-label="当前 Hooks 目录">
+            <p className="path-line">{state.targetRootPath}</p>
             <button className="secondary" type="button" disabled={busy} onClick={onSyncAll}>
               更新当前目录所有不一致 hooks
             </button>
-          </div>
+          </section>
           <div className="project-hook-tool-list">
             {state.tools.map((tool) => (
               <ProjectHookToolRow
@@ -355,6 +357,7 @@ export function ProjectHooksPanel({
                 onShareHooks={onShareHooks}
                 onApplySuite={onApplySuite}
                 onSyncTool={onSyncTool}
+                onOpenConfig={onOpenConfig}
                 onRemoveBinding={onRemoveBinding}
               />
             ))}
@@ -512,6 +515,7 @@ function ProjectHookToolRow({
   onShareHooks,
   onApplySuite,
   onSyncTool,
+  onOpenConfig,
   onRemoveBinding
 }: {
   tool: ProjectHookToolState;
@@ -521,9 +525,10 @@ function ProjectHookToolRow({
   onShareHooks: (toolId: HookHubSupportedToolId, input: HookHubSuiteInput) => void;
   onApplySuite: (toolId: HookHubSupportedToolId, suiteId: string, options?: ApplyPromptResult) => void;
   onSyncTool: (toolId: HookHubSupportedToolId) => void;
+  onOpenConfig: (toolId: HookHubSupportedToolId, target: "document" | "folder") => void;
   onRemoveBinding: (toolId: HookHubSupportedToolId) => void;
 }) {
-  const supportedToolId = isHookHubSupportedToolId(tool.toolId) ? tool.toolId : null;
+  const supportedToolId = tool.supported && isHookHubSupportedToolId(tool.toolId) ? tool.toolId : null;
   const [hooksJson, setHooksJson] = useState(() => JSON.stringify(tool.hooks ?? {}, null, 2));
   const [suiteId, setSuiteId] = useState("");
   const compatibleSuites = useMemo(
@@ -558,10 +563,12 @@ function ProjectHookToolRow({
         }}
       >
         <div className="project-hook-tool-main">
-          <strong>{tool.label}</strong>
-          <span className={statusClass(tool.status)}>{statusLabel(tool.status)}</span>
-          <p>{tool.reason}</p>
-          {tool.discovery.length ? <small>{tool.discovery.join("；")}</small> : null}
+          <span className="project-hook-tool-title">
+            <strong>{tool.label}</strong>
+            <span className={statusClass(tool.status)}>{statusLabel(tool.status)}</span>
+          </span>
+          <span className="project-hook-tool-summary">{tool.reason}</span>
+          {tool.discovery.length ? <small className="project-hook-tool-discovery">{tool.discovery.join("；")}</small> : null}
         </div>
       </article>
     );
@@ -571,89 +578,98 @@ function ProjectHookToolRow({
     <details className="project-hook-tool-row">
       <summary>
         <span className="project-hook-tool-main">
-          <strong>{tool.label}</strong>
-          <span className={statusClass(tool.status)}>{statusLabel(tool.status)}</span>
-          <span>{tool.hooksSummary}</span>
+          <span className="project-hook-tool-title">
+            <strong>{tool.label}</strong>
+            <span className={statusClass(tool.status)}>{statusLabel(tool.status)}</span>
+          </span>
+          <span className="project-hook-tool-summary">{tool.hooksSummary}</span>
         </span>
       </summary>
       <div className="project-hook-tool-body">
-        <div className="project-meta">
+        <div className="project-hook-tool-meta">
           {tool.configPath ? <span>{tool.configPath}</span> : null}
           {tool.suite ? <span>suite: {tool.suite.name}</span> : null}
           {tool.reason ? <span>{tool.reason}</span> : null}
           {tool.error ? <span>{tool.error}</span> : null}
         </div>
-        <label className="field wide">
+        <label className="field wide project-hook-json-field">
           hooks JSON
           <textarea value={hooksJson} disabled={busy || tool.status === "invalid"} onChange={(event) => setHooksJson(event.target.value)} />
         </label>
-        <div className="inline-actions">
-          <button
-            className="secondary"
-            type="button"
-            disabled={busy || tool.status === "invalid"}
-            onClick={() => {
-              const parsed = parseHooks();
-              if (parsed !== null) onWriteHooks(supportedToolId, parsed);
-            }}
-          >
-            保存到项目
-          </button>
-          <button
-            className="primary"
-            type="button"
-            disabled={busy || tool.status === "invalid"}
-            onClick={() => {
-              const parsed = parseHooks();
-              const name = window.prompt("新 suite name", "");
-              if (parsed !== null && name) onWriteHooks(supportedToolId, parsed, { name });
-            }}
-          >
-            新建 suite 并应用
-          </button>
-          <button
-            className="secondary"
-            type="button"
-            disabled={busy || tool.status === "invalid" || tool.status === "missing"}
-            onClick={() => {
-              const name = window.prompt("上传到 HookHub 的 suite name", "");
-              if (name) onShareHooks(supportedToolId, { name, payloads: {} });
-            }}
-          >
-            {tool.status === "drifted" ? "另存为新 suite" : "上传到 HookHub"}
-          </button>
-          <button
-            className="secondary"
-            type="button"
-            disabled={busy || tool.status !== "drifted" || !tool.binding}
-            onClick={() => {
-              if (tool.binding && window.confirm("用当前项目 hooks 覆盖原 HookHub suite？")) {
-                onApplySuite(supportedToolId, tool.binding.suiteId, { mode: "update-bound-suite-then-overwrite" });
-              }
-            }}
-          >
-            覆盖原 suite
-          </button>
-          <button
-            className="secondary"
-            type="button"
-            disabled={busy || (tool.status !== "outdated" && tool.status !== "missing")}
-            onClick={() => onSyncTool(supportedToolId)}
-          >
-            从 HookHub 同步
-          </button>
-          <button
-            className="secondary"
-            type="button"
-            disabled={busy || tool.status !== "missing" || !tool.binding}
-            onClick={() => {
-              if (window.confirm("移除当前 missing hooks 的 HookHub binding？项目文件不会被修改。")) onRemoveBinding(supportedToolId);
-            }}
-          >
-            移除 binding
-          </button>
+        <div className="project-hook-action-panel">
+          <div className="project-hook-action-group">
+            <button className="secondary" type="button" disabled={busy || !tool.configPath} onClick={() => onOpenConfig(supportedToolId, "document")}>
+              打开配置文件
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              disabled={busy || tool.status === "invalid"}
+              onClick={() => {
+                const parsed = parseHooks();
+                if (parsed !== null) onWriteHooks(supportedToolId, parsed);
+              }}
+            >
+              保存到项目
+            </button>
+            <button
+              className="primary"
+              type="button"
+              disabled={busy || tool.status === "invalid"}
+              onClick={() => {
+                const parsed = parseHooks();
+                const name = window.prompt("新 suite name", "");
+                if (parsed !== null && name) onWriteHooks(supportedToolId, parsed, { name });
+              }}
+            >
+              新建 suite 并应用
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              disabled={busy || tool.status === "invalid" || tool.status === "missing"}
+              onClick={() => {
+                const name = window.prompt("上传到 HookHub 的 suite name", "");
+                if (name) onShareHooks(supportedToolId, { name, payloads: {} });
+              }}
+            >
+              {tool.status === "drifted" ? "另存为新 suite" : "上传到 HookHub"}
+            </button>
+          </div>
+          <div className="project-hook-action-group secondary">
+            <button
+              className="secondary"
+              type="button"
+              disabled={busy || tool.status !== "drifted" || !tool.binding}
+              onClick={() => {
+                if (tool.binding && window.confirm("用当前项目 hooks 覆盖原 HookHub suite？")) {
+                  onApplySuite(supportedToolId, tool.binding.suiteId, { mode: "update-bound-suite-then-overwrite" });
+                }
+              }}
+            >
+              覆盖原 suite
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              disabled={busy || (tool.status !== "outdated" && tool.status !== "missing")}
+              onClick={() => onSyncTool(supportedToolId)}
+            >
+              从 HookHub 同步
+            </button>
+            <button
+              className="secondary"
+              type="button"
+              disabled={busy || tool.status !== "missing" || !tool.binding}
+              onClick={() => {
+                if (window.confirm("移除当前 missing hooks 的 HookHub binding？项目文件不会被修改。")) onRemoveBinding(supportedToolId);
+              }}
+            >
+              移除 binding
+            </button>
+          </div>
         </div>
-        <div className="hookhub-apply-row">
+        <div className="hookhub-apply-row project-hook-apply-row">
           <label className="field">
             应用 suite
             <select value={suiteId} disabled={busy || compatibleSuites.length === 0} onChange={(event) => setSuiteId(event.target.value)}>
@@ -735,6 +751,27 @@ const structuredHookTemplates: Record<HookHubSupportedToolId, HookTemplate[]> = 
     { id: "pre", label: "执行前 pre", matcher: false },
     { id: "post", label: "执行后 post", matcher: false },
     { id: "stop", label: "响应结束 stop", matcher: false }
+  ],
+  codebuddy: [
+    { id: "PreToolUse", label: "工具调用前 PreToolUse", matcher: true },
+    { id: "PostToolUse", label: "工具调用后 PostToolUse", matcher: true },
+    { id: "UserPromptSubmit", label: "提交提示词 UserPromptSubmit", matcher: false },
+    { id: "Notification", label: "通知 Notification", matcher: true },
+    { id: "Stop", label: "响应结束 Stop", matcher: false },
+    { id: "SubagentStop", label: "子代理停止 SubagentStop", matcher: false },
+    { id: "SessionStart", label: "会话开始 SessionStart", matcher: true },
+    { id: "SessionEnd", label: "会话结束 SessionEnd", matcher: true },
+    { id: "PreCompact", label: "压缩前 PreCompact", matcher: true }
+  ],
+  kimi: [
+    { id: "PreToolUse", label: "工具调用前 PreToolUse", matcher: true },
+    { id: "PostToolUse", label: "工具调用后 PostToolUse", matcher: true },
+    { id: "UserPromptSubmit", label: "提交提示词 UserPromptSubmit", matcher: false },
+    { id: "Notification", label: "通知 Notification", matcher: true },
+    { id: "Stop", label: "响应结束 Stop", matcher: false },
+    { id: "SessionStart", label: "会话开始 SessionStart", matcher: true },
+    { id: "PreCompact", label: "压缩前 PreCompact", matcher: true },
+    { id: "PostCompact", label: "压缩后 PostCompact", matcher: true }
   ]
 };
 
@@ -1010,11 +1047,18 @@ function structuredHookDraftInput(draft: StructuredHookDraft, setError: (error: 
 function structuredHookPayload(
   toolId: HookHubSupportedToolId,
   hooks: Array<{ template: HookTemplate; matcher: string; command: string }>
-): Record<string, unknown[]> {
+): unknown {
+  if (toolId === "kimi") {
+    return hooks.map((hook) => ({
+      event: hook.template.id,
+      ...(hook.template.matcher && hook.matcher.trim() ? { matcher: hook.matcher.trim() } : {}),
+      command: hook.command
+    }));
+  }
   const payload: Record<string, unknown[]> = {};
   for (const hook of hooks) {
     const entry =
-      toolId === "claude"
+      (toolId === "claude" || toolId === "codebuddy")
         ? {
             ...(hook.template.matcher && hook.matcher.trim() ? { matcher: hook.matcher.trim() } : {}),
             hooks: [{ type: "command", command: hook.command }]
@@ -1041,7 +1085,7 @@ function emptyStructuredHookRuleDraft(toolId: HookHubSupportedToolId): Structure
 }
 
 function defaultStructuredMatcher(toolId: HookHubSupportedToolId, hook: HookTemplate): string {
-  return toolId === "claude" && hook.matcher ? "Bash" : "";
+  return (toolId === "claude" || toolId === "kimi" || toolId === "codebuddy") && hook.matcher ? "Bash" : "";
 }
 
 function suiteInputFromJsonText(input: string, setError: (error: string) => void): HookHubSuiteInput | null {
@@ -1086,7 +1130,7 @@ function emptySuiteDraft(): SuiteDraft {
     description: "",
     riskNotes: "",
     requiredEnv: "",
-    payloads: { claude: "", codex: "", qwen: "", qoder: "" }
+    payloads: { claude: "", codex: "", qwen: "", qoder: "", kimi: "", codebuddy: "" }
   };
 }
 
@@ -1103,7 +1147,7 @@ function suiteDraftFromSuite(suite: HookHubSuite): SuiteDraft {
 }
 
 function isHookHubSupportedToolId(value: string): value is HookHubSupportedToolId {
-  return value === "claude" || value === "codex" || value === "qwen" || value === "qoder";
+  return value === "claude" || value === "codex" || value === "qwen" || value === "qoder" || value === "kimi" || value === "codebuddy";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

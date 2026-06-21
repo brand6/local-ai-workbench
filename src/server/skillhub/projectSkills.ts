@@ -9,18 +9,22 @@ import type {
   ProjectSkillTargetsState,
   ProjectSkillUpdateResult,
   ProjectToolTarget,
-  ToolId
+  ProjectConfigTargetId
 } from "../../shared/types.js";
-import { toolIds } from "../../shared/types.js";
 import type { AppDatabase } from "../storage/database.js";
 import { isPathInsideOrEqual, normalizeFsPath } from "../core/pathUtils.js";
-import { projectConfigurableToolStatuses, projectSkillDirectoryOptions, toolAdapters } from "../tools/adapters.js";
+import {
+  projectConfigTargetIdsForConfig,
+  projectConfigTargetSkillDirectoryOptions,
+  projectConfigTargetSkillTarget,
+  projectConfigTargetTraceEntries,
+  uniqueProjectConfigTargetIds as uniqueKnownProjectConfigTargetIds
+} from "../projectTargets/projectConfigTargets.js";
 import { createDirectoryLink, linkPointsTo, pathExists, removeDirectoryLink } from "./links.js";
 
-const allToolIds: ToolId[] = [...toolIds];
 
 interface ProjectSkillDirectoryTarget {
-  toolId: ToolId;
+  toolId: ProjectConfigTargetId;
   directory: string;
   normalizedDirectory: string;
   kind: "private" | "public";
@@ -31,7 +35,7 @@ interface ProjectSkillDirectoryTarget {
 interface ProjectSkillDirectoryGroup {
   directory: string;
   normalizedDirectory: string;
-  toolIds: ToolId[];
+  toolIds: ProjectConfigTargetId[];
   shared: boolean;
 }
 
@@ -39,7 +43,8 @@ export function listProjectToolTargets(database: AppDatabase, project: Project, 
   ensureProjectToolTargets(database, project, config);
   const stored = new Map(database.listStoredProjectToolTargets(project.id).map((target) => [target.toolId, target]));
   return projectTargetToolIds(config).map((toolId) => {
-    const adapterTarget = toolAdapters[toolId].skillTarget(
+    const adapterTarget = projectConfigTargetSkillTarget(
+      toolId,
       project.rootPath,
       config ? { directoryPreference: config.projectResources.directoryPreference } : undefined
     );
@@ -57,12 +62,12 @@ export function listProjectToolTargets(database: AppDatabase, project: Project, 
   });
 }
 
-export function updateProjectToolTargets(database: AppDatabase, project: Project, toolIds: ToolId[], config?: AppConfig): ProjectToolTarget[] {
+export function updateProjectToolTargets(database: AppDatabase, project: Project, toolIds: ProjectConfigTargetId[], config?: AppConfig): ProjectToolTarget[] {
   database.replaceProjectToolTargets(project.id, uniqueProjectToolIds(toolIds, config));
   return listProjectToolTargets(database, project, config);
 }
 
-export function unavailableProjectToolIds(config: AppConfig, toolIds: ToolId[]): ToolId[] {
+export function unavailableProjectToolIds(config: AppConfig, toolIds: ProjectConfigTargetId[]): ProjectConfigTargetId[] {
   const allowed = new Set(projectTargetToolIds(config));
   return uniqueToolIds(toolIds).filter((toolId) => !allowed.has(toolId));
 }
@@ -82,7 +87,7 @@ export function setProjectSkillTargets(
   database: AppDatabase,
   project: Project,
   skillId: string,
-  toolIds: ToolId[],
+  toolIds: ProjectConfigTargetId[],
   options: { replaceConflicts?: boolean } = {},
   config?: AppConfig
 ): ProjectSkillUpdateResult {
@@ -99,7 +104,7 @@ export function setProjectSkillTargets(
   const targets: ProjectSkillTarget[] = [];
   const conflicts: ProjectSkillConflict[] = [];
   const failures: ProjectSkillLinkFailure[] = [];
-  const validRequestedToolIds = new Set<ToolId>();
+  const validRequestedToolIds = new Set<ProjectConfigTargetId>();
 
   for (const toolId of requestedToolIds) {
     const toolTarget = toolTargets.get(toolId);
@@ -206,7 +211,7 @@ function projectSkillDirectoryTargets(project: Project, toolTargets: ProjectTool
   for (const toolTarget of toolTargets) {
     if (!toolTarget.enabled || !toolTarget.supported || !toolTarget.skillDirectory) continue;
     const preferredDirectory = normalizeFsPath(toolTarget.skillDirectory);
-    for (const option of projectSkillDirectoryOptions(toolTarget.toolId, project.rootPath)) {
+    for (const option of projectConfigTargetSkillDirectoryOptions(toolTarget.toolId, project.rootPath, config?.projectResources.directoryPreference)) {
       targets.push({
         toolId: toolTarget.toolId,
         directory: option.directory,
@@ -259,7 +264,7 @@ function expandSharedProjectSkillTargets(storedTargets: ProjectSkillTarget[], di
 function sharedDirectoriesToRemove(
   currentTargets: ProjectSkillTarget[],
   directoryGroups: ProjectSkillDirectoryGroup[],
-  requestedToolIds: Set<ToolId>,
+  requestedToolIds: Set<ProjectConfigTargetId>,
   clearAll: boolean
 ): Set<string> {
   const remove = new Set<string>();
@@ -277,8 +282,8 @@ function desiredProjectSkillTargets(
   skillId: string,
   folderName: string,
   targetPath: string,
-  requestedToolIds: Set<ToolId>,
-  toolTargets: Map<ToolId, ProjectToolTarget>,
+  requestedToolIds: Set<ProjectConfigTargetId>,
+  toolTargets: Map<ProjectConfigTargetId, ProjectToolTarget>,
   directoryGroupsByDirectory: Map<string, ProjectSkillDirectoryGroup>,
   sharedRemovalDirectories: Set<string>
 ): Map<string, Omit<ProjectSkillTarget, "createdAt" | "updatedAt">> {
@@ -326,7 +331,7 @@ function keepRequestedPrivateTargets(
   currentTargets: ProjectSkillTarget[],
   desiredTargets: Map<string, Omit<ProjectSkillTarget, "createdAt" | "updatedAt">>,
   directoryGroupsByDirectory: Map<string, ProjectSkillDirectoryGroup>,
-  requestedToolIds: Set<ToolId>,
+  requestedToolIds: Set<ProjectConfigTargetId>,
   clearAll: boolean
 ): void {
   if (clearAll) return;
@@ -379,7 +384,7 @@ function removeUndesiredProjectSkillTargets(
 function addDesiredProjectSkillTarget(
   desired: Map<string, Omit<ProjectSkillTarget, "createdAt" | "updatedAt">>,
   projectId: string,
-  toolId: ToolId,
+  toolId: ProjectConfigTargetId,
   skillId: string,
   linkPath: string,
   targetPath: string
@@ -399,11 +404,11 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
 }
 
-function projectSkillTargetKey(toolId: ToolId, skillId: string, linkPath: string): string {
+function projectSkillTargetKey(toolId: ProjectConfigTargetId, skillId: string, linkPath: string): string {
   return `${toolId}:${skillId}:${normalizeFsPath(linkPath)}`;
 }
 
-function isPluginOwnedSkillTarget(database: AppDatabase, projectId: string, toolId: ToolId, linkPath: string, skillId: string): boolean {
+function isPluginOwnedSkillTarget(database: AppDatabase, projectId: string, toolId: ProjectConfigTargetId, linkPath: string, skillId: string): boolean {
   return database.listProjectPluginBindings(projectId).some((binding) =>
     binding.componentOwnership.some(
       (owner) =>
@@ -428,51 +433,33 @@ export function ensureProjectToolTargets(database: AppDatabase, project: Project
   }
 }
 
-function inferProjectToolIds(database: AppDatabase, project: Project): Set<ToolId> {
-  const inferred = new Set<ToolId>();
+function inferProjectToolIds(database: AppDatabase, project: Project): Set<ProjectConfigTargetId> {
+  const inferred = new Set<ProjectConfigTargetId>();
   for (const session of database.listSessionsForProject(project)) {
     inferred.add(session.toolId);
   }
-  for (const [toolId, traces] of Object.entries(projectTraceMap) as Array<[ToolId, string[]]>) {
+  for (const [toolId, traces] of projectConfigTargetTraceEntries()) {
     if (traces.some((trace) => fs.existsSync(path.join(project.rootPath, trace)))) {
       inferred.add(toolId);
     }
   }
   return inferred;
 }
+
 
-const projectTraceMap: Record<ToolId, string[]> = {
-  codex: [".codex", "AGENTS.md"],
-  claude: [".claude", "CLAUDE.md"],
-  cline: [".cline", ".clinerules/skills"],
-  opencode: [".opencode", "OPENCODE.md"],
-  kilo: [".kilo", ".kilocode", "KILO.md"],
-  qwen: [".qwen", "QWEN.md"],
-  kimi: [".kimi-code"],
-  qoder: [".qoder", "QODER.md"],
-  codebuddy: [".codebuddy"],
-  copilot: [".github/copilot-instructions.md", ".github/skills"],
-  cursor: [".cursor", ".cursorrules"],
-  antigravity: [".agents/mcp_config.json"],
-  deepcode: [],
-  reasonix: []
-};
-
-function uniqueToolIds(toolIds: ToolId[]): ToolId[] {
-  const allowed = new Set<ToolId>(allToolIds);
-  return [...new Set(toolIds.filter((toolId) => allowed.has(toolId)))];
+function uniqueToolIds(toolIds: ProjectConfigTargetId[]): ProjectConfigTargetId[] {
+  return uniqueKnownProjectConfigTargetIds(toolIds);
 }
 
-function uniqueProjectToolIds(toolIds: ToolId[], config?: AppConfig): ToolId[] {
+function uniqueProjectToolIds(toolIds: ProjectConfigTargetId[], config?: AppConfig): ProjectConfigTargetId[] {
   const allowed = new Set(projectTargetToolIds(config));
   return uniqueToolIds(toolIds).filter((toolId) => allowed.has(toolId));
 }
 
-function projectTargetToolIds(config?: AppConfig): ToolId[] {
-  if (!config) return allToolIds;
-  return projectConfigurableToolStatuses(config).map((tool) => tool.toolId);
+function projectTargetToolIds(config?: AppConfig): ProjectConfigTargetId[] {
+  return projectConfigTargetIdsForConfig(config);
 }
 
-function failure(projectId: string, toolId: ToolId, skillId: string, linkPath: string, targetPath: string, reason: string): ProjectSkillLinkFailure {
+function failure(projectId: string, toolId: ProjectConfigTargetId, skillId: string, linkPath: string, targetPath: string, reason: string): ProjectSkillLinkFailure {
   return { projectId, toolId, skillId, linkPath, targetPath, reason };
 }

@@ -54,17 +54,21 @@ export function CliHubPage({
                 <span className="metric-pill">{group.clis.length}</span>
               </header>
               <div className="clihub-cli-list">
-                {group.clis.map((cli) => (
-                  <CliHubCliRow
-                    key={cli.cliId}
-                    cli={cli}
-                    busy={busy}
-                    onCheckOne={onCheckOne}
-                    onInstall={onInstall}
-                    onUpdate={onUpdate}
-                    onAddChannel={onAddChannel}
-                  />
-                ))}
+                {group.clis.length ? (
+                  group.clis.map((cli) => (
+                    <CliHubCliRow
+                      key={cli.cliId}
+                      cli={cli}
+                      busy={busy}
+                      onCheckOne={onCheckOne}
+                      onInstall={onInstall}
+                      onUpdate={onUpdate}
+                      onAddChannel={onAddChannel}
+                    />
+                  ))
+                ) : (
+                  <div className="empty-state compact">暂无自定义 CLI</div>
+                )}
               </div>
             </section>
           ))}
@@ -288,7 +292,7 @@ function OperationResult({ result }: { result: CliHubCli["recentOperation"] }) {
 
 function groupCliRows(clis: CliHubCli[]): Array<{ kind: CliHubCli["kind"]; clis: CliHubCli[] }> {
   const order: CliHubCli["kind"][] = ["project-tool", "function", "dependency", "custom"];
-  return order.map((kind) => ({ kind, clis: clis.filter((cli) => cli.kind === kind) })).filter((group) => group.clis.length > 0);
+  return order.map((kind) => ({ kind, clis: clis.filter((cli) => cli.kind === kind) })).filter((group) => group.clis.length > 0 || group.kind === "custom");
 }
 
 function groupLabel(kind: CliHubCli["kind"]): string {

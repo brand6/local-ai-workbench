@@ -176,6 +176,7 @@ function configWithCodexSource(codexSessions: string, directory: string): AppCon
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
       antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      trae: { command: "traecli", sessionSources: [path.join(directory, "missing-trae-sessions")] },
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },

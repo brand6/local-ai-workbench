@@ -44,6 +44,21 @@ _Avoid_: Open project, start session
 应用支持或检测的本地 AI CLI 或编码工具，例如 Codex、Claude、OpenCode、Qwen、Cursor。
 _Avoid_: Provider, integration
 
+**Session Tool**:
+应用能够启动新会话、扫描历史或 Resume 的 Tool。只有 Session Tool 才能出现在“新会话”、Session Index、Resume 和 CliHub 会话打开链路中。
+_Avoid_: Config target, project-only tool
+
+
+**ZCode Hub 支持边界**:
+ZCode 官方文档确认：MCP 工作区原生配置为 `<workspace>/.zcode/config.json` 的 `mcp.servers`，`.agents/mcp.json`/`mcpServers` 只是兼容兜底；用户级 Skill 位于 `~/.zcode/skills/<skill-name>/SKILL.md`，项目级 Skill 路径未明确；Command 用户级位于 `~/.zcode/commands`，工作区级路径未明确；自定义子智能体暂不支持；Plugin 可包含 Skill、Command、Agent、MCP、Hook、LSP，但官方未公开可写回的本地插件包/manifest 路径。因此 ZCode 只能按已确认格式接入 McpHub 和 AGENTS.md 规则，SkillHub 项目目录需标注为推断适配，AgentHub/HookHub/PluginHub/CliHub/Session Index 不应启用 ZCode 写回或会话能力。
+
+**WorkBuddy / Trae Solo Hub 支持边界**:
+WorkBuddy 官方文档确认项目级 MCP 配置为 `<项目目录>/.workbuddy/mcp.json`，使用顶层 `mcpServers`；但 Skill 通过界面上传/导入技能包，未提供项目技能目录，因此 SkillHub 不启用 WorkBuddy 项目写回。TRAE Work 官方文档确认项目技能目录为 `<project>/.trae/skills/`，但 MCP 只说明在设置界面手动填写 `mcpServers` JSON 和 `${workspaceFolder}` 变量，未公开项目级 MCP 配置文件路径，因此 Trae Solo 只启用 SkillHub 项目目录，不启用 McpHub 写回。
+
+**Project Config Target**:
+Hub 可以向某个 Project Group 写入技能、MCP、规则或其它项目侧配置的目标。Project Config Target 可以对应一个 Session Tool，也可以是 ZCode、WorkBuddy、Trae Solo 这类非 CLI/非会话目标；非会话目标不能进入 CliHub，也不能承诺新会话、历史扫描或 Resume。只有官方文档或已验证本机格式明确的能力才能启用写回；例如 ZCode MCP 写 `.zcode/config.json` 的 `mcp.servers`，而不是 `.zcode/mcp.json`。
+_Avoid_: CLI, session tool
+
 **Availability**:
 Tool 或 CLI 在当前机器上是否可被检测并运行的用户可见状态。
 _Avoid_: Support, installation
@@ -89,7 +104,7 @@ Hub 在应用数据目录中拥有的真实资源库；项目侧只接收由它�
 _Avoid_: Project library, target files
 
 **Project Target**:
-Hub 在某个 Project 的具体工具或目录下管理的项目侧落点，可以是链接、生成文件、配置项或启用记录。
+Hub 在某个 Project 的具体 Project Config Target 或目录下管理的项目侧落点，可以是链接、生成文件、配置项或启用记录。
 _Avoid_: Installed copy, project library item
 
 **Apply**:

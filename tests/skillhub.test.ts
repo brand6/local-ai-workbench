@@ -11,6 +11,7 @@ import {
   checkGitHubUpdates,
   applyGitHubSourceUpdate,
   deleteSkillHubSkill,
+  deleteSkillHubSource,
   listSkillHub,
   listProjectLocalSkillsState,
   migrateProjectLocalSkill
@@ -184,6 +185,34 @@ describe("SkillHub", () => {
     db.close();
   });
 
+  it("imports and repairs skill metadata from SKILL.md descriptions", () => {
+    directory = testDir("skillhub-skill-metadata-repair");
+    const config = configFixture(directory);
+    const db = new AppDatabase(directory);
+    const source = path.join(directory, "AICodingConfig");
+    const description = "编写 Unity 编辑器工具（EditorWindow / Inspector / 编辑器面板）";
+    writeBomSkill(path.join(source, "skills", "compose-editor-tool"), "compose-editor-tool", description);
+    writeBareMetadataSkill(path.join(source, "skills", "compose-imgui"), "compose-imgui", "编写 IMGUI 编辑器界面");
+
+    const imported = importLocalSkills(db, config, directory, source);
+    const editorTool = imported.imported.find((skill) => skill.folderName === "compose-editor-tool");
+    const imguiTool = imported.imported.find((skill) => skill.folderName === "compose-imgui");
+    expect(editorTool).toMatchObject({ skillName: "compose-editor-tool", description });
+    expect(imguiTool).toMatchObject({ skillName: "compose-imgui", description: "编写 IMGUI 编辑器界面" });
+
+    db.upsertSkillHubSkill({
+      ...editorTool!,
+      skillName: "Skill Instructions",
+      description: null
+    });
+
+    const listed = listSkillHub(db, config, directory);
+    const repaired = listed.skills.find((skill) => skill.id === editorTool?.id);
+    expect(repaired).toMatchObject({ skillName: "compose-editor-tool", description });
+    expect(db.getSkillHubSkill(editorTool!.id)).toMatchObject({ skillName: "compose-editor-tool", description });
+    db.close();
+  });
+
   it("creates project skill links, handles same-name replacement, and deletes references before center content", () => {
     directory = testDir("skillhub-project-links");
     const config = configFixture(directory);
@@ -219,6 +248,58 @@ describe("SkillHub", () => {
     expect(deleted.affectedTargets).toHaveLength(1);
     expect(fs.existsSync(skillB.libraryPath)).toBe(false);
     expect(db.listProjectSkillTargetsForSkill(skillB.id)).toEqual([]);
+    db.close();
+  });
+
+  it("links SkillHub skills into supported non-CLI project config targets without making them session tools", () => {
+    directory = testDir("skillhub-non-cli-project-targets");
+    const config = configFixture(directory);
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    const supportedTargets = [
+      { toolId: "zcode" as const, directoryName: ".zcode" },
+      { toolId: "trae-solo" as const, directoryName: ".trae" }
+    ];
+    const unsupportedTarget = { toolId: "workbuddy" as const, directoryName: ".workbuddy" };
+    const nonCliTargets = [...supportedTargets, unsupportedTarget];
+    for (const target of nonCliTargets) {
+      fs.mkdirSync(path.join(projectRoot, target.directoryName), { recursive: true });
+    }
+    const project = db.addProject(projectRoot).project;
+    const source = path.join(directory, "source");
+    writeSkill(path.join(source, "skills", "review"), "review", "Review skill");
+    const skill = importLocalSkills(db, config, directory, source).imported[0];
+
+    const toolTargets = new Map(listProjectToolTargets(db, project).map((target) => [target.toolId, target]));
+    for (const target of supportedTargets) {
+      expect(toolIds).not.toContain(target.toolId);
+      expect(toolTargets.get(target.toolId)).toMatchObject({
+        enabled: true,
+        inferred: true,
+        supported: true,
+        skillDirectory: path.join(projectRoot, target.directoryName, "skills")
+      });
+    }
+    expect(toolIds).not.toContain(unsupportedTarget.toolId);
+    expect(toolTargets.get(unsupportedTarget.toolId)).toMatchObject({
+      enabled: true,
+      inferred: true,
+      supported: false,
+      skillDirectory: null,
+      reason: expect.stringContaining("未提供项目技能目录")
+    });
+
+    updateProjectToolTargets(db, project, nonCliTargets.map((target) => target.toolId));
+    const linked = setProjectSkillTargets(db, project, skill.id, nonCliTargets.map((target) => target.toolId));
+
+    expect(linked.failures).toHaveLength(1);
+    expect(linked.failures[0]).toMatchObject({ toolId: "workbuddy", reason: expect.stringContaining("未提供项目技能目录") });
+    for (const target of supportedTargets) {
+      const linkPath = path.join(projectRoot, target.directoryName, "skills", "review");
+      expect(linked.targets).toContainEqual(expect.objectContaining({ toolId: target.toolId, linkPath }));
+      expect(fs.existsSync(linkPath)).toBe(true);
+    }
+    expect(fs.existsSync(path.join(projectRoot, ".workbuddy", "skills", "review"))).toBe(false);
     db.close();
   });
 
@@ -407,7 +488,8 @@ describe("SkillHub", () => {
       ["kimi", path.join(projectRoot, ".kimi-code", "skills")],
       ["opencode", path.join(projectRoot, ".opencode", "skills")],
       ["qoder", path.join(projectRoot, ".qoder", "skills")],
-      ["qwen", path.join(projectRoot, ".qwen", "skills")]
+      ["qwen", path.join(projectRoot, ".qwen", "skills")],
+      ["trae", path.join(projectRoot, ".traecli", "skills")]
     ];
 
     updateProjectToolTargets(
@@ -490,6 +572,7 @@ describe("SkillHub", () => {
     fs.mkdirSync(path.join(projectRoot, ".kimi-code", "skills", "review"), { recursive: true });
     fs.mkdirSync(path.join(projectRoot, ".codebuddy", "skills", "review"), { recursive: true });
     fs.mkdirSync(path.join(projectRoot, ".github", "skills", "review"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".traecli", "skills", "review"), { recursive: true });
     const project = db.addProject(projectRoot).project;
 
     const targets = new Map(listProjectToolTargets(db, project).map((target) => [target.toolId, target]));
@@ -499,6 +582,7 @@ describe("SkillHub", () => {
     expect(targets.get("kimi")).toMatchObject({ enabled: true, inferred: true });
     expect(targets.get("codebuddy")).toMatchObject({ enabled: true, inferred: true });
     expect(targets.get("copilot")).toMatchObject({ enabled: true, inferred: true });
+    expect(targets.get("trae")).toMatchObject({ enabled: true, inferred: true });
   });
 
   it("keeps project skill links scoped to root and child directories under one managed project", () => {
@@ -899,6 +983,16 @@ function configFixture(dataDir: string): AppConfig {
 function writeSkill(directory: string, name: string, description: string): void {
   fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(path.join(directory, "SKILL.md"), skillText(name, description), "utf8");
+}
+
+function writeBomSkill(directory: string, name: string, description: string): void {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "SKILL.md"), `\ufeff${skillText(name, description)}`, "utf8");
+}
+
+function writeBareMetadataSkill(directory: string, name: string, description: string): void {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "SKILL.md"), `name: ${name}\ndescription: ${description}\n\n# Skill Instructions\n`, "utf8");
 }
 
 function skillText(name: string, description: string): string {

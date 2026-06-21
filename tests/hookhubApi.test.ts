@@ -32,7 +32,6 @@ describe("HookHub API", () => {
 
     const suite = await request(app)
       .post("/api/hookhub/suites")
-      .set("x-local-api-token", context.token)
       .send({
         name: "提交前检查",
         payloads: { claude: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "npm test" }] }] } }
@@ -42,13 +41,11 @@ describe("HookHub API", () => {
 
     const added = await request(app)
       .post("/api/projects")
-      .set("x-local-api-token", context.token)
       .send({ rootPath: projectRoot, includeSubdirectories: true, toolIds: ["claude"] })
       .expect(201);
 
     const applied = await request(app)
       .put(`/api/projects/${added.body.project.id}/hooks/claude/apply/${suite.body.suiteId}`)
-      .set("x-local-api-token", context.token)
       .send({ targetRootPath: childRoot })
       .expect(200);
     expect(applied.body).toMatchObject({ toolId: "claude", targetRootPath: childRoot, suite: { name: "提交前检查" } });
@@ -57,7 +54,6 @@ describe("HookHub API", () => {
     const state = await request(app)
       .get(`/api/projects/${added.body.project.id}/hooks`)
       .query({ targetRootPath: childRoot })
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(state.body.tools.find((tool: { toolId: string }) => tool.toolId === "claude")).toMatchObject({
       status: "current",
@@ -68,13 +64,11 @@ describe("HookHub API", () => {
     const removed = await request(app)
       .delete(`/api/projects/${added.body.project.id}/hooks/claude/binding`)
       .query({ targetRootPath: childRoot })
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(removed.body).toMatchObject({ removed: true, state: { status: "missing", binding: null } });
 
     const exported = await request(app)
       .get(`/api/hookhub/suites/${suite.body.suiteId}/export`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(exported.body.format).toBe("hookhub-suite-v1");
     expect(JSON.stringify(exported.body)).not.toContain("targetRootPath");

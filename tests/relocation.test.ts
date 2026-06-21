@@ -54,11 +54,10 @@ describe("project relocation", () => {
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const project = context.database().addProject(oldRoot, true).project;
 
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const preview = await request(app)
       .post("/api/relocations/preview")
-      .set("x-local-api-token", context.token)
       .send({ oldRoot, newRoot })
       .expect(200);
 
@@ -72,14 +71,12 @@ describe("project relocation", () => {
 
     const rejected = await request(app)
       .post("/api/relocations/confirm")
-      .set("x-local-api-token", context.token)
       .send({ oldRoot, newRoot })
       .expect(400);
     expect(rejected.body.error).toBe("relocation-confirmation-required");
 
     const confirmed = await request(app)
       .post("/api/relocations/confirm")
-      .set("x-local-api-token", context.token)
       .send({ oldRoot, newRoot, confirmation: "RELOCATE" })
       .expect(200);
 
@@ -104,12 +101,11 @@ describe("project relocation", () => {
     expect(lines[1].content).toBe(`message mentions ${oldRoot}`);
     expect(lines[1].tool_input.cwd).toBe(oldRoot);
 
-    const projects = await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(200);
+    const projects = await request(app).get("/api/projects").expect(200);
     expect(projects.body[0]).toMatchObject({ id: project.id, rootPath: newRoot, sessionCount: 1 });
 
     const detail = await request(app)
       .get(`/api/projects/${project.id}/detail`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(detail.body.project.rootPath).toBe(newRoot);
     expect(detail.body.groups[0].fullPath).toBe(newRoot);
@@ -148,11 +144,10 @@ describe("project relocation", () => {
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const project = context.database().addProject(oldRoot, true).project;
 
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const confirmed = await request(app)
       .post("/api/relocations/confirm")
-      .set("x-local-api-token", context.token)
       .send({ oldRoot, newRoot, confirmation: "RELOCATE" })
       .expect(200);
 
@@ -165,7 +160,6 @@ describe("project relocation", () => {
 
     const detail = await request(app)
       .get(`/api/projects/${project.id}/detail`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     const session = detail.body.groups[0].tools[0].sessions[0];
     expect(session.originalCwd).toBe(newRoot);
@@ -204,11 +198,10 @@ describe("project relocation", () => {
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const project = context.database().addProject(oldRoot, true).project;
 
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const confirmed = await request(app)
       .post("/api/relocations/confirm")
-      .set("x-local-api-token", context.token)
       .send({ oldRoot, newRoot, confirmation: "RELOCATE" })
       .expect(200);
 
@@ -221,7 +214,6 @@ describe("project relocation", () => {
 
     const detail = await request(app)
       .get(`/api/projects/${project.id}/detail`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     const session = detail.body.groups[0].tools[0].sessions[0];
     expect(session.originalCwd).toBe(newRoot);
@@ -258,11 +250,10 @@ describe("project relocation", () => {
     const sourceProject = context.database().addProject(oldRoot, true).project;
     const targetProject = context.database().addProject(newRoot, false).project;
 
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const confirmed = await request(app)
       .post("/api/relocations/confirm")
-      .set("x-local-api-token", context.token)
       .send({ oldRoot, newRoot, confirmation: "RELOCATE" })
       .expect(200);
 
@@ -274,7 +265,7 @@ describe("project relocation", () => {
       }
     ]);
 
-    const projects = await request(app).get("/api/projects").set("x-local-api-token", context.token).expect(200);
+    const projects = await request(app).get("/api/projects").expect(200);
     expect(projects.body.map((project: { id: string }) => project.id)).toEqual([targetProject.id]);
     expect(projects.body[0]).toMatchObject({ rootPath: newRoot, includeSubdirectories: true, sessionCount: 1 });
   });
@@ -312,17 +303,15 @@ describe("project relocation", () => {
     const app = await createHttpApp(context, { dev: false, serveClient: false });
     const project = context.database().addProject(currentRoot, true).project;
 
-    await request(app).post("/api/sessions/refresh").set("x-local-api-token", context.token).expect(200);
+    await request(app).post("/api/sessions/refresh").expect(200);
 
     const before = await request(app)
       .get(`/api/projects/${project.id}/detail`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(before.body.groups[0].tools[0].sessions[0].sourceFile).toBe(staleSourceFile);
 
     const confirmed = await request(app)
       .post("/api/relocations/confirm")
-      .set("x-local-api-token", context.token)
       .send({ oldRoot: currentRoot, newRoot: nextRoot, confirmation: "RELOCATE" })
       .expect(200);
 
@@ -335,7 +324,6 @@ describe("project relocation", () => {
 
     const detail = await request(app)
       .get(`/api/projects/${project.id}/detail`)
-      .set("x-local-api-token", context.token)
       .expect(200);
     const session = detail.body.groups[0].tools[0].sessions[0];
     expect(session.originalCwd).toBe(nextRoot);

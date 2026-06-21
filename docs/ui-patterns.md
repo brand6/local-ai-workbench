@@ -45,6 +45,7 @@ Hub 之间能共享的行语义应复用现有组件或样式。已有示例包�
 稳定模式：
 
 - 项目详情中的每个 group 提供对应入口，例如 `技能`、`Agent`、`MCP`、`Hooks`、`Plugin`。
+- 项目侧面板使用共享的右侧 `.side-panel` 加外部关闭层；点击面板外部关闭当前项目侧面板，面板内部行操作不应触发关闭。
 - 面板内用标签页区分中心库资源和本地发现资源，例如 `SkillHub技能` / `本地技能`、`AgentHub Agent` / `本地 Agent`、`McpHub MCP` / `本地 MCP`。
 - 中心库标签负责 Apply、Sync、Disable 等绑定操作；本地标签负责展示 unmanaged/managed 文件、迁移到中心库、取消或解释只读状态。
 - 只显示当前项目启用且后端支持的 Tool target。工具可用性和可操作状态应来自共享 adapter/API 状态，不在单个面板里硬编码。

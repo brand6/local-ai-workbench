@@ -5,10 +5,14 @@ import { buildOpenLocalPathCommand, buildWindowsDirectoryPickerScript } from "..
 
 describe("local filesystem helpers", () => {
   it("builds local path open commands without shell interpolation from callers", () => {
-    expect(buildOpenLocalPathCommand("C:\\tmp\\SkillHub\\review\\SKILL.md", "win32")).toEqual({
-      executable: "cmd.exe",
-      args: ["/c", "start", "", "C:\\tmp\\SkillHub\\review\\SKILL.md"]
-    });
+    const windowsCommand = buildOpenLocalPathCommand("C:\\tmp\\SkillHub\\各种review\\.mcp.json", "win32");
+    expect(windowsCommand.executable).toBe("powershell.exe");
+    expect(windowsCommand.args.slice(0, 5)).toEqual(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand"]);
+    const windowsOpenScript = Buffer.from(windowsCommand.args[5] ?? "", "base64").toString("utf16le");
+    expect(windowsOpenScript).toContain("$target = 'C:\\tmp\\SkillHub\\各种review\\.mcp.json'");
+    expect(windowsOpenScript).toContain("$info.UseShellExecute = $true");
+    expect(windowsOpenScript).toContain("[System.Diagnostics.Process]::Start($info) | Out-Null");
+
     const nativePath = path.resolve("tmp", "skillhub", "review");
     expect(buildOpenLocalPathCommand(nativePath, "darwin")).toEqual({
       executable: "open",

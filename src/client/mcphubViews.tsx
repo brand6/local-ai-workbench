@@ -76,6 +76,7 @@ export function ProjectMcpPanel({
   lastApply,
   onClose,
   onUpdateServerTools,
+  onOpenTarget,
   onMigrate
 }: {
   state: ProjectMcpState | null;
@@ -83,6 +84,7 @@ export function ProjectMcpPanel({
   lastApply: ProjectMcpApplyResult | null;
   onClose: () => void;
   onUpdateServerTools: (serverId: string, toolIds: McpHubTargetToolId[]) => void;
+  onOpenTarget: (toolId: McpHubTargetToolId, target: "document" | "folder") => void;
   onMigrate: (serverId: string) => void;
 }) {
   const [tab, setTab] = useState<"local" | "hub">("local");
@@ -128,7 +130,7 @@ export function ProjectMcpPanel({
               <div className="project-local-mcp-list">
                 {groupedLocal.map((group) => (
                   <article className="project-local-mcp-row" key={group.serverId}>
-                    <div>
+                    <div className="project-local-mcp-main">
                       <div className="project-local-skill-title">
                         <strong>{group.serverId}</strong>
                         <span className="metric-pill">{group.entries.length} 个目标</span>
@@ -137,11 +139,18 @@ export function ProjectMcpPanel({
                       <p>{localMcpSummary(group.entries)}</p>
                       <small>{group.entries.map((entry) => `${entry.toolId}: ${entry.filePath}`).join("；")}</small>
                     </div>
-                    {group.entries.some((entry) => entry.status === "unmanaged") ? (
-                      <button className="primary" type="button" disabled={busy} onClick={() => onMigrate(group.serverId)}>
-                        迁移到McpHub
-                      </button>
-                    ) : null}
+                    <div className="card-actions project-local-mcp-actions">
+                      {uniqueMcpTargetToolIds(group.entries.map((entry) => entry.toolId)).map((toolId) => (
+                        <button className="secondary" type="button" disabled={busy} key={`${group.serverId}:${toolId}:open`} onClick={() => onOpenTarget(toolId, "document")}>
+                          打开 {toolId} 文件
+                        </button>
+                      ))}
+                      {group.entries.some((entry) => entry.status === "unmanaged") ? (
+                        <button className="primary" type="button" disabled={busy} onClick={() => onMigrate(group.serverId)}>
+                          迁移到McpHub
+                        </button>
+                      ) : null}
+                    </div>
                   </article>
                 ))}
               </div>
@@ -161,6 +170,7 @@ export function ProjectMcpPanel({
                       activeToolIds={active}
                       busy={busy}
                       onUpdateServerTools={onUpdateServerTools}
+                      onOpenTarget={onOpenTarget}
                     />
                   );
                 })
@@ -178,13 +188,15 @@ function ProjectMcpHubServerRow({
   targets,
   activeToolIds,
   busy,
-  onUpdateServerTools
+  onUpdateServerTools,
+  onOpenTarget
 }: {
   server: McpHubServer;
   targets: ProjectMcpState["targets"];
   activeToolIds: Set<McpHubTargetToolId>;
   busy: boolean;
   onUpdateServerTools: (serverId: string, toolIds: McpHubTargetToolId[]) => void;
+  onOpenTarget: (toolId: McpHubTargetToolId, target: "document" | "folder") => void;
 }) {
   const supportedToolIds = targets.filter((target) => target.supported && isMcpHubTargetToolId(target.toolId)).map((target) => target.toolId as McpHubTargetToolId);
   const activeTargetIds = targets.filter((target) => isMcpHubTargetToolId(target.toolId) && activeToolIds.has(target.toolId)).map((target) => target.toolId as McpHubTargetToolId);
@@ -243,6 +255,15 @@ function ProjectMcpHubServerRow({
           })}
         </div>
         {server.requiredEnv.length ? <small>requiredEnv: {server.requiredEnv.join(", ")}</small> : null}
+        {activeTargetIds.length ? (
+          <div className="card-actions">
+            {activeTargetIds.map((toolId) => (
+              <button className="secondary" type="button" disabled={busy} key={`${server.serverId}:${toolId}:open`} onClick={() => onOpenTarget(toolId, "document")}>
+                打开 {toolId} 文件
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
     </details>
   );

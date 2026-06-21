@@ -34,14 +34,13 @@ describe("CliHub API", () => {
     context = new AppContext(directory, { cliHub: { commandRunner: runner } });
     const app = await createHttpApp(context, { dev: false, serveClient: false });
 
-    const listed = await request(app).get("/api/clihub").set("x-local-api-token", context.token).expect(200);
+    const listed = await request(app).get("/api/clihub").expect(200);
     expect(listed.body.clis.map((cli: { cliId: string }) => cli.cliId)).toEqual(
       expect.arrayContaining(["codex", "claude", "gh", "playwright", "node", "npm", "git"])
     );
 
     const refreshed = await request(app)
       .post("/api/clihub/discovery/refresh")
-      .set("x-local-api-token", context.token)
       .send({ cliId: "codex" })
       .expect(200);
     expect(refreshed.body.clis.find((cli: { cliId: string }) => cli.cliId === "codex")).toMatchObject({
@@ -51,25 +50,22 @@ describe("CliHub API", () => {
 
     const customLocal = await request(app)
       .post("/api/clihub/custom/local-path")
-      .set("x-local-api-token", context.token)
       .send({ executablePath: executable })
       .expect(201);
     expect(customLocal.body).toMatchObject({ sourceState: "local-path", availabilityState: "available" });
 
     await request(app)
       .post("/api/clihub/custom/install-command")
-      .set("x-local-api-token", context.token)
       .send({ installCommand: "internal-cli" })
       .expect(400);
     const customCommand = await request(app)
       .post("/api/clihub/custom/install-command")
-      .set("x-local-api-token", context.token)
       .send({ installCommand: "npm install -g internal-cli" })
       .expect(201);
     expect(customCommand.body).toMatchObject({ sourceState: "install-command", commandNames: ["internal"] });
     expect(runner.executed).not.toContain("npm install -g internal-cli");
 
-    const tools = await request(app).get("/api/tools/status").set("x-local-api-token", context.token).expect(200);
+    const tools = await request(app).get("/api/tools/status").expect(200);
     expect(tools.body.map((tool: { toolId: string }) => tool.toolId)).not.toContain(customLocal.body.cliId);
   });
 
@@ -95,7 +91,6 @@ describe("CliHub API", () => {
 
     const launchedInstall = await request(app)
       .post("/api/clihub/clis/codex/install-terminal")
-      .set("x-local-api-token", context.token)
       .send({ channelId: "codex:npm", dryRun: true })
       .expect(200);
     expect(launchedInstall.body).toMatchObject({
@@ -107,14 +102,12 @@ describe("CliHub API", () => {
 
     const installed = await request(app)
       .post("/api/clihub/clis/codex/install-terminal/complete?channelId=codex%3Anpm")
-      .set("x-local-api-token", context.token)
       .send({ exitCode: 0 })
       .expect(200);
     expect(installed.body.clis.find((cli: { cliId: string }) => cli.cliId === "codex")).toMatchObject({ availabilityState: "available", currentProvider: { provider: "npm" } });
 
     const checked = await request(app)
       .post("/api/clihub/clis/codex/check-updates")
-      .set("x-local-api-token", context.token)
       .expect(200);
     expect(checked.body.clis.find((cli: { cliId: string }) => cli.cliId === "codex")).toMatchObject({ updateStatus: "update-available" });
 
@@ -123,7 +116,6 @@ describe("CliHub API", () => {
 
     const launched = await request(app)
       .post("/api/clihub/clis/codex/update-terminal")
-      .set("x-local-api-token", context.token)
       .send({ dryRun: true })
       .expect(200);
     expect(launched.body).toMatchObject({
@@ -131,7 +123,7 @@ describe("CliHub API", () => {
       command: { command: "npm", args: ["update", "-g", "@openai/codex"], cwd: directory }
     });
     expect(runner.executed).not.toContain("npm update -g @openai/codex");
-    const afterTerminalLaunch = await request(app).get("/api/clihub").set("x-local-api-token", context.token).expect(200);
+    const afterTerminalLaunch = await request(app).get("/api/clihub").expect(200);
     expect(afterTerminalLaunch.body.clis.find((cli: { cliId: string }) => cli.cliId === "codex").recentOperation).toMatchObject({
       kind: "update",
       status: "success",
@@ -142,7 +134,6 @@ describe("CliHub API", () => {
     runner.executed.length = 0;
     const completed = await request(app)
       .post("/api/clihub/clis/codex/update-terminal/complete")
-      .set("x-local-api-token", context.token)
       .send({ exitCode: 0 })
       .expect(200);
     expect(completed.body.clis.find((cli: { cliId: string }) => cli.cliId === "codex")).toMatchObject({
@@ -157,7 +148,7 @@ describe("CliHub API", () => {
     expect(runner.executed).not.toContain("npm outdated -g --json @openai/codex");
     expect(runner.executed).not.toContain("npm update -g @openai/codex");
 
-    await request(app).post("/api/clihub/clis/codex/update").set("x-local-api-token", context.token).expect(409);
+    await request(app).post("/api/clihub/clis/codex/update").expect(409);
     expect(runner.executed).not.toContain("npm update -g @openai/codex");
   });
 });

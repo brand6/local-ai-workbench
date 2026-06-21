@@ -707,6 +707,7 @@ function configWithClaudeSource(claudeProjects: string, directory: string): AppC
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
       antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      trae: { command: "traecli", sessionSources: [path.join(directory, "missing-trae-sessions")] },
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
@@ -732,6 +733,7 @@ function configWithCodexSource(codexSessions: string, directory: string): AppCon
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
       antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      trae: { command: "traecli", sessionSources: [path.join(directory, "missing-trae-sessions")] },
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
@@ -757,6 +759,7 @@ function configWithCopilotSource(copilotState: string, directory: string): AppCo
       copilot: { command: "copilot", sessionSources: [copilotState] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
       antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      trae: { command: "traecli", sessionSources: [path.join(directory, "missing-trae-sessions")] },
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
@@ -782,6 +785,7 @@ function configWithOpencodeSource(opencodeDb: string, directory: string): AppCon
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
       antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      trae: { command: "traecli", sessionSources: [path.join(directory, "missing-trae-sessions")] },
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
@@ -807,6 +811,7 @@ function configWithKiloSource(kiloDb: string, directory: string): AppConfig {
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
       antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      trae: { command: "traecli", sessionSources: [path.join(directory, "missing-trae-sessions")] },
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
@@ -832,6 +837,7 @@ function configWithKimiSource(kimiSource: string, directory: string): AppConfig 
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
       antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      trae: { command: "traecli", sessionSources: [path.join(directory, "missing-trae-sessions")] },
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
@@ -857,6 +863,7 @@ function configWithCodeBuddySource(codebuddySource: string, directory: string): 
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
       antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      trae: { command: "traecli", sessionSources: [path.join(directory, "missing-trae-sessions")] },
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
@@ -882,6 +889,7 @@ function configWithClineSource(clineSource: string, directory: string): AppConfi
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
       antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      trae: { command: "traecli", sessionSources: [path.join(directory, "missing-trae-sessions")] },
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
@@ -907,6 +915,7 @@ function configWithCursorAntigravitySources(cursorSource: string, antigravitySou
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [cursorSource] },
       antigravity: { command: "agy", sessionSources: [antigravitySource] },
+      trae: { command: "traecli", sessionSources: [path.join(directory, "missing-trae-sessions")] },
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },
@@ -932,6 +941,7 @@ function configWithReasonixSource(reasonixSource: string, directory: string): Ap
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
       antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      trae: { command: "traecli", sessionSources: [path.join(directory, "missing-trae-sessions")] },
       reasonix: { command: "reasonix", sessionSources: [reasonixSource] }
     },
     terminal: { mode: "new-window" },
@@ -957,6 +967,7 @@ function configWithDeepcodeSource(deepcodeSource: string, directory: string): Ap
       copilot: { command: "copilot", sessionSources: [path.join(directory, "missing-copilot-sessions")] },
       cursor: { command: "cursor-agent", sessionSources: [path.join(directory, "missing-cursor-sessions")] },
       antigravity: { command: "agy", sessionSources: [path.join(directory, "missing-antigravity-sessions")] },
+      trae: { command: "traecli", sessionSources: [path.join(directory, "missing-trae-sessions")] },
       reasonix: { command: "reasonix", sessionSources: [path.join(directory, "missing-reasonix-sessions")] }
     },
     terminal: { mode: "new-window" },

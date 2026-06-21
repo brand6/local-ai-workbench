@@ -391,6 +391,19 @@ label,
   font-size: 14px;
   font-weight: 650;
   overflow-wrap: anywhere;
+  animation: toast-auto-hide 10s forwards;
+}
+
+@keyframes toast-auto-hide {
+  0%,
+  92% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+    visibility: hidden;
+  }
 }
 
 .settings-backdrop {
@@ -434,6 +447,73 @@ label,
 
 .rule-create-dialog {
   width: min(760px, 100%);
+}
+.project-services-dialog {
+  width: min(860px, 100%);
+  max-height: calc(100dvh - 112px);
+  overflow: auto;
+}
+
+.compact-actions {
+  justify-content: flex-end;
+}
+
+.project-service-list {
+  display: grid;
+  gap: 10px;
+}
+
+.project-service-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.project-service-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-service-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.project-service-title strong {
+  overflow-wrap: anywhere;
+}
+
+.project-service-meta {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.project-service-meta dt {
+  font-weight: 700;
+  color: var(--text-soft);
+}
+
+.project-service-meta dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.project-service-row > .inline-warning {
+  grid-column: 1 / -1;
 }
 
 .rule-create-source-options {
@@ -998,11 +1078,42 @@ label,
   overflow-wrap: anywhere;
 }
 
+.pluginhub-source-plugin-body {
+  padding-left: 14px;
+  border-left: 2px solid var(--border-subtle);
+  margin-left: 12px;
+}
+
+.pluginhub-nested-plugin-list {
+  gap: 8px;
+}
+
+.pluginhub-nested-plugin-list .pluginhub-row {
+  background: var(--surface-muted);
+}
+
 .project-plugin-install-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(120px, 180px) auto;
   gap: 10px;
   align-items: end;
+}
+
+.project-plugins-panel .segmented-tabs {
+  margin: 0;
+}
+
+.project-plugin-tab-panel,
+.project-plugin-hub-list,
+.project-plugin-source-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.project-plugin-source-group {
+  padding: 12px;
+  box-shadow: none;
 }
 
 .pluginhub-component-group {
@@ -1157,7 +1268,8 @@ label,
 .hookhub-suite-list,
 .project-hook-tool-list {
   display: grid;
-  gap: 12px;
+  gap: 10px;
+  min-width: 0;
 }
 
 .hookhub-suite-card,
@@ -1216,11 +1328,20 @@ label,
 }
 
 .project-hook-tool-row.unsupported {
-  padding: 14px;
+  display: grid;
+  min-height: 62px;
+  padding: 12px 14px;
   background: var(--surface-muted);
 }
 
 .project-hook-tool-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-hook-tool-title {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1230,18 +1351,89 @@ label,
 
 .project-hook-tool-main strong {
   color: var(--text);
+  overflow-wrap: anywhere;
 }
 
-.project-hook-tool-main p,
-.project-hook-tool-main small {
-  flex-basis: 100%;
-  margin: 0;
+.project-hook-tool-summary,
+.project-hook-tool-discovery {
+  min-width: 0;
   color: var(--text-muted);
   overflow-wrap: anywhere;
 }
 
+.project-hook-tool-discovery {
+  grid-column: 1 / -1;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
 .project-hook-tool-body {
   padding: 0 14px 14px;
+}
+
+.project-hook-tool-row summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  justify-content: normal;
+}
+
+.project-hook-tool-row summary .project-hook-tool-main {
+  align-items: center;
+}
+
+.project-hook-tool-meta {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.project-hook-tool-meta span {
+  display: block;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.project-hook-json-field,
+.project-hook-json-field textarea,
+.project-hook-apply-row .field,
+.project-hook-apply-row select {
+  width: 100%;
+  min-width: 0;
+}
+
+.project-hook-action-panel {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-hook-action-group {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-hook-action-group.secondary {
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+}
+
+.project-hook-action-group button,
+.project-hook-apply-row button {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 12px;
+  line-height: 1.22;
+  white-space: normal;
 }
 
 .hookhub-apply-row {
@@ -1578,7 +1770,7 @@ label,
 
 .detail-management-body {
   display: grid;
-  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   padding: 14px;
 }
@@ -1832,6 +2024,15 @@ label,
 .group-actions {
   align-items: center;
   justify-content: flex-end;
+}
+
+.group-rule-sync-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--surface), var(--surface-muted));
 }
 
 .tool-picker {
@@ -2386,6 +2587,29 @@ dd {
   grid-template-columns: 76px minmax(0, 1fr);
 }
 
+.project-side-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  appearance: none;
+  background: rgb(15 23 42 / 24%);
+  cursor: default;
+}
+
+.project-side-panel-backdrop:disabled {
+  cursor: wait;
+}
+
+.project-side-panel-backdrop:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: -6px;
+}
+
 .side-panel {
   position: fixed;
   inset: 0 0 0 auto;
@@ -2411,6 +2635,51 @@ dd {
 
 .side-panel h2 {
   margin: 0;
+}
+
+.project-hooks-panel {
+  width: min(720px, 100vw);
+  gap: 14px;
+  padding: 20px;
+}
+
+.project-hooks-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: -20px -20px 0;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: linear-gradient(180deg, rgb(255 255 255 / 98%), rgb(249 252 250 / 94%));
+  backdrop-filter: blur(12px) saturate(130%);
+}
+
+.project-hooks-target {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--surface), var(--surface-muted));
+}
+
+.project-hooks-target .path-line {
+  margin: 0;
+}
+
+.project-hooks-target button {
+  min-height: 44px;
+  white-space: normal;
+}
+
+.project-hooks-panel textarea {
+  min-height: 190px;
+  max-height: 42vh;
+  background: #fbfcfd;
+  line-height: 1.5;
 }
 
 .project-cli-group-list,
@@ -2813,6 +3082,26 @@ dd {
   list-style: none;
 }
 
+.project-local-mcp-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.project-local-mcp-main {
+  min-width: 0;
+}
+
+.project-local-mcp-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  width: 100%;
+}
+
+.project-local-mcp-actions button {
+  width: 100%;
+  min-width: 0;
+  white-space: normal;
+}
+
 .mcphub-server-card summary::-webkit-details-marker {
   display: none;
 }
@@ -2939,7 +3228,7 @@ dd {
 
 .skill-target-row summary {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   cursor: pointer;
@@ -2953,6 +3242,29 @@ dd {
 
 .skill-target-row summary span {
   overflow-wrap: anywhere;
+}
+
+.skill-target-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.skill-target-title > span {
+  color: var(--text);
+  font-weight: 800;
+}
+
+.skill-target-title > small {
+  min-width: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.skill-target-row summary > .metric-pill {
+  justify-self: end;
 }
 
 .rule-file-grid {
@@ -3258,6 +3570,7 @@ dd {
   }
 
   .skillhub-import-grid,
+  .project-hooks-target,
   .hookhub-toolbar-panel,
   .hookhub-form-grid,
   .hookhub-payload-grid,
@@ -3277,5 +3590,22 @@ dd {
   .inline-actions {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .project-hooks-panel {
+    padding: 16px;
+  }
+
+  .project-hooks-header {
+    margin: -16px -16px 0;
+    padding: 16px;
+  }
+
+  .project-hook-tool-main {
+    grid-template-columns: 1fr;
+  }
+
+  .project-hook-tool-summary {
+    justify-self: start;
   }
 }

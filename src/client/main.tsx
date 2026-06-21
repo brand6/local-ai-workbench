@@ -22,6 +22,7 @@ import type {
   PluginHubCustomPluginInput,
   PluginHubList,
   Project,
+  ProjectConfigTargetId,
   ProjectCliAction,
   ProjectCliCommand,
   ProjectCliActionRunResult,
@@ -44,6 +45,8 @@ import type {
   ProjectPluginApplyResult,
   ProjectPluginState,
   ProjectRepairCandidate,
+  ProjectService,
+  ProjectServiceList,
   ProjectSkillTarget,
   ProjectSkillTargetsState,
   ProjectSkillUpdateResult,
@@ -186,7 +189,7 @@ function projectSkillTargetKey(target: Pick<ProjectSkillTarget, "toolId" | "skil
   return `${target.toolId}:${target.skillId}:${normalizeClientPath(target.linkPath)}`;
 }
 
-function projectSkillLocalRowKey(toolId: ToolId, skillPath: string): string {
+function projectSkillLocalRowKey(toolId: ProjectConfigTargetId, skillPath: string): string {
   return `${toolId}:${normalizeClientPath(skillPath)}`;
 }
 
@@ -229,6 +232,8 @@ function App() {
   const [newProjectDialogOpen, setNewProjectDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [refreshDialogOpen, setRefreshDialogOpen] = useState(false);
+  const [projectServicesOpen, setProjectServicesOpen] = useState(false);
+  const [projectServices, setProjectServices] = useState<ProjectServiceList | null>(null);
   const [view, setView] = useState<AppView>("home");
   const [skillHub, setSkillHub] = useState<SkillHubList | null>(null);
   const [skillHubQuery, setSkillHubQuery] = useState("");
@@ -267,6 +272,8 @@ function App() {
   const [projectAgentHubLoaded, setProjectAgentHubLoaded] = useState(false);
   const [projectAgentTargetRoot, setProjectAgentTargetRoot] = useState<string | null>(null);
   const [lastProjectAgentResult, setLastProjectAgentResult] = useState<ProjectAgentApplyResult | null>(null);
+  const [ruleSyncTargetRoot, setRuleSyncTargetRoot] = useState<string | null>(null);
+  const [ruleSyncStateTargetKey, setRuleSyncStateTargetKey] = useState<string | null>(null);
   const [ruleSyncStatus, setRuleSyncStatus] = useState<RuleSyncStatus | null>(null);
   const [ruleSyncLoading, setRuleSyncLoading] = useState(false);
   const [ruleSyncError, setRuleSyncError] = useState<string | null>(null);
@@ -282,6 +289,8 @@ function App() {
   const projectDetailLoadSeqRef = useRef(0);
   const projectSkillLoadSeqRef = useRef(0);
   const projectLocalSkillLoadSeqRef = useRef(0);
+  const ruleSyncLoadSeqRef = useRef(0);
+  const ruleSyncTargetKeyRef = useRef<string | null>(null);
   const hubLoadSeqRef = useRef<Record<HubLoadKey, number>>({
     skillhub: 0,
     mcphub: 0,
@@ -364,6 +373,10 @@ function App() {
   }, [selectedProjectId, query]);
 
   useEffect(() => {
+    ruleSyncLoadSeqRef.current += 1;
+    ruleSyncTargetKeyRef.current = null;
+    setRuleSyncTargetRoot(null);
+    setRuleSyncStateTargetKey(null);
     setRuleSyncStatus(null);
     setRuleSyncLoading(false);
     setRuleSyncError(null);
@@ -512,6 +525,16 @@ function App() {
     });
   }
 
+  async function loadProjectServices() {
+    setProjectServices(null);
+    const services = await client.projectServices();
+    setProjectServices(services);
+  }
+
+  function openProjectServices() {
+    setProjectServicesOpen(true);
+    void runAction(loadProjectServices, "project-services-load");
+  }
   async function loadDetail(projectId: string, search: string) {
     const requestId = ++projectDetailLoadSeqRef.current;
     const isLatest = () => requestId === projectDetailLoadSeqRef.current && selectedProjectIdRef.current === projectId;
@@ -540,22 +563,25 @@ function App() {
     }
   }
 
-  async function loadRuleSyncStatus(projectId: string): Promise<boolean> {
+  async function loadRuleSyncStatus(projectId: string, targetRootPath: string, expectedTargetKey = projectPanelTargetKey(projectId, targetRootPath)): Promise<boolean> {
+    const requestId = ++ruleSyncLoadSeqRef.current;
     setRuleSyncLoading(true);
     setRuleSyncError(null);
     try {
-      const status = await client.ruleSyncStatus(projectId);
-      if (selectedProjectIdRef.current !== projectId) return false;
+      const status = await client.ruleSyncStatus(projectId, targetRootPath);
+      if (requestId !== ruleSyncLoadSeqRef.current || selectedProjectIdRef.current !== projectId || ruleSyncTargetKeyRef.current !== expectedTargetKey) return false;
       setRuleSyncStatus(status);
       return true;
     } catch (error) {
-      if (selectedProjectIdRef.current === projectId) {
+      if (requestId === ruleSyncLoadSeqRef.current && selectedProjectIdRef.current === projectId && ruleSyncTargetKeyRef.current === expectedTargetKey) {
         setRuleSyncStatus(null);
         setRuleSyncError(error instanceof Error ? error.message : "规则文件状态读取失败");
       }
       return false;
     } finally {
-      if (selectedProjectIdRef.current === projectId) setRuleSyncLoading(false);
+      if (requestId === ruleSyncLoadSeqRef.current && selectedProjectIdRef.current === projectId && ruleSyncTargetKeyRef.current === expectedTargetKey) {
+        setRuleSyncLoading(false);
+      }
     }
   }
 
@@ -652,9 +678,24 @@ function App() {
     setProjectAgentState(null);
     setProjectAgentTargetRoot(null);
     setLastProjectAgentResult(null);
+    ruleSyncLoadSeqRef.current += 1;
+    ruleSyncTargetKeyRef.current = null;
+    setRuleSyncTargetRoot(null);
+    setRuleSyncStateTargetKey(null);
     setRuleSyncStatus(null);
+    setRuleSyncLoading(false);
+    setRuleSyncError(null);
     setPendingRuleSyncDirection(null);
     resetRuleCreateDialog();
+  }
+
+  function closeProjectSidePanels() {
+    setProjectCliPanelOpen(false);
+    setProjectSkillPanelOpen(false);
+    setProjectMcpPanelOpen(false);
+    setProjectHooksPanelOpen(false);
+    setProjectPluginPanelOpen(false);
+    setProjectAgentPanelOpen(false);
   }
 
   function returnHome() {
@@ -723,6 +764,13 @@ function App() {
   const showingHookHub = view === "hookhub" && !selectedProject;
   const showingPluginHub = view === "pluginhub" && !selectedProject;
   const showingHub = showingSkillHub || showingAgentHub || showingCliHub || showingMcpHub || showingHookHub || showingPluginHub;
+  const projectSidePanelOpen =
+    projectCliPanelOpen ||
+    projectSkillPanelOpen ||
+    projectMcpPanelOpen ||
+    projectHooksPanelOpen ||
+    projectPluginPanelOpen ||
+    projectAgentPanelOpen;
   const canReturnFromTopbar = Boolean(selectedProject || showingHub);
   const cliHubOperationStatus = showingCliHub && cliHub?.operation ? cliHubOperationMessage(cliHub.operation) : "";
   const transientStatus = scanStatus || cliHubStatus || cliHubOperationStatus || pluginHubStatus;
@@ -871,6 +919,9 @@ function App() {
               刷新项目
             </button>
           ) : null}
+          <button className="secondary" type="button" onClick={openProjectServices} disabled={busy}>
+            启动
+          </button>
           <button className="secondary" type="button" onClick={() => setSettingsOpen(true)} disabled={busy}>
             设置
           </button>
@@ -900,6 +951,16 @@ function App() {
         />
       ) : null}
 
+      {projectServicesOpen ? (
+        <ProjectServicesDialog
+          services={projectServices}
+          busy={busy}
+          onClose={() => setProjectServicesOpen(false)}
+          onRefresh={() => void runAction(loadProjectServices, "project-services-load")}
+          onStart={(serviceId) => void runAction(() => startProjectServiceFromDialog(serviceId), "project-service-start")}
+          onStop={(serviceId) => void runAction(() => stopProjectServiceFromDialog(serviceId), "project-service-stop")}
+        />
+      ) : null}
       {refreshDialogOpen ? (
         <RefreshIndexDialog
           tools={tools}
@@ -956,6 +1017,16 @@ function App() {
         />
       ) : null}
 
+      {projectSidePanelOpen ? (
+        <button
+          aria-label="关闭项目侧边窗口"
+          className="project-side-panel-backdrop"
+          type="button"
+          disabled={busy}
+          onClick={closeProjectSidePanels}
+        />
+      ) : null}
+
       {projectCliPanelOpen ? (
         <ProjectCliPanel
           state={projectCliState}
@@ -977,6 +1048,8 @@ function App() {
           onLoadSkillTargets={() => void runAction(refreshProjectSkillTargetsPanel)}
           onUpdateSkill={(skillId, toolIds) => void runAction(() => saveProjectSkillTargets(skillId, toolIds))}
           onUpdateLocalSkill={(skillId, toolIds) => void runAction(() => saveProjectSkillTargets(skillId, toolIds))}
+          onOpenSkillTarget={(skillId, toolId, target) => void runAction(() => openProjectSkillTarget(skillId, toolId, target))}
+          onOpenLocalSkill={(toolId, folderName, target) => void runAction(() => openProjectLocalSkill(toolId, folderName, target))}
           onPickDirectory={pickDirectory}
           onMigrateLocalSkills={(skills, target) => void runAction(() => migrateProjectLocalSkills(skills, target))}
         />
@@ -989,6 +1062,7 @@ function App() {
           lastApply={lastProjectMcpApply}
           onClose={() => setProjectMcpPanelOpen(false)}
           onUpdateServerTools={(serverId, toolIds) => void runAction(() => saveProjectMcpServerTargets(serverId, toolIds))}
+          onOpenTarget={(toolId, target) => void runAction(() => openProjectMcpTarget(toolId, target))}
           onMigrate={(serverId) => void runAction(() => migrateProjectLocalMcp(serverId))}
         />
       ) : null}
@@ -1002,6 +1076,7 @@ function App() {
           onShareHooks={(toolId, input) => void runAction(() => shareProjectHooks(toolId, input))}
           onApplySuite={(toolId, suiteId, options) => void runAction(() => applyHookHubSuite(toolId, suiteId, options))}
           onSyncTool={(toolId) => void runAction(() => syncProjectHookTool(toolId))}
+          onOpenConfig={(toolId, target) => void runAction(() => openProjectHookConfig(toolId, target))}
           onRemoveBinding={(toolId) => void runAction(() => removeProjectHookBinding(toolId))}
           onSyncAll={() => void runAction(syncProjectHooks)}
         />
@@ -1030,6 +1105,8 @@ function App() {
           onApplyAgent={(agentId, toolId, conflictMode) => void runAction(() => applyProjectAgent(agentId, toolId, conflictMode))}
           onSyncBinding={(bindingId) => void runAction(() => syncProjectAgent(bindingId))}
           onDisableBinding={(bindingId, mode) => void runAction(() => disableProjectAgent(bindingId, mode))}
+          onOpenAgentBinding={(bindingId, target) => void runAction(() => openProjectAgentBinding(bindingId, target))}
+          onOpenLocalAgent={(localAgent, target) => void runAction(() => openProjectLocalAgent(localAgent, target))}
           onSyncAll={() => void runAction(syncProjectAgents)}
           onMigrateLocalAgent={(localAgent, target) => void runAction(() => migrateProjectLocalAgent(localAgent, target))}
         />
@@ -1049,6 +1126,7 @@ function App() {
           onImportGitHub={(input) => void runAction(() => importGitHubSkill(input))}
           onOpenSkill={(skillId, target) => void runAction(() => openSkillHubSkill(skillId, target))}
           onDeleteSkill={(skillId) => void runAction(() => deleteSkill(skillId))}
+          onDeleteSource={(sourceId) => void runAction(() => deleteSkillHubSource(sourceId))}
           onApplyUpdate={(preview) => void runAction(() => applySkillHubUpdate(preview))}
         />
       ) : showingAgentHub ? (
@@ -1125,6 +1203,8 @@ function App() {
           queryLoading={detailLoading}
           warnings={warnings}
           repairCandidates={repairCandidates}
+          ruleSyncTargetRoot={ruleSyncTargetRoot}
+          ruleSyncStateTargetKey={ruleSyncStateTargetKey}
           ruleSyncStatus={ruleSyncStatus}
           ruleSyncLoading={ruleSyncLoading}
           ruleSyncError={ruleSyncError}
@@ -1137,9 +1217,7 @@ function App() {
           onRelocateProject={() => void runAction(() => relocateProject(selectedProject.id), "relocate")}
           relocating={busyAction === "relocate"}
           onUpdateProjectTools={(toolIds) => void runAction(() => saveProjectToolTargets(toolIds))}
-          onEnsureRuleSyncStatus={() => {
-            if (!ruleSyncStatus && !ruleSyncLoading && !ruleSyncError) void loadRuleSyncStatus(selectedProject.id);
-          }}
+          onToggleProjectRules={(targetRootPath) => void runAction(() => toggleRuleSyncPanel(selectedProject.id, targetRootPath), "rule-sync")}
           onRefreshRuleSync={() => void runAction(() => refreshRuleSyncStatus())}
           onApplyRuleSync={(direction) => setPendingRuleSyncDirection(direction)}
           onCreateRuleFile={(file) => void runAction(() => openRuleCreateDialog(file))}
@@ -1309,6 +1387,27 @@ function App() {
     setMessage(result.launched ? `已打开终端：${result.command.command}` : result.reason ?? "启动失败");
   }
 
+  function replaceProjectService(service: ProjectService) {
+    setProjectServices((current) => {
+      if (!current) return current;
+      return {
+        services: current.services.map((candidate) => (candidate.serviceId === service.serviceId ? service : candidate))
+      };
+    });
+  }
+
+  async function startProjectServiceFromDialog(serviceId: string) {
+    const result = await client.startProjectService(serviceId);
+    replaceProjectService(result.service);
+    setMessage(result.alreadyRunning ? `服务已在运行：${result.service.commandText}` : `服务已启动：${result.service.commandText}`);
+  }
+
+  async function stopProjectServiceFromDialog(serviceId: string) {
+    const result = await client.stopProjectService(serviceId);
+    replaceProjectService(result.service);
+    setMessage(`服务已关闭：${result.service.commandText}`);
+  }
+
   async function resumeSession(sessionId: string) {
     const result = await client.resume(sessionId);
     setMessage(result.launched ? `已打开恢复终端：${result.command.command}` : result.reason ?? "恢复失败");
@@ -1473,6 +1572,21 @@ function App() {
       await loadProjectSkillTargetsPanel(selectedProjectId, projectSkillTargetRoot ?? undefined);
     }
     setMessage(result.failures.length ? `SkillHub 技能未删除：${result.failures.length} 个项目 link 清理失败` : "SkillHub 技能已删除");
+  }
+
+  async function deleteSkillHubSource(sourceId: string) {
+    const confirmed = window.confirm("确定删除这个 SkillHub source？相关中心技能和项目 link 会一起移除。");
+    if (!confirmed) {
+      setMessage("已取消删除 SkillHub source");
+      return;
+    }
+    const result = await client.deleteSkillHubSource(sourceId);
+    setSkillHubUpdates(null);
+    await loadSkillHub();
+    if (projectSkillPanelOpen && selectedProjectId) {
+      await loadProjectSkillTargetsPanel(selectedProjectId, projectSkillTargetRoot ?? undefined);
+    }
+    setMessage(result.failures.length ? `SkillHub source 未删除：${result.failures.length} 个项目 link 清理失败` : "SkillHub source 已删除");
   }
 
   async function openSkillHubSkill(skillId: string, target: SkillHubOpenTarget) {
@@ -1836,6 +1950,18 @@ function App() {
     return state;
   }
 
+  async function openProjectSkillTarget(skillId: string, toolId: ProjectConfigTargetId, target: SkillHubOpenTarget) {
+    if (!selectedProjectId) return;
+    await client.openProjectSkillTarget(selectedProjectId, skillId, toolId, projectSkillTargetRoot ?? undefined, target);
+    setMessage(target === "document" ? "已打开项目技能文件" : "已打开项目技能目录");
+  }
+
+  async function openProjectLocalSkill(toolId: ProjectConfigTargetId, folderName: string, target: SkillHubOpenTarget) {
+    if (!selectedProjectId) return;
+    await client.openProjectLocalSkill(selectedProjectId, toolId, folderName, projectLocalSkillTargetRoot ?? undefined, target);
+    setMessage(target === "document" ? "已打开项目技能文件" : "已打开项目技能目录");
+  }
+
   async function openProjectAgentPanel(projectId: string, targetRootPath: string) {
     setProjectAgentPanelOpen(true);
     setProjectAgentTargetRoot(targetRootPath);
@@ -1981,6 +2107,12 @@ function App() {
     setMessage("项目 hooks 已上传到 HookHub");
   }
 
+  async function openProjectHookConfig(toolId: HookHubSupportedToolId, target: SkillHubOpenTarget) {
+    if (!selectedProjectId) return;
+    await client.openProjectHookConfig(selectedProjectId, toolId, projectHookTargetRoot ?? undefined, target);
+    setMessage(target === "document" ? "已打开 Hooks 配置文件" : "已打开 Hooks 配置目录");
+  }
+
   async function applyHookHubSuite(
     toolId: HookHubSupportedToolId,
     suiteId: string,
@@ -2084,6 +2216,12 @@ function App() {
     setMessage("项目 Plugin 已卸载");
   }
 
+  async function openProjectMcpTarget(toolId: McpHubTargetToolId, target: SkillHubOpenTarget) {
+    if (!selectedProjectId) return;
+    await client.openProjectMcpTarget(selectedProjectId, toolId, projectMcpTargetRoot ?? undefined, target);
+    setMessage(target === "document" ? "已打开 MCP 配置文件" : "已打开 MCP 配置目录");
+  }
+
   async function saveProjectMcpServerTargets(serverId: string, toolIds: McpHubTargetToolId[]) {
     if (!selectedProjectId) return;
     const targetRootPath = projectMcpTargetRoot ?? undefined;
@@ -2155,7 +2293,7 @@ function App() {
     }
   }
 
-  async function migrateProjectLocalSkill(toolId: ToolId, folderName: string, target: ProjectLocalSkillMigrationTarget) {
+  async function migrateProjectLocalSkill(toolId: ProjectConfigTargetId, folderName: string, target: ProjectLocalSkillMigrationTarget) {
     if (!selectedProjectId) return;
     const targetRootPath = projectLocalSkillTargetRoot ?? undefined;
     const result = await runProjectLocalSkillMigration(selectedProjectId, targetRootPath, toolId, folderName, target);
@@ -2169,7 +2307,7 @@ function App() {
   }
 
   async function migrateProjectLocalSkills(
-    skills: Array<{ toolId: ToolId; folderName: string }>,
+    skills: Array<{ toolId: ProjectConfigTargetId; folderName: string }>,
     target: ProjectLocalSkillMigrationTarget
   ) {
     if (!selectedProjectId || skills.length === 0) return;
@@ -2196,7 +2334,7 @@ function App() {
   async function runProjectLocalSkillMigration(
     projectId: string,
     targetRootPath: string | undefined,
-    toolId: ToolId,
+    toolId: ProjectConfigTargetId,
     folderName: string,
     target: ProjectLocalSkillMigrationTarget
   ): Promise<ProjectLocalSkillMigrationResult | null> {
@@ -2266,6 +2404,18 @@ function App() {
     setMessage("AgentHub target 已同步");
   }
 
+  async function openProjectAgentBinding(bindingId: string, target: SkillHubOpenTarget) {
+    if (!selectedProjectId) return;
+    await client.openProjectAgentBinding(selectedProjectId, bindingId, projectAgentTargetRoot ?? undefined, target);
+    setMessage(target === "document" ? "已打开项目 Agent 文件" : "已打开项目 Agent 目录");
+  }
+
+  async function openProjectLocalAgent(localAgent: ProjectLocalAgent, target: SkillHubOpenTarget) {
+    if (!selectedProjectId) return;
+    await client.openProjectLocalAgent(selectedProjectId, localAgent.toolId, localAgent.outputPath, projectAgentTargetRoot ?? undefined, target);
+    setMessage(target === "document" ? "已打开项目 Agent 文件" : "已打开项目 Agent 目录");
+  }
+
   async function syncProjectAgents() {
     if (!selectedProjectId) return;
     const result = await client.syncProjectAgents(selectedProjectId, projectAgentTargetRoot ?? undefined);
@@ -2317,7 +2467,7 @@ function App() {
     setMessage(result.action === "overwritten" ? "本地 Agent 已覆盖 AgentHub 并接管" : "本地 Agent 已迁移到 AgentHub");
   }
 
-  async function saveProjectToolTargets(toolIds: ToolId[]) {
+  async function saveProjectToolTargets(toolIds: ProjectConfigTargetId[]) {
     if (!selectedProjectId) return;
     await client.updateProjectToolTargets(selectedProjectId, toolIds);
     setProjectToolTargets(await client.projectToolTargets(selectedProjectId));
@@ -2350,7 +2500,7 @@ function App() {
 
   async function saveProjectSkillTargets(
     skillId: string,
-    toolIds: ToolId[],
+    toolIds: ProjectConfigTargetId[],
     options: { refreshSkillState?: boolean; refreshLocalSkillState?: boolean } = {}
   ) {
     if (!selectedProjectId) return;
@@ -2405,14 +2555,41 @@ function App() {
     );
   }
 
+  function clearRuleSyncPanel() {
+    ruleSyncLoadSeqRef.current += 1;
+    ruleSyncTargetKeyRef.current = null;
+    setRuleSyncTargetRoot(null);
+    setRuleSyncStateTargetKey(null);
+    setRuleSyncStatus(null);
+    setRuleSyncLoading(false);
+    setRuleSyncError(null);
+    setPendingRuleSyncDirection(null);
+    resetRuleCreateDialog();
+  }
+
+  async function toggleRuleSyncPanel(projectId: string, targetRootPath: string) {
+    const targetKey = projectPanelTargetKey(projectId, targetRootPath);
+    if (ruleSyncTargetKeyRef.current === targetKey) {
+      clearRuleSyncPanel();
+      return;
+    }
+    ruleSyncTargetKeyRef.current = targetKey;
+    setRuleSyncTargetRoot(targetRootPath);
+    setRuleSyncStateTargetKey(targetKey);
+    setRuleSyncStatus(null);
+    setRuleSyncError(null);
+    resetRuleCreateDialog();
+    await loadRuleSyncStatus(projectId, targetRootPath, targetKey);
+  }
+
   async function refreshRuleSyncStatus() {
-    if (!selectedProjectId) return;
-    const loaded = await loadRuleSyncStatus(selectedProjectId);
+    if (!selectedProjectId || !ruleSyncTargetRoot) return;
+    const loaded = await loadRuleSyncStatus(selectedProjectId, ruleSyncTargetRoot, projectPanelTargetKey(selectedProjectId, ruleSyncTargetRoot));
     setMessage(loaded ? "规则文件状态已刷新" : "规则文件状态读取失败");
   }
 
   async function openRuleCreateDialog(file: RuleFileName) {
-    if (!selectedProjectId || !ruleSyncStatus) return;
+    if (!selectedProjectId || !ruleSyncTargetRoot || !ruleSyncStatus) return;
     const source = defaultRuleCreateSource(ruleSyncStatus, file);
     setPendingRuleCreateFile(file);
     setRuleCreateSource(source);
@@ -2422,10 +2599,10 @@ function App() {
   }
 
   async function loadRuleCreatePreview(file: RuleFileName, source: RuleCreateSource) {
-    if (!selectedProjectId) return;
+    if (!selectedProjectId || !ruleSyncTargetRoot) return;
     setRuleCreateLoading(true);
     try {
-      const preview = await client.prepareRuleFileCreate(selectedProjectId, file, source);
+      const preview = await client.prepareRuleFileCreate(selectedProjectId, file, source, ruleSyncTargetRoot);
       setRuleCreateSource(source);
       setRuleCreatePreview(preview);
       setRuleCreateContent(preview.content);
@@ -2435,8 +2612,8 @@ function App() {
   }
 
   async function createRuleFileFromDraft() {
-    if (!selectedProjectId || !pendingRuleCreateFile) return;
-    const result = await client.createRuleFile(selectedProjectId, pendingRuleCreateFile, ruleCreateContent);
+    if (!selectedProjectId || !ruleSyncTargetRoot || !pendingRuleCreateFile) return;
+    const result = await client.createRuleFile(selectedProjectId, pendingRuleCreateFile, ruleCreateContent, ruleSyncTargetRoot);
     setRuleSyncStatus(result.status);
     resetRuleCreateDialog();
     setMessage(result.message);
@@ -2450,17 +2627,17 @@ function App() {
   }
 
   async function openRuleFile(file: RuleFileName) {
-    if (!selectedProjectId) return;
-    await client.openRuleFile(selectedProjectId, file);
+    if (!selectedProjectId || !ruleSyncTargetRoot) return;
+    await client.openRuleFile(selectedProjectId, file, ruleSyncTargetRoot);
     setMessage(`已打开 ${file}`);
   }
 
   async function applyRuleSyncDirection(direction: RuleSyncDirection, confirmedStatus: RuleSyncStatus | null = ruleSyncStatus) {
-    if (!selectedProjectId) return;
+    if (!selectedProjectId || !ruleSyncTargetRoot) return;
     const options = confirmedStatus ? confirmedRuleSyncOptions(confirmedStatus) : {};
     let result = hasRuleSyncConfirmationOptions(options)
-      ? await client.applyRuleSync(selectedProjectId, direction, options)
-      : await client.applyRuleSync(selectedProjectId, direction);
+      ? await client.applyRuleSync(selectedProjectId, direction, options, ruleSyncTargetRoot)
+      : await client.applyRuleSync(selectedProjectId, direction, {}, ruleSyncTargetRoot);
     if (result.action === "needs-confirmation") {
       const confirmed = window.confirm(result.message);
       if (!confirmed) {
@@ -2470,15 +2647,15 @@ function App() {
       result = await client.applyRuleSync(selectedProjectId, direction, {
         confirmGitInit: result.status.gitAvailable && !result.status.gitRoot,
         confirmDirectOverwrite: !result.status.gitAvailable
-      });
+      }, ruleSyncTargetRoot);
     }
     setRuleSyncStatus(result.status);
     setMessage(result.message);
   }
 
   async function commitRuleSyncDirection(direction: RuleSyncDirection) {
-    if (!selectedProjectId) return;
-    const result = await client.commitRuleSync(selectedProjectId, direction);
+    if (!selectedProjectId || !ruleSyncTargetRoot) return;
+    const result = await client.commitRuleSync(selectedProjectId, direction, ruleSyncTargetRoot);
     setRuleSyncStatus(result.status);
     setMessage(result.message);
   }
@@ -2530,26 +2707,14 @@ function Shell({ message }: { message: string }) {
 
 export function GlobalNotice({ message, busyMessage = "" }: { message: string; busyMessage?: string | null }) {
   const activeMessage = busyMessage?.trim() ? busyMessage.trim() : message.trim();
-  const [hiddenMessage, setHiddenMessage] = useState("");
 
-  useEffect(() => {
-    if (!activeMessage) {
-      setHiddenMessage("");
-      return;
-    }
-
-    setHiddenMessage("");
-    const timer = window.setTimeout(() => setHiddenMessage(activeMessage), 10000);
-    return () => window.clearTimeout(timer);
-  }, [activeMessage]);
-
-  if (!activeMessage || hiddenMessage === activeMessage) return null;
+  if (!activeMessage) return null;
 
   return (
     <div className="toast-viewport" aria-live="polite" aria-atomic="true">
-      <div className="toast-notice" role="status">
+      <output className="toast-notice" key={activeMessage}>
         {activeMessage}
-      </div>
+      </output>
     </div>
   );
 }
@@ -2786,6 +2951,107 @@ function RefreshIndexDialog({
         </div>
       </section>
     </div>
+  );
+}
+
+function ProjectServicesDialog({
+  services,
+  busy,
+  onClose,
+  onRefresh,
+  onStart,
+  onStop
+}: {
+  services: ProjectServiceList | null;
+  busy: boolean;
+  onClose: () => void;
+  onRefresh: () => void;
+  onStart: (serviceId: string) => void;
+  onStop: (serviceId: string) => void;
+}) {
+  const rows = services?.services ?? [];
+  return (
+    <div className="settings-backdrop" role="presentation">
+      <section className="settings-dialog project-services-dialog" role="dialog" aria-modal="true" aria-labelledby="project-services-title">
+        <header>
+          <div>
+            <h2 id="project-services-title">启动项目</h2>
+          </div>
+          <div className="settings-actions compact-actions">
+            <button className="secondary" type="button" onClick={onRefresh} disabled={busy}>
+              刷新
+            </button>
+            <button className="secondary" type="button" onClick={onClose} disabled={busy}>
+              关闭
+            </button>
+          </div>
+        </header>
+        {!services ? (
+          <div className="muted" role="status">正在读取可启动项目...</div>
+        ) : rows.length === 0 ? (
+          <div className="empty-state compact">没有发现可启动项目</div>
+        ) : (
+          <div className="project-service-list">
+            {rows.map((service) => (
+              <ProjectServiceRow
+                key={service.serviceId}
+                service={service}
+                busy={busy}
+                onStart={onStart}
+                onStop={onStop}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function ProjectServiceRow({
+  service,
+  busy,
+  onStart,
+  onStop
+}: {
+  service: ProjectService;
+  busy: boolean;
+  onStart: (serviceId: string) => void;
+  onStop: (serviceId: string) => void;
+}) {
+  const running = service.status === "running";
+  const statusLabel = running ? "运行中" : service.status === "exited" ? "已退出" : "未运行";
+  const statusClass = running ? "strong" : service.status === "exited" ? "warning" : "";
+  const statusText = running && service.pid ? `${statusLabel} PID ${service.pid}` : statusLabel;
+
+  return (
+    <article className="project-service-row">
+      <div className="project-service-main">
+        <div className="project-service-title">
+          <strong>{service.packageName ?? service.targetLabel}</strong>
+          {service.projectLabel !== (service.packageName ?? service.targetLabel) ? <span className="metric-pill">{service.projectLabel}</span> : null}
+          <span className="metric-pill">{service.scriptName}</span>
+          <span className="metric-pill">{service.packageManager}</span>
+          <span className={`metric-pill ${statusClass}`.trim()}>{statusText}</span>
+        </div>
+        <dl className="project-service-meta">
+          <dt>路径</dt>
+          <dd>{service.cwd}</dd>
+          <dt>命令</dt>
+          <dd>{service.commandText}</dd>
+          <dt>脚本</dt>
+          <dd>{service.scriptCommand}</dd>
+        </dl>
+      </div>
+      <button className={running ? "secondary" : "primary"} type="button" disabled={busy} onClick={() => (running ? onStop(service.serviceId) : onStart(service.serviceId))}>
+        {running ? "关闭" : "启动"}
+      </button>
+      {service.status === "exited" ? (
+        <div className="inline-warning" role="status">
+          {typeof service.exitCode === "number" ? `服务已退出，退出码 ${service.exitCode}` : "服务已退出"}
+        </div>
+      ) : null}
+    </article>
   );
 }
 
@@ -3396,6 +3662,8 @@ function ProjectDetailView({
   queryLoading = false,
   warnings,
   repairCandidates,
+  ruleSyncTargetRoot = null,
+  ruleSyncStateTargetKey = null,
   ruleSyncStatus,
   ruleSyncLoading = false,
   ruleSyncError = null,
@@ -3408,7 +3676,7 @@ function ProjectDetailView({
   onRepairProject,
   onRelocateProject,
   onUpdateProjectTools = () => {},
-  onEnsureRuleSyncStatus = () => {},
+  onToggleProjectRules = () => {},
   onRefreshRuleSync = () => {},
   onApplyRuleSync = () => {},
   onCreateRuleFile = () => {},
@@ -3428,6 +3696,8 @@ function ProjectDetailView({
   queryLoading?: boolean;
   warnings: ParserWarning[];
   repairCandidates: ProjectRepairCandidate[];
+  ruleSyncTargetRoot?: string | null;
+  ruleSyncStateTargetKey?: string | null;
   ruleSyncStatus?: RuleSyncStatus | null;
   ruleSyncLoading?: boolean;
   ruleSyncError?: string | null;
@@ -3439,8 +3709,8 @@ function ProjectDetailView({
   onDeleteSession: (sessionId: string) => void;
   onRepairProject: (targetProjectId: string, targetRootPath?: string) => void;
   onRelocateProject: () => void;
-  onUpdateProjectTools?: (toolIds: ToolId[]) => void;
-  onEnsureRuleSyncStatus?: () => void;
+  onUpdateProjectTools?: (toolIds: ProjectConfigTargetId[]) => void;
+  onToggleProjectRules?: (targetRootPath: string) => void;
   onRefreshRuleSync?: () => void;
   onApplyRuleSync?: (direction: RuleSyncDirection) => void;
   onCreateRuleFile?: (file: RuleFileName) => void;
@@ -3460,14 +3730,6 @@ function ProjectDetailView({
     [detail, project, repairCandidates, warnings]
   );
   const enabledToolCount = projectToolTargets.filter((target) => target.enabled).length;
-  const ruleFileCount = ruleSyncStatus ? Object.values(ruleSyncStatus.files).filter((file) => file.exists).length : null;
-  const ruleSyncSummary = ruleFileCount !== null
-    ? `${ruleFileCount}/2 规则文件`
-    : ruleSyncLoading
-      ? "规则状态读取中"
-      : ruleSyncError
-        ? "规则状态读取失败"
-        : "规则状态待读取";
   return (
     <section className="content">
       <div className="toolbar-panel compact detail-command-panel">
@@ -3490,17 +3752,11 @@ function ProjectDetailView({
         </div>
       </div>
 
-      <details
-        className="toolbar-panel compact detail-management-panel"
-        onToggle={(event) => {
-          if (event.currentTarget.open) onEnsureRuleSyncStatus();
-        }}
-      >
+      <details className="toolbar-panel compact detail-management-panel">
         <summary>
           <span className="detail-management-title">项目配置</span>
           <span className="detail-management-summary">
             {projectToolTargets.length > 0 ? <span className="metric-pill">{enabledToolCount}/{projectToolTargets.length} 工具</span> : null}
-            <span className="metric-pill">{ruleSyncSummary}</span>
           </span>
         </summary>
         <div className="detail-management-body">
@@ -3509,16 +3765,6 @@ function ProjectDetailView({
             tools={tools}
             busy={busy}
             onUpdate={onUpdateProjectTools}
-          />
-          <ProjectRuleSyncPanel
-            status={ruleSyncStatus ?? null}
-            loading={ruleSyncLoading}
-            error={ruleSyncError}
-            busy={busy}
-            onRefresh={onRefreshRuleSync}
-            onApply={onApplyRuleSync}
-            onCreateFile={onCreateRuleFile}
-            onOpenFile={onOpenRuleFile}
           />
         </div>
       </details>
@@ -3540,6 +3786,15 @@ function ProjectDetailView({
           onResume={onResume}
           onDeleteSession={onDeleteSession}
           onOpenProjectCli={onOpenProjectCli}
+          onToggleProjectRules={onToggleProjectRules}
+          ruleSyncOpen={ruleSyncTargetRoot === group.fullPath}
+          ruleSyncStatus={ruleSyncTargetRoot === group.fullPath && ruleSyncStateTargetKey === projectPanelTargetKey(project.id, group.fullPath) ? ruleSyncStatus ?? null : null}
+          ruleSyncLoading={ruleSyncTargetRoot === group.fullPath ? ruleSyncLoading : false}
+          ruleSyncError={ruleSyncTargetRoot === group.fullPath ? ruleSyncError : null}
+          onRefreshRuleSync={onRefreshRuleSync}
+          onApplyRuleSync={onApplyRuleSync}
+          onCreateRuleFile={onCreateRuleFile}
+          onOpenRuleFile={onOpenRuleFile}
           onOpenProjectSkills={onOpenProjectSkills}
           onOpenProjectAgents={onOpenProjectAgents}
           onOpenProjectPlugins={onOpenProjectPlugins}
@@ -3682,18 +3937,14 @@ function ProjectToolTargetSelector({
   targets: ProjectToolTarget[];
   tools?: ToolStatus[];
   busy: boolean;
-  onUpdate: (toolIds: ToolId[]) => void;
+  onUpdate: (toolIds: ProjectConfigTargetId[]) => void;
 }) {
-  const visibleTargets = useMemo(() => {
-    if (tools.length === 0) return targets;
-    const launchableToolIds = new Set(tools.filter(isLaunchableProjectTool).map((tool) => tool.toolId));
-    return targets.filter((target) => launchableToolIds.has(target.toolId));
-  }, [targets, tools]);
+  const visibleTargets = useMemo(() => targets, [targets, tools]);
   const enabledToolIds = visibleTargets.filter((target) => target.enabled).map((target) => target.toolId);
 
   if (visibleTargets.length === 0) return null;
 
-  function toggleTool(toolId: ToolId, enabled: boolean) {
+  function toggleTool(toolId: ProjectConfigTargetId, enabled: boolean) {
     const next = enabled ? [...enabledToolIds, toolId] : enabledToolIds.filter((id) => id !== toolId);
     onUpdate(uniqueToolIds(next));
   }
@@ -3794,7 +4045,7 @@ function ProjectRuleSyncPanel({
           </div>
         </>
       ) : (
-        <span className="muted compact">展开项目配置后读取规则文件状态。</span>
+        <span className="muted compact">点击刷新规则读取规则文件状态。</span>
       )}
     </section>
   );
@@ -3893,7 +4144,7 @@ function canCommitRuleSyncTarget(status: RuleSyncStatus, target: RuleSyncStatus[
   return target.dirty === true;
 }
 
-function uniqueToolIds(toolIds: ToolId[]): ToolId[] {
+function uniqueToolIds(toolIds: ProjectConfigTargetId[]): ProjectConfigTargetId[] {
   return Array.from(new Set(toolIds));
 }
 
@@ -3914,6 +4165,15 @@ function SessionGroup({
   onResume,
   onDeleteSession,
   onOpenProjectCli,
+  onToggleProjectRules,
+  ruleSyncOpen,
+  ruleSyncStatus,
+  ruleSyncLoading,
+  ruleSyncError,
+  onRefreshRuleSync,
+  onApplyRuleSync,
+  onCreateRuleFile,
+  onOpenRuleFile,
   onOpenProjectSkills,
   onOpenProjectAgents,
   onOpenProjectPlugins,
@@ -3928,6 +4188,15 @@ function SessionGroup({
   onResume: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onOpenProjectCli: (targetRootPath: string) => void;
+  onToggleProjectRules: (targetRootPath: string) => void;
+  ruleSyncOpen: boolean;
+  ruleSyncStatus: RuleSyncStatus | null;
+  ruleSyncLoading: boolean;
+  ruleSyncError: string | null;
+  onRefreshRuleSync: () => void;
+  onApplyRuleSync: (direction: RuleSyncDirection) => void;
+  onCreateRuleFile: (file: RuleFileName) => void;
+  onOpenRuleFile: (file: RuleFileName) => void;
   onOpenProjectSkills: (targetRootPath: string) => void;
   onOpenProjectAgents: (targetRootPath: string) => void;
   onOpenProjectPlugins: (targetRootPath: string) => void;
@@ -3964,11 +4233,29 @@ function SessionGroup({
           <button className="secondary" type="button" disabled={busy} onClick={() => onOpenProjectHooks(group.fullPath)}>
             Hooks
           </button>
+          <button className="secondary" type="button" disabled={busy} onClick={() => onToggleProjectRules(group.fullPath)}>
+            规则
+          </button>
           <button className="primary" type="button" onClick={() => setPickerOpen((open) => !open)}>
             新会话
           </button>
         </div>
       </header>
+
+      {ruleSyncOpen ? (
+        <div className="group-rule-sync-panel">
+          <ProjectRuleSyncPanel
+            status={ruleSyncStatus}
+            loading={ruleSyncLoading}
+            error={ruleSyncError}
+            busy={busy}
+            onRefresh={onRefreshRuleSync}
+            onApply={onApplyRuleSync}
+            onCreateFile={onCreateRuleFile}
+            onOpenFile={onOpenRuleFile}
+          />
+        </div>
+      ) : null}
 
       {pickerOpen ? (
         <div className="tool-picker">

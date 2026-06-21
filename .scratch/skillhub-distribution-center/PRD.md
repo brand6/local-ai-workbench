@@ -4,9 +4,9 @@ Status: ready-for-human
 
 ## Problem Statement
 
-用户在本机维护多套 agent skill，技能可能来自本地目录或 GitHub 仓库。当前项目已经有项目、工具、会话管理能力，但不再通过 `amtiYo/agents` CLI 管理项目技能或规则文件；技能需要作为一等资源在应用内管理：有中心技能库，有项目级技能分发界面，并能按项目工具创建和删除技能链接。
+用户在本机维护多套 agent skill，技能可能来自本地目录或 GitHub 仓库。当前项目已经有项目、工具、会话管理能力，但不再通过 `amtiYo/agents` CLI 管理项目技能或规则文件；技能需要作为一等资源在应用内管理：有中心技能库，有项目级技能分发界面，并能按项目配置目标创建和删除技能链接。
 
-现状下，用户需要手动把同一批技能复制或链接到不同项目、不同工具目录里。GitHub 技能仓库更新时，用户也需要手动判断哪些技能新增、删除、移动或变更。多个来源里可能存在同名技能，SkillHub 应允许它们共存，但项目工具目录内的技能文件夹是扁平结构，不能同时存在同名 link。
+现状下，用户需要手动把同一批技能复制或链接到不同项目、不同工具目录或配置目录里。GitHub 技能仓库更新时，用户也需要手动判断哪些技能新增、删除、移动或变更。多个来源里可能存在同名技能，SkillHub 应允许它们共存，但同一个项目配置目标的技能文件夹是扁平结构，不能同时存在同名 link。
 
 规则文件也存在类似的工具分散问题。Codex、OpenCode、Qwen、Qoder、Copilot 等工具可使用 `AGENTS.md`，Claude Code 使用 `CLAUDE.md`。规则文件不负责技能发现，但用户希望在项目详情页手动同步 `AGENTS.md` 和 `CLAUDE.md`，并且在覆盖前尽量保留可恢复点。
 
@@ -18,13 +18,15 @@ SkillHub 默认把实际技能文件保存在当前应用数据目录下，例�
 
 SkillHub 支持同名技能。每个技能用内部 `skillId` 标识，并记录 `sourceId`、来源类型、GitHub `owner-repo`、library 相对路径、当前本地路径、技能文件夹名、`SKILL.md` 的 `name` 和 `description`。项目工具目录内不支持同名技能；当用户选择另一个同名技能时，界面提示当前 link 指向和新技能来源，并让用户选择是否替换 link。
 
-主界面顶栏左侧新增 `SkillHub` 入口。SkillHub 页面展示所有中心库技能、library 相对路径、来源信息、添加技能、删除技能、检查更新和 GitHub source 更新操作。项目详情页“刷新项目”按钮旁边新增“技能”入口，打开右侧项目技能管理面板。面板按技能显示主勾选框和展开操作：主勾选对项目启用的全部工具生效；展开后可单独控制工具；部分工具生效时主勾选框显示 indeterminate。
+主界面顶栏左侧新增 `SkillHub` 入口。SkillHub 页面展示所有中心库技能、library 相对路径、来源信息、添加技能、删除技能、检查更新和 GitHub source 更新操作。项目详情页“刷新项目”按钮旁边新增“技能”入口，打开右侧项目技能管理面板。面板按技能显示主勾选框和展开操作：主勾选对项目启用的全部项目配置目标生效；展开后可单独控制目标；部分目标生效时主勾选框显示 indeterminate。
 
-项目需要维护启用的 agent tools。新建项目时让用户选择项目使用哪些工具；旧项目根据已有会话 `toolId` 和项目结构痕迹自动推断并默认启用。启用只影响项目技能管理界面显示的目标工具，不会自动创建技能链接。真正创建和删除 link 只发生在用户进入项目技能管理并勾选或取消技能时。
+项目需要维护启用的 Project Config Targets。新建项目时让用户选择项目使用哪些会话工具和项目配置目标；旧项目根据已有会话 `toolId` 和项目结构痕迹自动推断并默认启用。启用只影响项目技能管理界面显示的目标，不会自动创建技能链接。真正创建和删除 link 只发生在用户进入项目技能管理并勾选或取消技能时。
+
+ZCode 是非 CLI/非会话型 Project Config Target。官方 Skill 文档明确用户级技能目录是 `~/.zcode/skills/<skill-name>/SKILL.md`，并说明技能可导入到当前项目，但当前文档未明确项目级技能目录路径。SkillHub 若支持 ZCode 项目级技能分发，必须把 `.zcode/skills` 标注为项目级推断/适配约定，并保留在 adapter 中，不能把这个推断扩散到 CliHub、Session Index、新会话、历史扫描或 Resume。
 
 GitHub 来源支持手动检查更新。SkillHub 页面提供“检查更新”按钮，检查所有 GitHub sources。更新按 source 执行，不支持同一个 source 下只更新部分技能；UI 按 source 展示新增、变更、删除、目录迁移的技能，以及受影响项目和工具。GitHub 目录迁移优先通过 Git rename 检测；检测到迁移时保留 `skillId`，更新 library 里的真实技能目录和路径映射。项目 link 仍指向稳定的 SkillHub library 目录，通常不需要重建。若更新会删除已分发技能，必须作为破坏性更新展示并确认；确认后删除对应项目 link，避免断链。
 
-规则同步是独立的项目级功能，不参与技能发现。项目详情页顶部按钮区新增“规则同步”，点击后打开 modal。MVP 只维护 `AGENTS.md` 和 `CLAUDE.md` 两个文件。用户选择同步方向：`AGENTS.md -> CLAUDE.md` 或 `CLAUDE.md -> AGENTS.md`。源文件不存在时对应方向禁用；两个文件都不存在时只显示文件状态，不提供创建规则文件。目标文件存在且内容不同并位于 Git 仓库内时，若目标规则文件有未提交内容，系统只 stage/commit 该规则文件，commit 信息为 `chore: 同步规则前备份 <file>`，然后静默覆盖。目标文件在 Git 仓库内但无未提交内容时静默覆盖。目录没有 Git 管理但 `git` 可用时，询问用户是否初始化 Git 并提交规则文件；`git` 不可用时询问用户是否直接覆盖。
+规则同步是独立的 Project Group 级功能，不参与技能发现。项目详情页每个 Root Group 或 Subproject Group 的“新会话”旁边提供“规则”入口，点击后在当前 group 内显示规则同步内容。MVP 只维护当前 `targetRootPath` 下的 `AGENTS.md` 和 `CLAUDE.md` 两个文件。用户选择同步方向：`AGENTS.md -> CLAUDE.md` 或 `CLAUDE.md -> AGENTS.md`。源文件不存在时对应方向禁用；两个文件都不存在时只显示文件状态，不提供创建规则文件。目标文件存在且内容不同并位于 Git 仓库内时，若目标规则文件有未提交内容，系统只 stage/commit 该规则文件，commit 信息为 `chore: 同步规则前备份 <file>`，然后静默覆盖。目标文件在 Git 仓库内但无未提交内容时静默覆盖。目录没有 Git 管理但 `git` 可用时，询问用户是否初始化 Git 并提交规则文件；`git` 不可用时询问用户是否直接覆盖。
 
 ## User Stories
 
@@ -46,9 +48,9 @@ GitHub 来源支持手动检查更新。SkillHub 页面提供“检查更新”�
 16. As a local AI tool user, I want SkillHub to support multiple skills with the same folder name, so that different sources can provide their own version of a skill.
 17. As a local AI tool user, I want project skill links to use only the final skill folder name, so that tool skill directories remain flat.
 18. As a local AI tool user, I want project skill selection to display the SkillHub library relative path, so that I can distinguish same-name skills.
-19. As a local AI tool user, I want project tool targets to be inferred from existing sessions and project traces, so that old projects work without manual setup.
-20. As a local AI tool user, I want inferred tool targets to be enabled by default, so that the project skill UI immediately reflects known tool usage.
-21. As a local AI tool user, I want new project creation to allow selecting agent tools, so that SkillHub knows where project skills can be distributed.
+19. As a local AI tool user, I want project config targets to be inferred from existing sessions and project traces, so that old projects work without manual setup.
+20. As a local AI tool user, I want inferred config targets to be enabled by default, so that the project skill UI immediately reflects known tool usage.
+21. As a local AI tool user, I want new project creation to allow selecting session tools and non-session config targets, so that SkillHub knows where project skills can be distributed.
 22. As a local AI tool user, I want the project skill panel beside the project detail page, so that I can manage skills without leaving the project context.
 23. As a local AI tool user, I want checking a skill to enable it for all enabled tools by default, so that common multi-tool projects are fast to configure.
 24. As a local AI tool user, I want to expand a skill and choose specific tools, so that I can limit a skill to selected agents.
@@ -65,14 +67,14 @@ GitHub 来源支持手动检查更新。SkillHub 页面提供“检查更新”�
 35. As a local AI tool user, I want update previews to show added, changed, deleted, and moved skills, so that I understand source impact before applying it.
 36. As a local AI tool user, I want GitHub directory moves to keep the same `skillId`, so that distributed skills remain conceptually the same skill.
 37. As a local AI tool user, I want destructive updates to show affected project links, so that I can decide whether to remove them.
-38. As a local AI tool user, I want rules sync as a project detail button, so that it is available where project rules are managed.
+38. As a local AI tool user, I want rules sync as a Project Group action beside new session, so that Root Group and Subproject Group rules are managed at the same working-directory boundary as sessions.
 39. As a local AI tool user, I want rules sync to cover only `AGENTS.md` and `CLAUDE.md`, so that no third center rule file is introduced.
 40. As a local AI tool user, I want to choose `AGENTS.md -> CLAUDE.md` or `CLAUDE.md -> AGENTS.md`, so that I decide which file is truth.
 41. As a local AI tool user, I want sync directions with missing source files disabled, so that I cannot copy from nothing.
 42. As a local AI tool user, I want existing Git-managed target rules to be recoverable after overwrite, so that manual sync is low friction.
 43. As a local AI tool user, I want only the target rule file committed before overwrite, so that unrelated work is never committed by rule sync.
 44. As a local AI tool user, I want non-Git projects to ask before initializing Git or overwriting, so that unmanaged files are not silently destroyed.
-45. As a developer of the manager, I want SkillHub, tool targets, skill links, GitHub sources, and rule sync to be app-owned modules, so that the app no longer relies on `skills-manager` or `amtiYo/agents`.
+45. As a developer of the manager, I want SkillHub, project config targets, skill links, GitHub sources, and rule sync to be app-owned modules, so that the app no longer relies on `skills-manager` or `amtiYo/agents`.
 
 ## Implementation Decisions
 
@@ -80,11 +82,11 @@ GitHub 来源支持手动检查更新。SkillHub 页面提供“检查更新”�
 - SkillHub default root is `<dataDir>/skillhub`; the default library is `<dataDir>/skillhub/library`.
 - Settings exposes a configurable SkillHub directory. Changing it must be explicit and should not silently move existing skills in MVP.
 - SkillHub library contains real skill directories, not internal links.
-- Project tool skill directories contain links to SkillHub library directories. Links are one layer deep from project to library.
+- Project config target skill directories contain links to SkillHub library directories. Links are one layer deep from project to library.
 - Windows uses directory junctions for project skill links. Non-Windows uses symlinks. There is no copy fallback.
 - Skill identity uses an internal `skillId`; folder name and library relative path are display and location fields, not global identity.
 - SkillHub supports same-name skills across different sources.
-- Project tool skill directories are flat and do not support duplicate link names.
+- Project config target skill directories are flat and do not support duplicate link names.
 - Same-name project conflicts are resolved by an explicit replace-link flow.
 - Skill validity is `SKILL.md` only. Lowercase `skill.md` is out of scope.
 - Source scanning is parent-first. Once a directory is identified as a skill, nested `SKILL.md` files are not imported as separate skills.
@@ -95,12 +97,14 @@ GitHub 来源支持手动检查更新。SkillHub 页面提供“检查更新”�
 - GitHub update checks are manual and source-level.
 - GitHub update previews detect added, changed, deleted, and moved skills. Git rename detection is the first migration signal; same folder name is a fallback migration candidate.
 - Source updates write updated skill content into stable SkillHub library locations. Project links should not require rebuilding when only source relative paths change.
-- New project creation gains an agent tool selection step.
-- Existing projects infer enabled tools from session `toolId` values and project structure traces. Inferred enabled tools only affect display and target defaults; they do not create links.
-- Project skill management opens as a right-side panel from the project detail page next to the refresh action.
+- New project creation gains a project config target selection step. Session-capable tools may also be used by the new-session flow; non-session targets may only be used by Hub project configuration flows.
+- Existing projects infer enabled config targets from session `toolId` values and project structure traces. Inferred enabled targets only affect display and target defaults; they do not create links.
+- ZCode is represented as a non-session Project Config Target. Official docs confirm user-level skills under `~/.zcode/skills/<skill-name>/SKILL.md`, but do not explicitly document a workspace-level skill directory path. The current `.zcode/skills` project target is therefore an adapter-level inference and must not be added to CliHub, Session Index, new-session launch, historical scan, or Resume support.
+- Project skill management opens as a right-side panel from the project detail page next to the group-level action row.
 - SkillHub opens as an independent page from a top-bar `SkillHub` entry.
 - Rule sync is independent from skill distribution.
-- Rule sync only manages `AGENTS.md` and `CLAUDE.md`.
+- Rule sync runs against the current Project Group `targetRootPath`, not always the top-level Project root.
+- Rule sync only manages `AGENTS.md` and `CLAUDE.md`. ZCode officially reads user-global `~/.zcode/AGENTS.md` and the current workspace `AGENTS.md`; it does not continuously read `CLAUDE.md`, so ZCode project rule support should treat `AGENTS.md` as the native project instruction file.
 - Rule sync has no hard canonical source. The user chooses sync direction each time.
 - Rule sync protects Git-managed target files by committing only the target rule file before overwrite when it has uncommitted changes.
 - Rule sync commit message format is `chore: 同步规则前备份 <file>`.
@@ -138,4 +142,4 @@ GitHub 来源支持手动检查更新。SkillHub 页面提供“检查更新”�
 
 旧 `agents` CLI 配置同步入口已经移除。SkillHub、项目技能分发和规则同步继续由本应用自己的模块负责，不调用 `amtiYo/agents` 作为运行时依赖。
 
-The project tool skill directory mapping should live in this app's tool adapter layer. Do not guess unsupported paths silently; if a tool does not have a verified project skill directory, the project skill UI should show it as unsupported for skill distribution until the mapping is implemented and tested.
+The project config target skill directory mapping should live in this app's project-target adapter layer. Do not guess unsupported paths silently; if a target does not have a verified project skill directory, the project skill UI should show it as unsupported for skill distribution until the mapping is implemented and tested.

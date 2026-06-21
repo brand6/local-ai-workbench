@@ -51,7 +51,8 @@ const skillDirectoryPartsByTool: Partial<Record<ToolId, SkillDirectoryParts>> = 
   copilot: { private: [".github", "skills"], public: [[".agents", "skills"], [".claude", "skills"]] },
   cursor: { private: [".cursor", "skills"], public: [[".agents", "skills"], [".claude", "skills"]] },
   antigravity: { private: [".agents", "skills"], public: [[".agents", "skills"]] },
-  deepcode: { private: [".deepcode", "skills"] }
+  deepcode: { private: [".deepcode", "skills"] },
+  trae: { private: [".traecli", "skills"], public: [[".trae", "skills"]] }
 };
 
 export function projectSkillDirectoryOptions(toolId: ToolId, projectRoot: string): ProjectSkillDirectoryOption[] {
@@ -95,6 +96,7 @@ const defaultCommands: Record<ToolId, string> = {
   copilot: "copilot",
   cursor: "cursor-agent",
   antigravity: "agy",
+  trae: "traecli",
   deepcode: "deepcode",
   reasonix: "reasonix"
 };
@@ -435,6 +437,30 @@ export const antigravityAdapter: ToolAdapter = {
   }
 };
 
+
+export const traeAdapter: ToolAdapter = {
+  id: "trae",
+  parserVersion: "trae-cli-undocumented-v1",
+  sourceFormat: "trae-cli-undocumented",
+  capabilities: { launchNew: true, scanHistory: false, resume: false },
+  visibleInProjectUi: true,
+  defaultSessionSources(): string[] {
+    return [];
+  },
+  skillTarget(projectRoot: string, options?: SkillTargetOptions) {
+    return preferredProjectSkillDirectory("trae", projectRoot, options);
+  },
+  detect(config: AppConfig): ToolStatus {
+    return status(this, config);
+  },
+  buildNewSessionCommand(config: AppConfig, cwd: string): LaunchCommand {
+    return { command: configuredCommand(config, "trae"), args: [], cwd };
+  },
+  buildResumeCommand(): LaunchCommand {
+    throw new Error("Trae CLI resume is not supported because the session history format is not documented");
+  }
+};
+
 export const deepcodeAdapter: ToolAdapter = {
   id: "deepcode",
   parserVersion: "deepcode-index-v1",
@@ -502,6 +528,7 @@ export const toolAdapters: Record<ToolId, ToolAdapter> = {
   copilot: copilotAdapter,
   cursor: cursorAdapter,
   antigravity: antigravityAdapter,
+  trae: traeAdapter,
   deepcode: deepcodeAdapter,
   reasonix: reasonixAdapter
 };

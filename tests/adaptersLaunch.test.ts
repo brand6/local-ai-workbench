@@ -104,6 +104,10 @@ describe("tool adapters and terminal launcher", () => {
     expect(adapterFor("deepcode").buildResumeCommand(config, { ...session, toolId: "deepcode" }).args).toEqual(["-p", "/resume s1"]);
     expect(adapterFor("reasonix").buildResumeCommand(config, { ...session, toolId: "reasonix" }).args).toEqual(["code", "--session", "s1"]);
     expect(adapterFor("reasonix").buildNewSessionCommand(config, "E:\\repo").args).toEqual(["code"]);
+    expect(adapterFor("trae").buildNewSessionCommand(config, "E:\\repo")).toEqual({ command: "traecli", args: [], cwd: "E:\\repo" });
+    expect(adapterFor("trae").capabilities).toMatchObject({ launchNew: true, scanHistory: false, resume: false });
+    expect(adapterFor("trae").defaultSessionSources()).toEqual([]);
+    expect(() => adapterFor("trae").buildResumeCommand(config, { ...session, toolId: "trae" })).toThrow("Trae CLI resume is not supported");
   });
 
   it("exposes project-visible tools from adapter capabilities instead of hard-coded ids", () => {
@@ -121,6 +125,7 @@ describe("tool adapters and terminal launcher", () => {
       "copilot",
       "cursor",
       "antigravity",
+      "trae",
       "deepcode",
       "reasonix"
     ]);
@@ -218,11 +223,9 @@ describe("tool adapters and terminal launcher", () => {
       { platform: "win32", windowsTerminalAvailable: true, preferPowerShell: true }
     );
 
-    expect(host).toEqual({
-      kind: "powershell",
-      executable: "powershell.exe",
-      args: ["-NoExit", "-Command", "& 'git' 'branch' '--show-current'"]
-    });
+    expect(host.kind).toBe("powershell");
+    expect(host.executable).toBe("cmd.exe");
+    expect(host.args).toEqual(["/d", "/s", "/c", "start", "\"\"", "powershell.exe", "-NoExit", "-EncodedCommand", expect.any(String)]);
   });
 
   it("targets stable Windows Terminal windows for the configured launch mode", () => {

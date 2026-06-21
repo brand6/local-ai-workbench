@@ -30,15 +30,18 @@ import type {
   ProjectLocalAgentMigrationResult,
   ProjectLocalAgentMigrationTarget,
   ProjectLocalFileBackup,
-  ProjectToolTarget
+  ProjectToolTarget,
+  ToolId
 } from "../../shared/types.js";
-import { agentHubToolIds, isAgentHubToolId } from "../../shared/types.js";
+import { agentHubToolIds, isAgentHubToolId, isToolId } from "../../shared/types.js";
 import { openLocalPath } from "../core/localFilesystem.js";
 import { backupProjectLocalTarget } from "../core/projectBackups.js";
 import { displayPath, isPathInsideOrEqual, normalizeFsPath } from "../core/pathUtils.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";
 import { listProjectToolTargets } from "../skillhub/projectSkills.js";
+
+type SessionProjectToolTarget = ProjectToolTarget & { toolId: ToolId };
 
 interface AgentHubAdapter {
   toolId: AgentHubToolId;
@@ -78,6 +81,11 @@ interface ImportOptions {
 
 interface AgentHubListOptions {
   seedDefaultSources?: boolean;
+}
+
+interface DiscoverAgentFileOptions {
+  builtinAgency?: boolean;
+  localImport?: boolean;
 }
 
 interface PluginHubAgentRoot {
@@ -149,7 +157,19 @@ const adapters: Record<AgentHubToolId, AgentHubAdapter> = {
     truthRole: "subagent",
     extension: ".md",
     targetDir: [".opencode", "agents"],
-    sameToolFields: ["description", "mode", "color"]
+    sameToolFields: ["description", "mode", "temperature", "max_steps", "disable", "prompt", "model", "tools", "permission", "color", "top_p"],
+    crossToolMetadata: (agent) => ({
+      description: agent.description ?? agent.name,
+      mode: "subagent"
+    })
+  }),
+  codebuddy: markdownAdapter({
+    toolId: "codebuddy",
+    label: "CodeBuddy Code",
+    truthRole: "subagent",
+    extension: ".md",
+    targetDir: [".codebuddy", "agents"],
+    sameToolFields: ["name", "description", "tools"]
   }),
   qwen: markdownAdapter({
     toolId: "qwen",
@@ -159,6 +179,7 @@ const adapters: Record<AgentHubToolId, AgentHubAdapter> = {
     targetDir: [".qwen", "agents"],
     sameToolFields: ["name", "description", "tools"]
   }),
+  kimi: kimiSkillAdapter(),
   cursor: cursorAdapter(),
   codex: codexAdapter()
 };
@@ -293,7 +314,7 @@ export function importLocalAgentFolder(
     importedAt: nowIso(),
     metadata: { detachedImport: true }
   });
-  const { discoveries, skipped } = discoverAgentFiles(sourcePath, sourceTruthTool);
+  const { discoveries, skipped } = discoverAgentFiles(sourcePath, sourceTruthTool, { localImport: true });
   return commitDiscoveredAgents(database, config.libraryDir, source, discoveries, skipped, options);
 }
 
@@ -314,7 +335,7 @@ export function importPluginHubAgentRoots(database: AppDatabase, dataDir: string
 
   for (const root of input.roots) {
     if (!fs.existsSync(root.rootPath) || !fs.statSync(root.rootPath).isDirectory()) continue;
-    const discovered = discoverAgentFiles(root.rootPath, "claude");
+    const discovered = discoverAgentFiles(root.rootPath, "claude", { localImport: true });
     skipped.push(...discovered.skipped);
     discoveries.push(
       ...discovered.discoveries.map((discovery) => ({
@@ -334,6 +355,30 @@ export function openAgentHubAgent(database: AppDatabase, agentId: string, target
   const agent = database.getAgentHubAgent(agentId);
   if (!agent) throw new Error("AgentHub agent 不存在");
   return openLocalPath(target === "document" ? agent.nativePath : path.dirname(agent.nativePath));
+}
+
+export function openProjectAgentBinding(database: AppDatabase, project: Project, bindingId: string, target: "document" | "folder"): LocalOpenResponse {
+  const binding = database.getProjectAgentTarget(bindingId);
+  if (!binding) throw new Error("AgentHub target binding 不存在");
+  if (binding.projectId !== project.id || normalizeFsPath(binding.targetRootPath) !== normalizeFsPath(project.rootPath)) {
+    throw new Error("AgentHub target binding 不属于当前 Project Group");
+  }
+  return openLocalPath(target === "document" ? binding.outputPath : path.dirname(binding.outputPath));
+}
+
+export function openProjectLocalAgent(
+  database: AppDatabase,
+  project: Project,
+  toolId: AgentHubToolId,
+  outputPath: string,
+  target: "document" | "folder"
+): LocalOpenResponse {
+  const filePath = displayPath(outputPath);
+  const normalizedPath = normalizeFsPath(filePath);
+  const candidates = localAgentFileCandidates(project.rootPath, toolId).map((candidate) => normalizeFsPath(candidate));
+  if (!candidates.includes(normalizedPath)) throw new Error("项目本地 Agent 文件不属于当前工具目录");
+  localAgentForPath(database, project, toolId, filePath);
+  return openLocalPath(target === "document" ? filePath : path.dirname(filePath));
 }
 
 export function reparseAgentHubAgent(database: AppDatabase, agentId: string): AgentHubAgent {
@@ -971,7 +1016,7 @@ function pruneStaleSourceAgents(database: AppDatabase, sourceId: string, keepRel
   }
 }
 
-function discoverAgentFiles(root: string, sourceTruthTool: AgentHubToolId, options: { builtinAgency?: boolean } = {}): { discoveries: DiscoveredAgent[]; skipped: AgentHubImportSkipped[] } {
+function discoverAgentFiles(root: string, sourceTruthTool: AgentHubToolId, options: DiscoverAgentFileOptions = {}): { discoveries: DiscoveredAgent[]; skipped: AgentHubImportSkipped[] } {
   const adapter = adapters[sourceTruthTool];
   const rootPath = displayPath(root);
   const discoveries: DiscoveredAgent[] = [];
@@ -998,7 +1043,12 @@ function discoverAgentFiles(root: string, sourceTruthTool: AgentHubToolId, optio
         continue;
       }
       try {
-        const parsed = adapter.parse(fullPath, fs.readFileSync(fullPath, "utf8"));
+        const text = fs.readFileSync(fullPath, "utf8");
+        if (options.localImport && !isLocalImportAgentCandidate(relativePath, sourceTruthTool, text, rootPath)) {
+          skipped.push({ path: fullPath, reason: "不是可识别的 Agent 文件" });
+          continue;
+        }
+        const parsed = adapter.parse(fullPath, text);
         discoveries.push({
           sourcePath: fullPath,
           sourceRelativePath: relativePath,
@@ -1014,6 +1064,58 @@ function discoverAgentFiles(root: string, sourceTruthTool: AgentHubToolId, optio
 
   visit(rootPath);
   return { discoveries, skipped };
+}
+
+export function isLocalImportAgentCandidate(relativePath: string, sourceTruthTool: AgentHubToolId, text: string, rootPath: string): boolean {
+  const normalized = normalizeRelativePath(relativePath);
+  const lower = normalized.toLowerCase();
+  const fileName = path.posix.basename(lower);
+  if (localImportDocumentationFileNames.has(fileName)) return false;
+  if (isExplicitAgentFileName(fileName)) return true;
+
+  const metadata = sourceTruthTool === "codex" ? parseToml(text) : parseFrontmatter(text).metadata;
+  if (sourceTruthTool === "kimi" && (metadata.agenthub === true || metadata.agentHub === true || metadata.agent_hub === true)) return true;
+  if (hasStrongAgentMetadata(metadata)) return true;
+  return isNativeAgentContainerPath(lower, sourceTruthTool, rootPath) && hasBasicAgentMetadata(metadata);
+}
+
+const localImportDocumentationFileNames = new Set([
+  "agents.md",
+  "claude.md",
+  "code_of_conduct.md",
+  "contributing.md",
+  "license.md",
+  "readme.md",
+  "release-notes.md",
+  "skill.md"
+]);
+
+function isExplicitAgentFileName(fileName: string): boolean {
+  const stem = fileName.replace(/\.(md|mdc|toml)$/i, "");
+  return /(^|[._-])(agent|agents|subagent|subagents)([._-]|$)/i.test(stem);
+}
+
+function isNativeAgentContainerPath(relativePath: string, sourceTruthTool: AgentHubToolId, rootPath: string): boolean {
+  const rootSegment = path.basename(rootPath).toLowerCase();
+  if (isAgentDirectorySegment(rootSegment)) return true;
+  if (sourceTruthTool === "cursor" && rootSegment === "rules") return true;
+  const segments = relativePath.split("/").filter(Boolean);
+  if (segments.some(isAgentDirectorySegment)) return true;
+  return sourceTruthTool === "cursor" && segments.includes("rules");
+}
+
+function isAgentDirectorySegment(segment: string): boolean {
+  return segment === "agents" || segment.endsWith("-agents") || segment.endsWith("_agents");
+}
+
+function hasStrongAgentMetadata(metadata: Record<string, unknown>): boolean {
+  return ["tools", "model", "instructions", "developer_instructions", "developer", "prompt", "mode", "color", "alwaysApply"].some((key) =>
+    Object.prototype.hasOwnProperty.call(metadata, key)
+  );
+}
+
+function hasBasicAgentMetadata(metadata: Record<string, unknown>): boolean {
+  return Boolean(stringMetadata(metadata, "name") || stringMetadata(metadata, "title") || stringMetadata(metadata, "description"));
 }
 
 function readBuiltInAgencySnapshot(sourcePath: string): BuiltInAgencySnapshot | null {
@@ -1071,9 +1173,9 @@ function shouldSkipBuiltInAgencyFile(relativePath: string): boolean {
   return lower.split("/").length < 2;
 }
 
-function listAgentToolTargets(database: AppDatabase, project: Project, config?: AppConfig): ProjectToolTarget[] {
+function listAgentToolTargets(database: AppDatabase, project: Project, config?: AppConfig): SessionProjectToolTarget[] {
   return listProjectToolTargets(database, project, config)
-    .filter((target) => target.enabled)
+    .filter((target): target is SessionProjectToolTarget => target.enabled && isToolId(target.toolId))
     .map((target) => {
       if (!isAgentHubToolId(target.toolId)) {
         return {
@@ -1098,7 +1200,7 @@ function ensureAgentToolEnabled(database: AppDatabase, project: Project, toolId:
   if (!target.supported) throw new Error(target.reason ?? "尚未支持");
 }
 
-function unsupportedProjectAgentTargetState(project: Project, agent: AgentHubAgent, toolTarget: ProjectToolTarget): ProjectAgentTargetState {
+function unsupportedProjectAgentTargetState(project: Project, agent: AgentHubAgent, toolTarget: SessionProjectToolTarget): ProjectAgentTargetState {
   return {
     projectId: project.id,
     targetRootPath: project.rootPath,
@@ -1168,6 +1270,7 @@ function localAgentForPath(database: AppDatabase, project: Project, toolId: Agen
 }
 
 function localAgentFileCandidates(rootPath: string, toolId: AgentHubToolId): string[] {
+  if (toolId === "kimi") return localKimiAgentSkillFiles(path.join(rootPath, ".kimi-code", "skills"));
   const directory =
     toolId === "claude"
       ? path.join(rootPath, ".claude", "agents")
@@ -1177,7 +1280,9 @@ function localAgentFileCandidates(rootPath: string, toolId: AgentHubToolId): str
           ? path.join(rootPath, ".cursor", "rules")
           : toolId === "opencode"
             ? path.join(rootPath, ".opencode", "agents")
-            : path.join(rootPath, ".qwen", "agents");
+            : toolId === "codebuddy"
+              ? path.join(rootPath, ".codebuddy", "agents")
+              : path.join(rootPath, ".qwen", "agents");
   if (!fs.existsSync(directory)) return [];
   const adapter = adapters[toolId];
   return fs
@@ -1186,6 +1291,35 @@ function localAgentFileCandidates(rootPath: string, toolId: AgentHubToolId): str
     .map((entry) => path.join(directory, entry.name))
     .filter((filePath) => adapter.matches(filePath))
     .sort((left, right) => left.localeCompare(right));
+}
+
+function localKimiAgentSkillFiles(directory: string): string[] {
+  if (!fs.existsSync(directory)) return [];
+  const output: string[] = [];
+
+  function visit(current: string): void {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        visit(fullPath);
+        continue;
+      }
+      if (!entry.isFile() || !adapters.kimi.matches(fullPath)) continue;
+      if (isKimiAgentHubSkillFile(fullPath)) output.push(fullPath);
+    }
+  }
+
+  visit(directory);
+  return output.sort((left, right) => left.localeCompare(right));
+}
+
+function isKimiAgentHubSkillFile(filePath: string): boolean {
+  try {
+    const { metadata } = parseFrontmatter(fs.readFileSync(filePath, "utf8"));
+    return metadata.agenthub === true || metadata.agentHub === true || metadata.agent_hub === true;
+  } catch {
+    return false;
+  }
 }
 
 function skipFromBinding(binding: ProjectAgentTarget, status: AgentHubTargetStatus, reason: string): ProjectAgentSyncResult["skipped"][number] {
@@ -1206,6 +1340,7 @@ function markdownAdapter(input: {
   extension: ".md";
   targetDir: string[];
   sameToolFields: string[];
+  crossToolMetadata?: (agent: AgentHubAgent) => Record<string, unknown>;
 }): AgentHubAdapter {
   return {
     toolId: input.toolId,
@@ -1224,12 +1359,50 @@ function markdownAdapter(input: {
           ignoredNativeFields: []
         };
       }
-      const metadata: Record<string, unknown> = {
-        name: agent.name,
-        ...(agent.description ? { description: agent.description } : {})
-      };
+      const metadata: Record<string, unknown> = input.crossToolMetadata
+        ? input.crossToolMetadata(agent)
+        : {
+            name: agent.name,
+            ...(agent.description ? { description: agent.description } : {})
+          };
       return {
         content: renderMarkdownAgent(metadata, agent.projection.body),
+        preservedNativeFields: [],
+        ignoredNativeFields: Object.keys(agent.nativeMetadata)
+      };
+    }
+  };
+}
+
+function kimiSkillAdapter(): AgentHubAdapter {
+  return {
+    toolId: "kimi",
+    label: "Kimi Code",
+    sourceFormat: "markdown",
+    truthRole: "subagent",
+    extension: ".md",
+    targetPath: (rootPath, slug) => path.join(rootPath, ".kimi-code", "skills", slug, "SKILL.md"),
+    matches: (filePath) => path.extname(filePath).toLowerCase() === ".md",
+    parse: (filePath, text) => parseMarkdownAgent(filePath, text),
+    render: (agent) => {
+      if (agent.sourceTruthTool === "kimi" && fs.existsSync(agent.nativePath)) {
+        return {
+          content: fs.readFileSync(agent.nativePath, "utf8"),
+          preservedNativeFields: Object.keys(agent.nativeMetadata).filter((key) => ["name", "description", "type", "whenToUse", "when-to-use", "when_to_use", "disableModelInvocation", "disable-model-invocation", "disable_model_invocation", "arguments", "agenthub", "agentHub", "agent_hub"].includes(key)),
+          ignoredNativeFields: []
+        };
+      }
+      return {
+        content: renderMarkdownAgent(
+          {
+            name: agent.slug,
+            description: agent.description ?? agent.name,
+            type: "prompt",
+            whenToUse: agent.description ?? `When focused assistance from the ${agent.name} agent is useful`,
+            agenthub: true
+          },
+          agent.projection.body
+        ),
         preservedNativeFields: [],
         ignoredNativeFields: Object.keys(agent.nativeMetadata)
       };
@@ -1297,7 +1470,7 @@ function parseMarkdownAgent(filePath: string, text: string): ParsedNativeAgent {
       name,
       description,
       body: stripLeadingHeading(body).trim(),
-      slugCandidate: safeSlug(stringMetadata(metadata, "slug") ?? path.basename(filePath, path.extname(filePath)) ?? name),
+      slugCandidate: safeSlug(stringMetadata(metadata, "slug") ?? nativeMarkdownSlugCandidate(filePath) ?? name),
       parseWarnings: []
     },
     nativeMetadata: metadata
@@ -1325,6 +1498,12 @@ function parseCodexAgent(filePath: string, text: string): ParsedNativeAgent {
     },
     nativeMetadata: metadata
   };
+}
+
+function nativeMarkdownSlugCandidate(filePath: string): string | null {
+  const basename = path.basename(filePath);
+  if (basename.toLowerCase() === "skill.md") return path.basename(path.dirname(filePath));
+  return path.basename(filePath, path.extname(filePath));
 }
 
 function parseFrontmatter(text: string): { metadata: Record<string, unknown>; body: string } {

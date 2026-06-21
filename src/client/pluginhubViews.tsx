@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { isToolId } from "../shared/types.js";
 import type {
   AgentHubAgent,
   HookHubSuite,
@@ -9,6 +10,7 @@ import type {
   PluginHubHarnessSupport,
   PluginHubList,
   PluginHubPlugin,
+  PluginHubSource,
   ProjectPluginApplyResult,
   ProjectPluginState,
   ProjectToolTarget,
@@ -20,6 +22,13 @@ import { AgentHubAgentRow, groupAgentHubAgents } from "./agenthubViews.js";
 import { HookHubSuiteCard } from "./hookhubViews.js";
 import { McpHubServerCard } from "./mcphubViews.js";
 import { SkillHubSkillRow, groupSkillHubSkills } from "./skillhubViews.js";
+
+type ProjectPluginsTab = "hub" | "local";
+
+type SessionProjectToolTarget = ProjectToolTarget & { toolId: ToolId };
+
+const EMPTY_PROJECT_PLUGINS: PluginHubPlugin[] = [];
+const EMPTY_PROJECT_TOOL_TARGETS: SessionProjectToolTarget[] = [];
 
 export function PluginHubPage({
   pluginhub,
@@ -145,7 +154,7 @@ export function PluginHubPage({
             )}
           </section>
 
-          <PluginListSection
+          <SourcePluginListSection
             title="Plugins"
             plugins={pluginhub.sourcePlugins}
             pluginhub={pluginhub}
@@ -189,23 +198,11 @@ export function ProjectPluginsPanel({
   onSync: (bindingId: string) => void;
   onUninstall: (bindingId: string) => void;
 }) {
-  const [pluginId, setPluginId] = useState("");
-  const [toolId, setToolId] = useState<ToolId>("codex");
-  const plugins = state?.plugins ?? [];
-  const selectedPluginId = pluginId || plugins[0]?.id || "";
-  const selectedPlugin = plugins.find((plugin) => plugin.id === selectedPluginId) ?? null;
-  const projectToolTargets = useMemo(() => state?.toolTargets ?? [], [state]);
-  const supportedToolTargets = useMemo(
-    () => projectToolTargets.filter((target) => target.supported && pluginToolInstallable(selectedPlugin, target.toolId)),
-    [projectToolTargets, selectedPlugin]
-  );
-  const selectedToolTarget = projectToolTargets.find((target) => target.toolId === toolId) ?? null;
-  const selectedToolInstallable = Boolean(selectedToolTarget?.supported && pluginToolInstallable(selectedPlugin, toolId));
+  const [activeTab, setActiveTab] = useState<ProjectPluginsTab>("local");
 
-  useEffect(() => {
-    const fallback = supportedToolTargets[0] ?? projectToolTargets[0] ?? null;
-    if (fallback && !selectedToolInstallable) setToolId(fallback.toolId);
-  }, [projectToolTargets, selectedToolInstallable, supportedToolTargets]);
+  function selectTab(tab: ProjectPluginsTab) {
+    setActiveTab(tab);
+  }
 
   return (
     <aside className="side-panel project-plugins-panel" aria-label="项目 Plugin 管理">
@@ -219,106 +216,290 @@ export function ProjectPluginsPanel({
         </button>
       </header>
 
-      {!state ? (
-        <div className="muted">正在读取项目 Plugin...</div>
+      {state ? <p className="path-line">{state.targetRootPath}</p> : null}
+      <div className="segmented-tabs project-plugin-tabs" role="tablist" aria-label="Plugin 类型">
+        <button className={activeTab === "hub" ? "active" : ""} type="button" role="tab" aria-selected={activeTab === "hub"} onClick={() => selectTab("hub")}>
+          Hub Plugin
+        </button>
+        <button className={activeTab === "local" ? "active" : ""} type="button" role="tab" aria-selected={activeTab === "local"} onClick={() => selectTab("local")}>
+          本地 Plugin
+        </button>
+      </div>
+
+      {activeTab === "hub" ? (
+        <ProjectPluginHubTab state={state} busy={busy} onInstall={onInstall} />
       ) : (
-        <>
-          <section className="project-plugin-install" aria-label="安装 Plugin">
-            <div className="section-title compact">
-              <h3>安装 Plugin</h3>
-            </div>
-            <div className="project-plugin-install-controls">
-              <label className="field">
-                Plugin
-                <select value={selectedPluginId} disabled={busy || plugins.length === 0} onChange={(event) => setPluginId(event.target.value)}>
-                  {plugins.map((plugin) => (
-                    <option key={plugin.id} value={plugin.id}>
-                      {plugin.displayName}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="field">
-                <span className="field-label">工具</span>
-                <div className="tool-chip-list">
-                  {projectToolTargets.length === 0 ? <div className="empty-state compact">还没有项目使用工具</div> : null}
-                  {projectToolTargets.map((target) => (
-                    <ProjectPluginToolChip
-                      key={target.toolId}
-                      target={target}
-                      checked={toolId === target.toolId}
-                      busy={busy}
-                      pluginSupport={pluginToolSupport(selectedPlugin, target.toolId)}
-                      onSelect={setToolId}
-                    />
-                  ))}
-                </div>
-              </div>
-              <button className="primary" type="button" disabled={busy || !selectedPluginId || !selectedToolInstallable} onClick={() => onInstall(selectedPluginId, toolId)}>
-                安装
-              </button>
-            </div>
-          </section>
-
-          {lastResult?.preflight.length ? (
-            <div className="inline-warning" role="alert">
-              {lastResult.message}：{lastResult.preflight.map((item) => item.targetPath).join("；")}
-            </div>
-          ) : null}
-
-          <section className="project-plugin-bindings" aria-label="已安装 Plugin">
-            <div className="section-title compact">
-              <h3>已安装</h3>
-              <span className="metric-pill strong">{state.bindings.length} 个 binding</span>
-            </div>
-            {state.bindings.length === 0 ? (
-              <div className="empty-state compact">还没有安装 Plugin</div>
-            ) : (
-              <div className="pluginhub-list">
-                {state.bindings.map((binding) => (
-                  <details className="pluginhub-row" key={binding.id}>
-                    <summary>
-                      <span className="pluginhub-row-title">{binding.plugin?.displayName ?? binding.pluginId}</span>
-                      <span className="metric-pill">{binding.toolId}</span>
-                      <span className="metric-pill">
-                        {binding.managedComponentCount}/{binding.managedComponentCount + binding.existingComponentCount} managed
-                      </span>
-                      {state.syncRequiredPluginIds.includes(binding.pluginId) ? <span className="metric-pill warning">需要同步</span> : null}
-                    </summary>
-                    <div className="pluginhub-row-body">
-                      <small>{binding.targetRootPath}</small>
-                      <div className="tool-chip-list">
-                        <span className="metric-pill">{binding.privateFileCount} private files</span>
-                        <span className="metric-pill">{binding.existingComponentCount} using existing</span>
-                      </div>
-                      <div className="row-actions">
-                        <button className="secondary" type="button" disabled={busy} onClick={() => onSync(binding.id)}>
-                          同步
-                        </button>
-                        <button className="danger" type="button" disabled={busy} onClick={() => onUninstall(binding.id)}>
-                          卸载
-                        </button>
-                      </div>
-                    </div>
-                  </details>
-                ))}
-              </div>
-            )}
-          </section>
-        </>
+        <ProjectPluginLocalTab state={state} busy={busy} lastResult={lastResult} onSync={onSync} onUninstall={onUninstall} />
       )}
     </aside>
   );
 }
 
+function ProjectPluginHubTab({
+  state,
+  busy,
+  onInstall
+}: {
+  state: ProjectPluginState | null;
+  busy: boolean;
+  onInstall: (pluginId: string, toolId: ToolId) => void;
+}) {
+  const [preferredToolId, setPreferredToolId] = useState<ToolId>("codex");
+  const plugins = state?.plugins ?? EMPTY_PROJECT_PLUGINS;
+  const [query, setQuery] = useState("");
+  const projectToolTargets = useMemo(
+    () =>
+      (state?.toolTargets ?? EMPTY_PROJECT_TOOL_TARGETS).filter(
+        (target): target is SessionProjectToolTarget => isToolId(target.toolId)
+      ),
+    [state]
+  );
+  const filteredPlugins = useMemo(() => filterProjectPlugins(plugins, query), [plugins, query]);
+  const sourceGroups = useMemo(() => groupProjectPluginsBySource(filteredPlugins), [filteredPlugins]);
+  const selectedToolId = projectToolTargets.some((target) => target.toolId === preferredToolId)
+    ? preferredToolId
+    : projectToolTargets[0]?.toolId ?? preferredToolId;
+
+  if (!state) return <div className="muted">正在读取项目 Plugin...</div>;
+
+  return (
+    <div className="project-plugin-tab-panel" role="tabpanel">
+      <label className="field wide">
+        搜索 Plugin
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选 Hub Plugin" />
+      </label>
+      {sourceGroups.length === 0 ? (
+        <div className="empty-state compact">没有可用 Plugin</div>
+      ) : (
+        <section className="project-plugin-hub-list" aria-label="Hub Plugin">
+          {sourceGroups.map((group) => (
+            <details className="project-plugin-source-group skillhub-source-group" key={group.key}>
+              <summary>
+                <span className="skillhub-source-main">
+                  <span className="skillhub-source-title">{group.label}</span>
+                  {group.source ? <span className="metric-pill">{group.source.type}</span> : <span className="metric-pill">{group.kindLabel}</span>}
+                  {group.source ? <span className="metric-pill">{group.source.kind}</span> : null}
+                </span>
+                <span className="skillhub-source-actions">
+                  <span className="metric-pill strong">{group.plugins.length} 个 Plugin</span>
+                </span>
+              </summary>
+              <div className="project-plugin-source-body">
+                {group.source ? <small className="path-line">{group.source.inputPath}</small> : null}
+                <div className="pluginhub-list pluginhub-nested-plugin-list">
+                  {group.plugins.map((plugin) => (
+                    <ProjectPluginHubPluginRow
+                      key={plugin.id}
+                      plugin={plugin}
+                      bindings={state.bindings}
+                      syncRequiredPluginIds={state.syncRequiredPluginIds}
+                      projectToolTargets={projectToolTargets}
+                      toolId={selectedToolId}
+                      busy={busy}
+                      onSelectTool={setPreferredToolId}
+                      onInstall={onInstall}
+                    />
+                  ))}
+                </div>
+              </div>
+            </details>
+          ))}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function ProjectPluginHubPluginRow({
+  plugin,
+  bindings,
+  syncRequiredPluginIds,
+  projectToolTargets,
+  toolId,
+  busy,
+  onSelectTool,
+  onInstall
+}: {
+  plugin: PluginHubPlugin;
+  bindings: ProjectPluginState["bindings"];
+  syncRequiredPluginIds: string[];
+  projectToolTargets: SessionProjectToolTarget[];
+  toolId: ToolId;
+  busy: boolean;
+  onSelectTool: (toolId: ToolId) => void;
+  onInstall: (pluginId: string, toolId: ToolId) => void;
+}) {
+  const selectedToolTarget = projectToolTargets.find((target) => target.toolId === toolId) ?? null;
+  const selectedToolInstallable = Boolean(selectedToolTarget?.supported && pluginToolInstallable(plugin, toolId));
+  const installedBindings = bindings.filter((binding) => binding.pluginId === plugin.id);
+  const radioName = `project-plugin-tool:${plugin.id}`;
+
+  return (
+    <details className="pluginhub-row">
+      <summary>
+        <span className="pluginhub-row-title">{plugin.displayName}</span>
+        <span className="metric-pill">{plugin.kind}</span>
+        <span className="metric-pill">{plugin.componentRefs.length} components</span>
+        <span className="metric-pill">{plugin.privateFiles.length} files</span>
+        {installedBindings.length > 0 ? <span className="metric-pill strong">已安装 {installedBindings.length}</span> : null}
+        {syncRequiredPluginIds.includes(plugin.id) ? <span className="metric-pill warning">需要同步</span> : null}
+      </summary>
+      <div className="pluginhub-row-body">
+        {plugin.description ? <p>{plugin.description}</p> : null}
+        <div className="tool-chip-list">
+          {projectToolTargets.length === 0 ? <div className="empty-state compact">还没有项目使用工具</div> : null}
+          {projectToolTargets.map((target) => (
+            <ProjectPluginToolChip
+              key={`${plugin.id}:${target.toolId}`}
+              name={radioName}
+              target={target}
+              checked={toolId === target.toolId}
+              busy={busy}
+              pluginSupport={pluginToolSupport(plugin, target.toolId)}
+              onSelect={onSelectTool}
+            />
+          ))}
+        </div>
+        <div className="row-actions">
+          <button className="primary" type="button" disabled={busy || !selectedToolInstallable} onClick={() => onInstall(plugin.id, toolId)}>
+            安装
+          </button>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function ProjectPluginLocalTab({
+  state,
+  busy,
+  lastResult,
+  onSync,
+  onUninstall
+}: {
+  state: ProjectPluginState | null;
+  busy: boolean;
+  lastResult: ProjectPluginApplyResult | null;
+  onSync: (bindingId: string) => void;
+  onUninstall: (bindingId: string) => void;
+}) {
+  if (!state) return <div className="muted">正在读取项目 Plugin...</div>;
+
+  return (
+    <div className="project-plugin-tab-panel" role="tabpanel">
+      {lastResult?.preflight.length ? (
+        <div className="inline-warning" role="alert">
+          {lastResult.message}：{lastResult.preflight.map((item) => item.targetPath).join("；")}
+        </div>
+      ) : null}
+
+      <section className="project-plugin-bindings" aria-label="本地 Plugin">
+        <div className="section-title compact">
+          <h3>本地安装</h3>
+          <span className="metric-pill strong">{state.bindings.length} 个 binding</span>
+        </div>
+        {state.bindings.length === 0 ? (
+          <div className="empty-state compact">还没有安装 Plugin</div>
+        ) : (
+          <div className="pluginhub-list">
+            {state.bindings.map((binding) => (
+              <details className="pluginhub-row" key={binding.id}>
+                <summary>
+                  <span className="pluginhub-row-title">{binding.plugin?.displayName ?? binding.pluginId}</span>
+                  <span className="metric-pill">{binding.toolId}</span>
+                  <span className="metric-pill">
+                    {binding.managedComponentCount}/{binding.managedComponentCount + binding.existingComponentCount} managed
+                  </span>
+                  {state.syncRequiredPluginIds.includes(binding.pluginId) ? <span className="metric-pill warning">需要同步</span> : null}
+                </summary>
+                <div className="pluginhub-row-body">
+                  <small>{binding.targetRootPath}</small>
+                  <div className="tool-chip-list">
+                    <span className="metric-pill">{binding.privateFileCount} private files</span>
+                    <span className="metric-pill">{binding.existingComponentCount} using existing</span>
+                  </div>
+                  <div className="row-actions">
+                    <button className="secondary" type="button" disabled={busy} onClick={() => onSync(binding.id)}>
+                      同步
+                    </button>
+                    <button className="danger" type="button" disabled={busy} onClick={() => onUninstall(binding.id)}>
+                      卸载
+                    </button>
+                  </div>
+                </div>
+              </details>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+type ProjectPluginSourceGroup = {
+  key: string;
+  label: string;
+  kindLabel: string;
+  source: PluginHubSource | null;
+  plugins: PluginHubPlugin[];
+};
+
+function filterProjectPlugins(plugins: PluginHubPlugin[], query: string): PluginHubPlugin[] {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return plugins;
+  return plugins.filter((plugin) =>
+    [plugin.displayName, plugin.name, plugin.description ?? "", plugin.kind, plugin.source?.label ?? "", plugin.source?.inputPath ?? "", plugin.sourceId ?? ""]
+      .join("\n")
+      .toLowerCase()
+      .includes(normalized)
+  );
+}
+
+function groupProjectPluginsBySource(plugins: PluginHubPlugin[]): ProjectPluginSourceGroup[] {
+  const groups = new Map<string, ProjectPluginSourceGroup>();
+  const customPlugins: PluginHubPlugin[] = [];
+
+  for (const plugin of plugins) {
+    if (plugin.kind === "custom" || !plugin.sourceId) {
+      customPlugins.push(plugin);
+      continue;
+    }
+    const source = plugin.source;
+    const key = source?.id ?? `missing-source:${plugin.sourceId}`;
+    const current = groups.get(key) ?? {
+      key,
+      label: source?.label ?? plugin.sourceId,
+      kindLabel: source ? source.kind : "missing source",
+      source,
+      plugins: []
+    };
+    current.plugins.push(plugin);
+    groups.set(key, current);
+  }
+
+  const sourceGroups = [...groups.values()];
+  if (customPlugins.length > 0) {
+    sourceGroups.push({
+      key: "custom-plugins",
+      label: "Custom Plugins",
+      kindLabel: "custom",
+      source: null,
+      plugins: customPlugins
+    });
+  }
+  return sourceGroups;
+}
+
 function ProjectPluginToolChip({
+  name = "project-plugin-tool",
   target,
   checked,
   busy,
   pluginSupport,
   onSelect
 }: {
-  target: ProjectToolTarget;
+  name?: string;
+  target: SessionProjectToolTarget;
   checked: boolean;
   busy: boolean;
   pluginSupport: PluginHubHarnessSupport;
@@ -337,7 +518,7 @@ function ProjectPluginToolChip({
         }
       }}
     >
-      <input type="radio" name="project-plugin-tool" checked={checked} disabled={disabled} onChange={() => onSelect(target.toolId)} />
+      <input type="radio" name={name} checked={checked} disabled={disabled} onChange={() => onSelect(target.toolId)} />
       <span>{target.toolId}</span>
     </label>
   );
@@ -355,12 +536,86 @@ function isPluginHarnessInstallable(support: PluginHubHarnessSupport): boolean {
   return support === "native" || support === "component-only";
 }
 
-function pluginToolChipTitle(target: ProjectToolTarget, support: PluginHubHarnessSupport): string {
+function pluginToolChipTitle(target: SessionProjectToolTarget, support: PluginHubHarnessSupport): string {
   if (!target.supported) return target.reason ?? "项目未支持该工具";
   if (support === "planned") return "该 Plugin 的目标工具适配尚未实现";
   if (support === "unsupported") return "该 Plugin 不支持安装到该工具";
   if (support === "component-only") return target.skillDirectory ?? "通过组件 Hub 安装";
   return target.skillDirectory ?? "原生 Plugin package";
+}
+
+type SourcePluginGroup = {
+  source: PluginHubSource | null;
+  plugins: PluginHubPlugin[];
+};
+
+function SourcePluginListSection({
+  title,
+  plugins,
+  pluginhub,
+  busy,
+  onOpenSkill,
+  onOpenAgent,
+  onOpenPrivateFile,
+  onDeletePlugin
+}: {
+  title: string;
+  plugins: PluginHubPlugin[];
+  pluginhub: PluginHubList;
+  busy: boolean;
+  onOpenSkill: (skillId: string, target: SkillHubOpenTarget) => void;
+  onOpenAgent: (agentId: string, target: SkillHubOpenTarget) => void;
+  onOpenPrivateFile: (pluginId: string, fileId: string, target: SkillHubOpenTarget) => void;
+  onDeletePlugin: (pluginId: string) => void;
+}) {
+  const groups = groupPluginsBySource(pluginhub.sources, plugins);
+
+  return (
+    <section className="toolbar-panel compact pluginhub-section" aria-label={title}>
+      <div className="section-title compact">
+        <h2>{title}</h2>
+        <span className="metric-pill strong">{plugins.length} 个 plugin</span>
+      </div>
+      {groups.length === 0 ? (
+        <div className="empty-state compact">还没有 {title}</div>
+      ) : (
+        <div className="pluginhub-list">
+          {groups.map((group) => (
+            <details className="pluginhub-row pluginhub-source-plugin-group" key={sourcePluginGroupKey(group)}>
+              <summary>
+                <span className="pluginhub-row-title">{group.source?.label ?? "未知 source"}</span>
+                {group.source ? <span className="metric-pill">{group.source.type}</span> : <span className="metric-pill warning">missing source</span>}
+                {group.source ? <span className="metric-pill">{group.source.kind}</span> : null}
+                <span className="metric-pill">{group.plugins.length} plugins</span>
+              </summary>
+              <div className="pluginhub-row-body pluginhub-source-plugin-body">
+                {group.source ? <small>{group.source.inputPath}</small> : <small>这些 plugin 的 source 记录已缺失</small>}
+                <div className="tool-chip-list">
+                  {group.source ? <span className="metric-pill">{group.source.componentCount} components</span> : null}
+                  {group.source ? <span className="metric-pill">{group.source.privateFileCount} private files</span> : null}
+                </div>
+                <div className="pluginhub-list pluginhub-nested-plugin-list">
+                  {group.plugins.map((plugin) => (
+                    <PluginHubPluginRow
+                      key={plugin.id}
+                      plugin={plugin}
+                      pluginhub={pluginhub}
+                      busy={busy}
+                      showSourceLabel={false}
+                      onOpenSkill={onOpenSkill}
+                      onOpenAgent={onOpenAgent}
+                      onOpenPrivateFile={onOpenPrivateFile}
+                      onDeletePlugin={onDeletePlugin}
+                    />
+                  ))}
+                </div>
+              </div>
+            </details>
+          ))}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function PluginListSection({
@@ -395,48 +650,85 @@ function PluginListSection({
       ) : (
         <div className="pluginhub-list">
           {plugins.map((plugin) => (
-            <details className="pluginhub-row" key={plugin.id}>
-              <summary>
-                <span className="pluginhub-row-title">{plugin.displayName}</span>
-                <span className="metric-pill">{plugin.kind}</span>
-                <span className="metric-pill">{plugin.componentRefs.length} components</span>
-                <span className="metric-pill">{plugin.privateFiles.length} files</span>
-              </summary>
-              <div className="pluginhub-row-body">
-                {plugin.description ? <p>{plugin.description}</p> : null}
-                <small>{plugin.source?.label ?? "custom plugin"}</small>
-                <div className="tool-chip-list">
-                  <span className="metric-pill">{plugin.privateFiles.length} private files</span>
-                  {Object.entries(plugin.harnessSupport).map(([toolId, support]) => (
-                    <span className="metric-pill" key={`${plugin.id}:${toolId}`}>
-                      {toolId}: {support}
-                    </span>
-                  ))}
-                </div>
-                <PluginHubPluginContents
-                  plugin={plugin}
-                  pluginhub={pluginhub}
-                  busy={busy}
-                  onOpenSkill={onOpenSkill}
-                  onOpenAgent={onOpenAgent}
-                  onOpenPrivateFile={onOpenPrivateFile}
-                />
-                <div className="row-actions">
-                  {onEditPlugin ? (
-                    <button className="secondary" type="button" disabled={busy} onClick={() => onEditPlugin(plugin)}>
-                      编辑 plugin
-                    </button>
-                  ) : null}
-                  <button className="danger" type="button" disabled={busy} onClick={() => onDeletePlugin(plugin.id)}>
-                    删除 plugin
-                  </button>
-                </div>
-              </div>
-            </details>
+            <PluginHubPluginRow
+              key={plugin.id}
+              plugin={plugin}
+              pluginhub={pluginhub}
+              busy={busy}
+              showSourceLabel
+              onOpenSkill={onOpenSkill}
+              onOpenAgent={onOpenAgent}
+              onOpenPrivateFile={onOpenPrivateFile}
+              onDeletePlugin={onDeletePlugin}
+              {...(onEditPlugin ? { onEditPlugin } : {})}
+            />
           ))}
         </div>
       )}
     </section>
+  );
+}
+
+function PluginHubPluginRow({
+  plugin,
+  pluginhub,
+  busy,
+  showSourceLabel,
+  onOpenSkill,
+  onOpenAgent,
+  onOpenPrivateFile,
+  onDeletePlugin,
+  onEditPlugin
+}: {
+  plugin: PluginHubPlugin;
+  pluginhub: PluginHubList;
+  busy: boolean;
+  showSourceLabel: boolean;
+  onOpenSkill: (skillId: string, target: SkillHubOpenTarget) => void;
+  onOpenAgent: (agentId: string, target: SkillHubOpenTarget) => void;
+  onOpenPrivateFile: (pluginId: string, fileId: string, target: SkillHubOpenTarget) => void;
+  onDeletePlugin: (pluginId: string) => void;
+  onEditPlugin?: (plugin: PluginHubPlugin) => void;
+}) {
+  return (
+    <details className="pluginhub-row" key={plugin.id}>
+      <summary>
+        <span className="pluginhub-row-title">{plugin.displayName}</span>
+        <span className="metric-pill">{plugin.kind}</span>
+        <span className="metric-pill">{plugin.componentRefs.length} components</span>
+        <span className="metric-pill">{plugin.privateFiles.length} files</span>
+      </summary>
+      <div className="pluginhub-row-body">
+        {plugin.description ? <p>{plugin.description}</p> : null}
+        {showSourceLabel ? <small>{plugin.source?.label ?? "custom plugin"}</small> : null}
+        <div className="tool-chip-list">
+          <span className="metric-pill">{plugin.privateFiles.length} private files</span>
+          {Object.entries(plugin.harnessSupport).map(([toolId, support]) => (
+            <span className="metric-pill" key={`${plugin.id}:${toolId}`}>
+              {toolId}: {support}
+            </span>
+          ))}
+        </div>
+        <PluginHubPluginContents
+          plugin={plugin}
+          pluginhub={pluginhub}
+          busy={busy}
+          onOpenSkill={onOpenSkill}
+          onOpenAgent={onOpenAgent}
+          onOpenPrivateFile={onOpenPrivateFile}
+        />
+        <div className="row-actions">
+          {onEditPlugin ? (
+            <button className="secondary" type="button" disabled={busy} onClick={() => onEditPlugin(plugin)}>
+              编辑 plugin
+            </button>
+          ) : null}
+          <button className="danger" type="button" disabled={busy} onClick={() => onDeletePlugin(plugin.id)}>
+            删除 plugin
+          </button>
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -584,6 +876,40 @@ function groupPluginComponentRefs(componentRefs: PluginHubComponentRef[]): Recor
     mcp: componentRefs.filter((ref) => ref.type === "mcp"),
     hook: componentRefs.filter((ref) => ref.type === "hook")
   };
+}
+
+function groupPluginsBySource(sources: PluginHubSource[], plugins: PluginHubPlugin[]): SourcePluginGroup[] {
+  const pluginsBySourceId = new Map<string, PluginHubPlugin[]>();
+  const missingSourcePlugins: PluginHubPlugin[] = [];
+
+  for (const plugin of plugins) {
+    if (!plugin.sourceId) {
+      missingSourcePlugins.push(plugin);
+      continue;
+    }
+    pluginsBySourceId.set(plugin.sourceId, [...(pluginsBySourceId.get(plugin.sourceId) ?? []), plugin]);
+  }
+
+  const groups: SourcePluginGroup[] = [];
+  const knownSourceIds = new Set(sources.map((source) => source.id));
+
+  for (const source of sources) {
+    const sourcePlugins = pluginsBySourceId.get(source.id) ?? [];
+    if (sourcePlugins.length > 0) groups.push({ source, plugins: sourcePlugins });
+  }
+
+  for (const [sourceId, sourcePlugins] of pluginsBySourceId.entries()) {
+    if (knownSourceIds.has(sourceId)) continue;
+    groups.push({ source: sourcePlugins[0]?.source ?? null, plugins: sourcePlugins });
+  }
+
+  if (missingSourcePlugins.length > 0) groups.push({ source: null, plugins: missingSourcePlugins });
+
+  return groups;
+}
+
+function sourcePluginGroupKey(group: SourcePluginGroup): string {
+  return group.source?.id ?? `missing-source:${group.plugins.map((plugin) => plugin.id).join(":")}`;
 }
 
 function PluginHubImportDialog({

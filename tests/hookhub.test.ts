@@ -39,6 +39,83 @@ describe("HookHub", () => {
       pre: [{ matcher: "Bash", command: "npm test", timeout: 10 }],
       session_start: [{ command: "node hooks/session-start.js", async: false }]
     });
+    expect(
+      convertHookPayloadForTool(
+        { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "npm test", timeout: 10 }] }] },
+        "claude",
+        "kimi"
+      )
+    ).toEqual([{ event: "PreToolUse", matcher: "Bash", command: "npm test", timeout: 10 }]);
+    expect(
+      convertHookPayloadForTool(
+        { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "npm test", timeout: 10 }] }] },
+        "claude",
+        "codebuddy"
+      )
+    ).toEqual({ PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "npm test", timeout: 10 }] }] });
+    expect(
+      convertHookPayloadForTool(
+        { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "npm test", timeout: 10 }] }] },
+        "codebuddy",
+        "codex"
+      )
+    ).toEqual({ pre: [{ matcher: "Bash", command: "npm test", timeout: 10 }] });
+  });
+
+  it("marks Kimi project hooks unsupported because Kimi has no project-level hook config", () => {
+    directory = testDir("hookhub-kimi-project-state");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["kimi"]);
+    const suite = createHookHubSuite(db, {
+      name: "Kimi 检查",
+      payloads: {
+        kimi: [{ event: "PreToolUse", matcher: "Bash", command: "npm test", timeout: 5 }]
+      }
+    });
+
+    expect(listProjectHookState(db, project).tools.find((tool) => tool.toolId === "kimi")).toMatchObject({
+      supported: false,
+      status: "unsupported",
+      configPath: null
+    });
+    expect(() => applyHookHubSuiteToProject(db, project, "kimi", suite.suiteId)).toThrow(/没有项目级 hook 配置机制/);
+    expect(fs.existsSync(path.join(projectRoot, ".kimi-code", "config.toml"))).toBe(false);
+    db.close();
+  });
+
+  it("applies CodeBuddy hook suites to project settings while preserving unrelated settings", () => {
+    directory = testDir("hookhub-codebuddy-project-state");
+    const db = new AppDatabase(directory);
+    const projectRoot = path.join(directory, "repo");
+    const settingsPath = path.join(projectRoot, ".codebuddy", "settings.local.json");
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ language: "English", hooks: { Stop: [{ hooks: [{ type: "command", command: "old" }] }] } }, null, 2),
+      "utf8"
+    );
+    const project = db.addProject(projectRoot).project;
+    db.replaceProjectToolTargets(project.id, ["codebuddy"]);
+    const suite = createHookHubSuite(db, {
+      name: "CodeBuddy 检查",
+      payloads: {
+        codebuddy: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "npm test" }] }] }
+      }
+    });
+
+    expect(listProjectHookState(db, project).tools.find((tool) => tool.toolId === "codebuddy")).toMatchObject({ status: "unmanaged", configPath: settingsPath });
+
+    const applied = applyHookHubSuiteToProject(db, project, "codebuddy", suite.suiteId, { mode: "overwrite" });
+    const config = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+
+    expect(applied).toMatchObject({ status: "current", configPath: settingsPath, backup: { mode: "local-backup" } });
+    expect(config.language).toBe("English");
+    expect(config.hooks).toEqual(suite.payloads.codebuddy);
+    expect(listProjectHookState(db, project).tools.find((tool) => tool.toolId === "codebuddy")).toMatchObject({ status: "current" });
+    db.close();
   });
 
   it("stores unique multi-tool suites with stable suite ids and exports without bindings", () => {

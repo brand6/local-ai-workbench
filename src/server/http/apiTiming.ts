@@ -7,6 +7,7 @@ import type { AppContext } from "../appContext.js";
 const LOG_DIR_NAME = "logs";
 const LOG_FILE_NAME = "api-response-times.ndjson";
 const SLOW_REQUEST_THRESHOLD_MS = 300;
+const ERROR_STATUS_CODE = 400;
 const ensuredLogDirs = new Set<string>();
 
 interface ApiTimingLogEntry {
@@ -47,12 +48,9 @@ export function apiTimingMiddleware(context: AppContext) {
         responseBytes: headerNumber(response.getHeader("content-length"))
       };
 
+      if (!isUsefulApiTimingEntry(entry)) return;
+
       writeApiTimingLog(context.bootstrapState().dataDir, entry);
-      if (!isTestEnvironment()) {
-        console.info(
-          `[api-timing] ${entry.method} ${entry.path} ${entry.statusCode} ${entry.durationMs}ms system=${entry.system} responseBytes=${entry.responseBytes ?? "unknown"}`
-        );
-      }
     });
 
     next();
@@ -77,6 +75,10 @@ function writeApiTimingLog(dataDir: string | null, entry: ApiTimingLogEntry): vo
   } catch (error) {
     if (!isTestEnvironment()) console.warn("[api-timing] failed to prepare timing log", error);
   }
+}
+
+function isUsefulApiTimingEntry(entry: ApiTimingLogEntry): boolean {
+  return entry.slow || entry.statusCode >= ERROR_STATUS_CODE;
 }
 
 function apiSystemFromPath(requestPath: string): string {

@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +9,8 @@ export interface OpenLocalPathCommand {
   executable: string;
   args: string[];
 }
+
+const OPEN_LOCAL_PATH_TIMEOUT_MS = 5000;
 
 export function listScanDrives(): ScanDrive[] {
   if (process.platform === "win32") {
@@ -60,6 +62,11 @@ export function openLocalPath(targetPath: string): LocalOpenResponse {
   }
 
   const command = buildOpenLocalPathCommand(target);
+  if (process.platform === "win32") {
+    runWindowsOpenLocalPathCommand(command);
+    return { opened: true, path: target };
+  }
+
   const child = spawn(command.executable, command.args, {
     detached: true,
     stdio: "ignore",
@@ -73,12 +80,50 @@ export function openLocalPath(targetPath: string): LocalOpenResponse {
 export function buildOpenLocalPathCommand(targetPath: string, platform: NodeJS.Platform = process.platform): OpenLocalPathCommand {
   const target = displayPath(targetPath);
   if (platform === "win32") {
-    return { executable: "cmd.exe", args: ["/c", "start", "", target] };
+    return {
+      executable: "powershell.exe",
+      args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodePowerShellCommand(buildWindowsOpenLocalPathScript(target))]
+    };
   }
   if (platform === "darwin") {
     return { executable: "open", args: [target] };
   }
   return { executable: "xdg-open", args: [target] };
+}
+
+function runWindowsOpenLocalPathCommand(command: OpenLocalPathCommand): void {
+  const result = spawnSync(command.executable, command.args, {
+    encoding: "utf8",
+    timeout: OPEN_LOCAL_PATH_TIMEOUT_MS,
+    windowsHide: true
+  });
+  if (result.error) throw new Error("打开本地路径失败", { cause: result.error });
+  if (result.status !== 0) {
+    const detail = [result.stderr, result.stdout]
+      .map((value) => value?.trim())
+      .filter(Boolean)
+      .join("；");
+    throw new Error(detail ? `打开本地路径失败：${detail}` : "打开本地路径失败");
+  }
+}
+
+function buildWindowsOpenLocalPathScript(targetPath: string): string {
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `$target = ${powerShellSingleQuotedString(targetPath)}`,
+    "$info = New-Object System.Diagnostics.ProcessStartInfo",
+    "$info.FileName = $target",
+    "$info.UseShellExecute = $true",
+    "[System.Diagnostics.Process]::Start($info) | Out-Null"
+  ].join("\n");
+}
+
+function encodePowerShellCommand(script: string): string {
+  return Buffer.from(script, "utf16le").toString("base64");
+}
+
+function powerShellSingleQuotedString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 export function buildWindowsDirectoryPickerScript(): string {

@@ -19,7 +19,7 @@ import {
   updateCustomPlugin
 } from "../src/server/pluginhub/pluginhub.js";
 import { deleteSkillHubSkill, importLocalSkills, previewDeleteSkillHubSkill } from "../src/server/skillhub/skillhub.js";
-import { deleteHookHubSuite } from "../src/server/hookhub/hookhub.js";
+import { createHookHubSuite, deleteHookHubSuite } from "../src/server/hookhub/hookhub.js";
 import { setProjectSkillTargets, updateProjectToolTargets } from "../src/server/skillhub/projectSkills.js";
 import { AppDatabase } from "../src/server/storage/database.js";
 import type { AppConfig } from "../src/shared/types.js";
@@ -239,10 +239,21 @@ describe("PluginHub", () => {
     expect(pythonPlugin?.privateFiles.find((file) => file.sourceRelativePath.endsWith(".claude-plugin/plugin.json"))?.role).toBe("native-manifest");
     expect(pythonPlugin?.privateFiles.find((file) => file.sourceRelativePath.endsWith("hooks/hooks.json"))?.role).toBe("native-hook");
     expect(pythonPlugin?.harnessSupport).toMatchObject({ codex: "native", claude: "native", cursor: "planned", opencode: "planned" });
-    expect(pythonPlugin?.harnessSupport.qwen ?? "unsupported").toBe("unsupported");
+    expect(pythonPlugin?.harnessSupport.qwen ?? "unsupported").toBe("native");
+    writeBomSkill(path.join(library, "plugins", "python-development", "skills", "compose-editor-tool"), "compose-editor-tool", "编写 Unity 编辑器工具");
+    writeBareMetadataSkill(path.join(library, "plugins", "python-development", "skills", "compose-imgui"), "compose-imgui", "编写 IMGUI 编辑器界面");
+    const bareMetadataImport = importPluginHubLocalSource(db, config, directory, library);
+    expect(bareMetadataImport.importedSkills.find((skill) => skill.folderName === "compose-editor-tool")).toMatchObject({
+      skillName: "compose-editor-tool",
+      description: "编写 Unity 编辑器工具"
+    });
+    expect(bareMetadataImport.importedSkills.find((skill) => skill.folderName === "compose-imgui")).toMatchObject({
+      skillName: "compose-imgui",
+      description: "编写 IMGUI 编辑器界面"
+    });
     fs.writeFileSync(path.join(library, "plugins", "python-development", "commands", "test.md"), "changed outside Center Library", "utf8");
     expect(fs.readFileSync(commandFile?.contentPath ?? "", "utf8")).toBe("run pytest");
-    expect(db.listSkillHubSkills().map((skill) => skill.folderName)).toEqual(["lint", "review"]);
+    expect(db.listSkillHubSkills().map((skill) => skill.folderName)).toEqual(expect.arrayContaining(["compose-editor-tool", "compose-imgui", "lint", "review"]));
     const duplicateImport = importPluginHubLocalSource(db, config, directory, library);
     expect(duplicateImport.source.id).toBe(imported.source.id);
     expect(duplicateImport.plugins.map((plugin) => plugin.id)).toEqual(imported.plugins.map((plugin) => plugin.id));
@@ -256,6 +267,64 @@ describe("PluginHub", () => {
     const invalid = path.join(directory, "invalid-plugin-source");
     fs.mkdirSync(invalid, { recursive: true });
     expect(() => importPluginHubLocalSource(db, config, directory, invalid)).toThrow("未找到可导入的 plugin");
+    db.close();
+  });
+
+  it("preserves manifestless single-plugin source roots for agent knowledge references", () => {
+    directory = testDir("pluginhub-manifestless-config-package");
+    const db = new AppDatabase(directory);
+    const config = configFixture(directory);
+    const sourceRoot = path.join(directory, "AICodingConfig");
+    writeSkill(path.join(sourceRoot, "skills", "module-knowledge"), "module-knowledge", "Route domain knowledge");
+    fs.mkdirSync(path.join(sourceRoot, "agents"), { recursive: true });
+    fs.writeFileSync(
+      path.join(sourceRoot, "agents", "project-dev-implement-ui.agent.md"),
+      [
+        "---",
+        "name: Project Dev Implement UI",
+        "description: Implement UI features",
+        "skills: [module-knowledge]",
+        "---",
+        "",
+        "Read `AICodingConfig/knowledges/index.md` before implementation.",
+        "Also load `AICodingConfig/skills/module-knowledge/SKILL.md`."
+      ].join("\n"),
+      "utf8"
+    );
+    fs.mkdirSync(path.join(sourceRoot, "agents", "openspec"), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, "agents", "openspec", "config.yaml"), "schemas:\n  x3-dev: schemas/x3-dev/schema.yaml\n", "utf8");
+    fs.mkdirSync(path.join(sourceRoot, "knowledges"), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, "knowledges", "index.md"), "# Knowledge index\n", "utf8");
+    const imported = importPluginHubLocalSource(db, config, directory, sourceRoot);
+
+    expect(imported.source).toMatchObject({ kind: "single-plugin", label: "AICodingConfig", pluginCount: 1 });
+    expect(imported.plugins[0]).toMatchObject({ name: "AICodingConfig", sourceId: imported.source.id });
+    expect(imported.plugins[0].privateFiles.map((file) => file.targetRelativePath)).toEqual(
+      expect.arrayContaining([
+        ".agents/plugins/AICodingConfig/AICodingConfig/knowledges/index.md"
+      ])
+    );
+    expect(imported.plugins[0].privateFiles.map((file) => file.targetRelativePath)).not.toContain(
+      ".agents/plugins/AICodingConfig/AICodingConfig/skills/module-knowledge/SKILL.md"
+    );
+    expect(imported.plugins[0].privateFiles.map((file) => file.targetRelativePath)).not.toContain(
+      ".agents/plugins/AICodingConfig/AICodingConfig/agents/project-dev-implement-ui.agent.md"
+    );
+    expect(imported.plugins[0].privateFiles.map((file) => file.targetRelativePath)).toContain(".agents/plugins/AICodingConfig/AICodingConfig/agents/openspec/config.yaml");
+
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    updateProjectToolTargets(db, project, ["claude"]);
+    const installed = installProjectPlugin(db, project, imported.plugins[0].id, "claude");
+    const packageRoot = path.join(projectRoot, ".pluginhub", "claude-marketplace", "plugins", "AICodingConfig");
+
+    expect(installed).toMatchObject({ requiresConfirmation: false, binding: expect.any(Object) });
+    expect(fs.existsSync(path.join(packageRoot, "AICodingConfig", "knowledges", "index.md"))).toBe(true);
+    expect(fs.existsSync(path.join(packageRoot, "AICodingConfig", "skills", "module-knowledge", "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(packageRoot, "AICodingConfig", "agents", "openspec", "config.yaml"))).toBe(true);
+    expect(fs.existsSync(path.join(packageRoot, "AICodingConfig", "agents", "project-dev-implement-ui.agent.md"))).toBe(true);
+    expect(fs.readFileSync(path.join(packageRoot, "agents", "project-dev-implement-ui.agent.md"), "utf8")).toContain("AICodingConfig/knowledges/index.md");
     db.close();
   });
 
@@ -277,6 +346,49 @@ describe("PluginHub", () => {
     expect(plugin.componentRefs.map((ref) => ref.type).sort()).toEqual(["agent", "mcp", "skill"]);
     expect(listed.agents).toEqual([expect.objectContaining({ sourceId: imported.source.id, slug: "reviewer", name: "Reviewer" })]);
     expect(listed.mcpServers).toEqual(expect.arrayContaining([expect.objectContaining({ serverId: "docs", command: "node" })]));
+    db.close();
+  });
+
+  it("imports marketplace plugin sources that point at nested plugin directories", () => {
+    directory = testDir("pluginhub-marketplace-nested-sources");
+    const db = new AppDatabase(directory);
+    const config = configFixture(directory);
+    const repo = path.join(directory, "financial-services");
+    writeMarketplace(repo, {
+      name: "claude-for-financial-services",
+      plugins: [
+        {
+          name: "financial-analysis",
+          displayName: "Financial Analysis",
+          source: "./plugins/vertical-plugins/financial-analysis",
+          description: "Core financial modeling"
+        },
+        {
+          name: "pitch-agent",
+          displayName: "Pitch Agent",
+          source: "./plugins/agent-plugins/pitch-agent",
+          description: "Comps to branded pitch deck"
+        }
+      ]
+    });
+    writePlugin(path.join(repo, "plugins", "vertical-plugins", "financial-analysis"), "financial-analysis", [["dcf", "DCF valuation"]], {
+      "commands/dcf.md": "Build DCF"
+    });
+    writePlugin(path.join(repo, "plugins", "agent-plugins", "pitch-agent"), "pitch-agent", [["pitch-deck", "Pitch deck"]], {
+      "agents/pitch-agent.md": "---\nname: Pitch Agent\ndescription: Build pitch deck\n---\n\nBuild a pitch deck.\n"
+    });
+
+    const imported = importPluginHubLocalSource(db, config, directory, repo);
+    const listed = listPluginHub(db);
+
+    expect(imported.source).toMatchObject({ kind: "library", label: "financial-services", pluginCount: 2 });
+    expect(imported.plugins.map((plugin) => plugin.name)).toEqual(["financial-analysis", "pitch-agent"]);
+    expect(imported.plugins[0]).toMatchObject({ displayName: "Financial Analysis", description: "financial-analysis plugin" });
+    expect(imported.importedSkills.map((skill) => skill.sourceRelativePath)).toEqual([
+      "plugins/vertical-plugins/financial-analysis/skills/dcf",
+      "plugins/agent-plugins/pitch-agent/skills/pitch-deck"
+    ]);
+    expect(listed.agents).toEqual([expect.objectContaining({ sourceId: imported.source.id, slug: "pitch-agent", name: "Pitch Agent" })]);
     db.close();
   });
 
@@ -452,6 +564,43 @@ describe("PluginHub", () => {
     db.close();
   });
 
+
+  it("imports Qwen extension manifests and structured MCP configs", () => {
+    directory = testDir("pluginhub-qwen-extension-import");
+    const db = new AppDatabase(directory);
+    const config = configFixture(directory);
+    const library = path.join(directory, "library");
+    const pluginRoot = path.join(library, "plugins", "qwen-workflow");
+    fs.mkdirSync(path.join(pluginRoot, "commands"), { recursive: true });
+    fs.writeFileSync(
+      path.join(pluginRoot, "qwen-extension.json"),
+      JSON.stringify(
+        {
+          name: "qwen-workflow",
+          displayName: "Qwen Workflow",
+          description: "Qwen native workflow",
+          mcpServers: {
+            "qwen-docs": { command: "node", args: ["server.js"] }
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    fs.writeFileSync(path.join(pluginRoot, "commands", "review.md"), "review command", "utf8");
+
+    const imported = importPluginHubLocalSource(db, config, directory, library);
+    const plugin = imported.plugins[0];
+
+    expect(plugin).toMatchObject({ name: "qwen-workflow", displayName: "Qwen Workflow", description: "Qwen native workflow" });
+    expect(plugin.privateFiles.find((file) => file.sourceRelativePath.endsWith("qwen-extension.json"))?.role).toBe("native-manifest");
+    expect(plugin.privateFiles.find((file) => file.sourceRelativePath.endsWith("commands/review.md"))?.role).toBe("native-command");
+    expect(plugin.componentRefs).toEqual(expect.arrayContaining([expect.objectContaining({ type: "mcp", componentId: "qwen-docs" })]));
+    expect(plugin.harnessSupport.qwen).toBe("native");
+    expect(db.getMcpHubServer("qwen-docs")).toMatchObject({ command: "node", args: ["server.js"] });
+    db.close();
+  });
   it("installs plugin-native Claude hooks through a Claude marketplace package without creating HookHub suites", () => {
     directory = testDir("pluginhub-native-hooks");
     const db = new AppDatabase(directory);
@@ -671,6 +820,209 @@ describe("PluginHub", () => {
     db.close();
   });
 
+
+  it("installs custom plugin components into Qwen extension packages", () => {
+    directory = testDir("pluginhub-custom-qwen-components");
+    const db = new AppDatabase(directory);
+    const config = configFixture(directory);
+    const skill = seedSkillHubSkill(db, config, "team-source", "review", "Review skill");
+    const agentSource = db.upsertAgentHubSource({
+      id: "team-agents",
+      type: "local-import",
+      label: "Team Agents",
+      inputPath: null,
+      resolvedPath: path.join(directory, "agents"),
+      sourceTruthTool: "claude",
+      importedAt: "2026-06-01T00:00:00Z",
+      metadata: {}
+    });
+    const agent = db.upsertAgentHubAgent({
+      id: "agent-1",
+      sourceId: agentSource.id,
+      sourceType: agentSource.type,
+      sourceTruthTool: "claude",
+      truthRole: "subagent",
+      sourceFormat: "markdown",
+      slug: "code-reviewer",
+      name: "Code Reviewer",
+      description: "Review changes",
+      nativePath: path.join(directory, "agents", "code-reviewer.md"),
+      libraryRelativePath: "team-agents/code-reviewer.md",
+      sourceRelativePath: "code-reviewer.md",
+      category: "engineering",
+      projection: { name: "Code Reviewer", description: "Review changes", body: "Review changes.", slugCandidate: "code-reviewer", parseWarnings: [] },
+      nativeMetadata: {},
+      contentHash: "agent-hash"
+    });
+    const mcp = db.upsertMcpHubServer({
+      serverId: "docs",
+      name: "docs",
+      description: "Docs MCP",
+      transport: "stdio",
+      command: "node",
+      args: ["server.js"],
+      url: null,
+      headers: {},
+      env: {},
+      requiredEnv: []
+    });
+    const hook = db.upsertHookHubSuite({
+      suiteId: "suite-1",
+      name: "提交前检查",
+      description: "Run checks",
+      riskNotes: null,
+      requiredEnv: [],
+      payloads: { qwen: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "npm test" }] }] } }
+    });
+    const custom = createCustomPlugin(db, directory, {
+      name: "qwen-workflow",
+      componentRefs: [
+        { type: "skill", componentId: skill.id, required: true },
+        { type: "agent", componentId: agent.id, required: true },
+        { type: "mcp", componentId: mcp.serverId, required: true },
+        { type: "hook", componentId: hook.suiteId, required: true }
+      ]
+    });
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    updateProjectToolTargets(db, project, ["qwen"]);
+
+    const installed = installProjectPlugin(db, project, custom.id, "qwen", directory);
+    const packageRoot = path.join(projectRoot, ".qwen", "extensions", "qwen-workflow");
+    const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "qwen-extension.json"), "utf8"));
+    const hooksConfig = JSON.parse(fs.readFileSync(path.join(projectRoot, ".qwen", "settings.json"), "utf8"));
+
+    expect(installed).toMatchObject({ requiresConfirmation: false, binding: { managedComponentCount: 4, privateFileCount: 1 } });
+    expect(listProjectPluginState(db, project).plugins.find((plugin) => plugin.id === custom.id)?.harnessSupport.qwen).toBe("native");
+    expect(fs.existsSync(path.join(packageRoot, "skills", "review", "SKILL.md"))).toBe(true);
+    expect(fs.readFileSync(path.join(packageRoot, "agents", "code-reviewer.md"), "utf8")).toContain("Review changes.");
+    expect(manifest).toMatchObject({ name: "qwen-workflow", mcpServers: { docs: { command: "node", args: ["server.js"] } } });
+    expect(manifest.mcpServers.docs.transport).toBeUndefined();
+    expect(hooksConfig.hooks.PreToolUse[0].matcher).toBe("Bash");
+    expect(hooksConfig.hooks.PreToolUse[0].hooks[0].command).toBe("npm test");
+    expect(db.listProjectMcpBindings(project.id, project.rootPath)).toEqual([]);
+
+    uninstallProjectPluginBinding(db, project, installed.binding?.id ?? "");
+    expect(fs.existsSync(packageRoot)).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, ".qwen", "settings.json"))).toBe(false);
+    expect(db.listProjectMcpBindings(project.id, project.rootPath)).toEqual([]);
+    expect(db.listProjectAgentTargets(project.id, project.rootPath)).toEqual([]);
+    db.close();
+  }, 20000);
+  it("installs custom plugin components into Kimi project targets", () => {
+    directory = testDir("pluginhub-custom-kimi-components");
+    const db = new AppDatabase(directory);
+    const config = configFixture(directory);
+    const skill = seedSkillHubSkill(db, config, "team-source", "review", "Review skill");
+    const agentSource = db.upsertAgentHubSource({
+      id: "team-agents",
+      type: "local-import",
+      label: "Team Agents",
+      inputPath: null,
+      resolvedPath: path.join(directory, "agents"),
+      sourceTruthTool: "claude",
+      importedAt: "2026-06-01T00:00:00Z",
+      metadata: {}
+    });
+    const agent = db.upsertAgentHubAgent({
+      id: "agent-1",
+      sourceId: agentSource.id,
+      sourceType: agentSource.type,
+      sourceTruthTool: "claude",
+      truthRole: "subagent",
+      sourceFormat: "markdown",
+      slug: "code-reviewer",
+      name: "Code Reviewer",
+      description: "Review changes",
+      nativePath: path.join(directory, "agents", "code-reviewer.md"),
+      libraryRelativePath: "team-agents/code-reviewer.md",
+      sourceRelativePath: "code-reviewer.md",
+      category: "engineering",
+      projection: { name: "Code Reviewer", description: "Review changes", body: "Review changes.", slugCandidate: "code-reviewer", parseWarnings: [] },
+      nativeMetadata: {},
+      contentHash: "agent-hash"
+    });
+    const mcp = db.upsertMcpHubServer({
+      serverId: "docs",
+      name: "docs",
+      description: "Docs MCP",
+      transport: "stdio",
+      command: "node",
+      args: ["server.js"],
+      url: null,
+      headers: {},
+      env: {},
+      requiredEnv: []
+    });
+    const hook = db.upsertHookHubSuite({
+      suiteId: "suite-1",
+      name: "提交前检查",
+      description: "Run checks",
+      riskNotes: null,
+      requiredEnv: [],
+      payloads: { claude: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "npm test" }] }] } }
+    });
+    const custom = createCustomPlugin(db, directory, {
+      name: "kimi-workflow",
+      componentRefs: [
+        { type: "skill", componentId: skill.id, required: true },
+        { type: "agent", componentId: agent.id, required: true },
+        { type: "mcp", componentId: mcp.serverId, required: true },
+        { type: "hook", componentId: hook.suiteId, required: false }
+      ]
+    });
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    updateProjectToolTargets(db, project, ["kimi"]);
+
+    const installed = installProjectPlugin(db, project, custom.id, "kimi", directory);
+    const skillPath = path.join(projectRoot, ".kimi-code", "skills", "review", "SKILL.md");
+    const agentPath = path.join(projectRoot, ".kimi-code", "skills", "code-reviewer", "SKILL.md");
+    const mcpConfig = JSON.parse(fs.readFileSync(path.join(projectRoot, ".kimi-code", "mcp.json"), "utf8"));
+    expect(installed).toMatchObject({ requiresConfirmation: false, binding: { managedComponentCount: 3 } });
+    expect(listProjectPluginState(db, project).plugins.find((plugin) => plugin.id === custom.id)?.harnessSupport.kimi).toBe("component-only");
+    expect(fs.existsSync(skillPath)).toBe(true);
+    expect(fs.readFileSync(agentPath, "utf8")).toContain("agenthub: true");
+    expect(mcpConfig.mcpServers.docs).toMatchObject({ command: "node", args: ["server.js"] });
+
+    expect(db.listProjectMcpBindings(project.id, project.rootPath)).toHaveLength(1);
+
+    uninstallProjectPluginBinding(db, project, installed.binding?.id ?? "");
+    expect(fs.existsSync(skillPath)).toBe(false);
+    expect(fs.existsSync(agentPath)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".kimi-code", "mcp.json"), "utf8")).mcpServers.docs).toBeUndefined();
+    expect(fs.existsSync(path.join(projectRoot, ".kimi-code", "config.toml"))).toBe(false);
+    expect(db.listProjectMcpBindings(project.id, project.rootPath)).toEqual([]);
+    expect(db.listProjectAgentTargets(project.id, project.rootPath)).toEqual([]);
+    db.close();
+  }, 60000);
+  it("does not treat Kimi required hook-only plugins as installable", () => {
+    directory = testDir("pluginhub-kimi-required-hook");
+    const db = new AppDatabase(directory);
+    const hook = db.upsertHookHubSuite({
+      suiteId: "suite-1",
+      name: "Kimi hook only",
+      description: null,
+      riskNotes: null,
+      requiredEnv: [],
+      payloads: { kimi: [{ event: "PreToolUse", matcher: "Bash", command: "npm test" }] }
+    });
+    const custom = createCustomPlugin(db, directory, {
+      name: "kimi-hook-only",
+      componentRefs: [{ type: "hook", componentId: hook.suiteId, required: true }]
+    });
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    updateProjectToolTargets(db, project, ["kimi"]);
+
+    expect(listProjectPluginState(db, project).plugins.find((plugin) => plugin.id === custom.id)?.harnessSupport.kimi).toBe("unsupported");
+    expect(() => installProjectPlugin(db, project, custom.id, "kimi", directory)).toThrow("该 Plugin 不支持安装到目标工具");
+    expect(fs.existsSync(path.join(projectRoot, ".kimi-code", "config.toml"))).toBe(false);
+    db.close();
+  });
   it("installs custom Codex plugin agents through AgentHub project targets", () => {
     directory = testDir("pluginhub-custom-codex-agent");
     const db = new AppDatabase(directory);
@@ -724,6 +1076,89 @@ describe("PluginHub", () => {
     uninstallProjectPluginBinding(db, project, installed.binding?.id ?? "");
     expect(fs.existsSync(codexAgentPath)).toBe(false);
     expect(db.listProjectAgentTargets(project.id, project.rootPath)).toEqual([]);
+    db.close();
+  }, 20000);
+
+  it("installs custom plugin components into OpenCode and CodeBuddy project targets", () => {
+    directory = testDir("pluginhub-custom-opencode-codebuddy-components");
+    const db = new AppDatabase(directory);
+    const agentSource = db.upsertAgentHubSource({
+      id: "team-agents",
+      type: "local-import",
+      label: "Team Agents",
+      inputPath: null,
+      resolvedPath: path.join(directory, "agents"),
+      sourceTruthTool: "claude",
+      importedAt: "2026-06-01T00:00:00Z",
+      metadata: {}
+    });
+    const agent = db.upsertAgentHubAgent({
+      id: "agent-1",
+      sourceId: agentSource.id,
+      sourceType: agentSource.type,
+      sourceTruthTool: "claude",
+      truthRole: "subagent",
+      sourceFormat: "markdown",
+      slug: "code-reviewer",
+      name: "Code Reviewer",
+      description: "Review changes",
+      nativePath: path.join(directory, "agents", "code-reviewer.md"),
+      libraryRelativePath: "team-agents/code-reviewer.md",
+      sourceRelativePath: "code-reviewer.md",
+      category: "engineering",
+      projection: { name: "Code Reviewer", description: "Review changes", body: "Review changes.", slugCandidate: "code-reviewer", parseWarnings: [] },
+      nativeMetadata: {},
+      contentHash: "agent-hash"
+    });
+    const mcp = db.upsertMcpHubServer({
+      serverId: "docs",
+      name: "docs",
+      description: "Docs MCP",
+      transport: "stdio",
+      command: "node",
+      args: ["server.js"],
+      url: null,
+      headers: {},
+      env: {},
+      requiredEnv: []
+    });
+    const hookSuite = createHookHubSuite(db, {
+      name: "CodeBuddy hooks",
+      payloads: {
+        codebuddy: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "npm test" }] }] }
+      }
+    });
+    const custom = createCustomPlugin(db, directory, {
+      name: "portable-workflow",
+      componentRefs: [
+        { type: "agent", componentId: agent.id, required: true },
+        { type: "mcp", componentId: mcp.serverId, required: true },
+        { type: "hook", componentId: hookSuite.suiteId, required: false }
+      ]
+    });
+    const projectRoot = path.join(directory, "repo");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const project = db.addProject(projectRoot).project;
+    updateProjectToolTargets(db, project, ["opencode", "codebuddy"]);
+
+    const opencodeInstalled = installProjectPlugin(db, project, custom.id, "opencode", directory);
+    const codebuddyInstalled = installProjectPlugin(db, project, custom.id, "codebuddy", directory);
+
+    expect(listProjectPluginState(db, project).plugins.find((plugin) => plugin.id === custom.id)?.harnessSupport).toMatchObject({
+      opencode: "component-only",
+      codebuddy: "component-only"
+    });
+    expect(opencodeInstalled).toMatchObject({ requiresConfirmation: false, binding: { managedComponentCount: 2 } });
+    expect(codebuddyInstalled).toMatchObject({ requiresConfirmation: false, binding: { managedComponentCount: 3 } });
+    const opencodeAgentText = fs.readFileSync(path.join(projectRoot, ".opencode", "agents", "code-reviewer.md"), "utf8");
+    expect(opencodeAgentText).toMatch(/mode:\s+"?subagent"?/);
+    expect(opencodeAgentText).toContain("Review changes.");
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, "opencode.json"), "utf8")).mcp.docs).toMatchObject({ type: "local", command: ["node", "server.js"] });
+    expect(fs.readFileSync(path.join(projectRoot, ".codebuddy", "agents", "code-reviewer.md"), "utf8")).toContain("Review changes.");
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".mcp.json"), "utf8")).mcpServers.docs).toMatchObject({ type: "stdio", command: "node", args: ["server.js"] });
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".codebuddy", "settings.json"), "utf8")).hooks.PreToolUse[0]).toMatchObject({ matcher: "Bash", hooks: [{ type: "command", command: "npm test" }] });
+    expect(db.listProjectMcpBindings(project.id, project.rootPath).map((binding) => binding.toolId).sort()).toEqual(["codebuddy", "opencode"]);
+    expect(db.listProjectAgentTargets(project.id, project.rootPath).map((target) => target.toolId).sort()).toEqual(["codebuddy", "opencode"]);
     db.close();
   }, 20000);
 
@@ -936,9 +1371,24 @@ function writePlugin(pluginRoot: string, name: string, skills: Array<[string, st
   }
 }
 
+function writeMarketplace(repoRoot: string, marketplace: Record<string, unknown>): void {
+  fs.mkdirSync(path.join(repoRoot, ".claude-plugin"), { recursive: true });
+  fs.writeFileSync(path.join(repoRoot, ".claude-plugin", "marketplace.json"), JSON.stringify(marketplace, null, 2), "utf8");
+}
+
 function writeSkill(directory: string, name: string, description: string): void {
   fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(path.join(directory, "SKILL.md"), skillText(name, description), "utf8");
+}
+
+function writeBomSkill(directory: string, name: string, description: string): void {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "SKILL.md"), `\ufeff${skillText(name, description)}`, "utf8");
+}
+
+function writeBareMetadataSkill(directory: string, name: string, description: string): void {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "SKILL.md"), `name: ${name}\ndescription: ${description}\n\n# Skill Instructions\n`, "utf8");
 }
 
 function skillText(name: string, description: string): string {

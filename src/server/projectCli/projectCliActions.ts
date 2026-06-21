@@ -380,8 +380,8 @@ export async function executeProjectCliAction(
 
   const startedAt = nowIso();
   if (action.executionMode === "terminal") {
-    const command = launchCommand(action);
-    const launch = launchInTerminal(command, {
+    const terminalCommand = launchCommand(action);
+    const launch = launchInTerminal(terminalCommand, {
       dryRun: Boolean(executionOptions.dryRun),
       preferPowerShell: true,
       windowTarget: terminalWindowTarget(config.terminal.mode, {
@@ -455,7 +455,8 @@ export async function executeProjectCliCommand(
   const startedAt = nowIso();
   if (command.executionMode === "terminal") {
     const launchCommand: LaunchCommand = { command: command.command, args, cwd: command.cwd };
-    const launch = launchInTerminal(launchCommand, {
+    const terminalCommand = { ...launchCommand, command: projectCliExecutable(command) };
+    const launch = launchInTerminal(terminalCommand, {
       dryRun: Boolean(executionOptions.dryRun),
       preferPowerShell: true,
       windowTarget: terminalWindowTarget(config.terminal.mode, {
@@ -528,6 +529,8 @@ function materializeAction(database: AppDatabase, project: Project, definition: 
     writesProject: definition.writesProject,
     requiresConfirmation: definition.requiresConfirmation,
     affectedPaths: definition.affectedSubpaths.map((subpath) => path.join(project.rootPath, subpath)),
+    localPath: cli.localPath ?? null,
+    resolvedPaths: cli.resolvedPaths,
     availability
   }];
 }
@@ -591,7 +594,7 @@ function availabilityFromCli(cliId: string, state: CliHubAvailabilityState | nul
 }
 
 function launchCommand(action: ProjectCliAction): LaunchCommand {
-  return { command: action.command, args: action.args, cwd: action.cwd };
+  return { command: projectCliExecutable(action), args: action.args, cwd: action.cwd };
 }
 
 function projectCliCommandActionId(command: Pick<ProjectCliCommand, "cliId" | "commandId">): string {
@@ -644,6 +647,10 @@ async function runProjectCliCommand(
   const processCommand = buildProjectCliProcessCommand(command, args, cwd);
   if (runner) return runner.run(processCommand.command, processCommand.args, { cwd: processCommand.cwd, timeoutMs: inlineCommandTimeoutMs });
   return runProcess(processCommand);
+}
+
+function projectCliExecutable(cli: Pick<ProjectCliAction | ProjectCliCommand, "command" | "localPath" | "resolvedPaths">): string {
+  return cli.localPath ?? cli.resolvedPaths[0] ?? cli.command;
 }
 
 function runProcess(command: LaunchCommand): Promise<CliHubCommandResult> {

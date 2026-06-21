@@ -10,7 +10,7 @@ import type {
   SkillHubList,
   SkillHubOpenTarget,
   SkillHubSourceUpdatePreview,
-  ToolId
+  ProjectConfigTargetId
 } from "../shared/types.js";
 
 type SkillHubSkill = SkillHubList["skills"][number];
@@ -39,7 +39,7 @@ interface MigrationSourceOption {
 type ProjectSkillsTab = "skillhub" | "local";
 
 interface ProjectLocalSkillMigrationItem {
-  toolId: ToolId;
+  toolId: ProjectConfigTargetId;
   folderName: string;
 }
 
@@ -54,6 +54,7 @@ export function SkillHubPage({
   onImportGitHub,
   onOpenSkill,
   onDeleteSkill,
+  onDeleteSource,
   onApplyUpdate
 }: {
   skillHub: SkillHubList | null;
@@ -66,6 +67,7 @@ export function SkillHubPage({
   onImportGitHub: (input: string) => void;
   onOpenSkill: (skillId: string, target: SkillHubOpenTarget) => void;
   onDeleteSkill: (skillId: string) => void;
+  onDeleteSource: (sourceId: string) => void;
   onApplyUpdate: (preview: SkillHubSourceUpdatePreview) => void;
 }) {
   const [localPath, setLocalPath] = useState("");
@@ -151,6 +153,7 @@ export function SkillHubPage({
         <section className="skillhub-source-list" aria-label="技能来源">
           {sourceGroups.map((group) => {
             const updatePreview = updatePreviewBySourceId.get(group.source.id);
+            const canDeleteSource = canDeleteSkillHubSource(group.source);
             return (
               <details className="skillhub-source-group" key={group.source.id}>
                 <summary>
@@ -174,6 +177,20 @@ export function SkillHubPage({
                       </button>
                     ) : null}
                     <span className="metric-pill strong">{group.skills.length} 个技能</span>
+                    {canDeleteSource ? (
+                      <button
+                        className="danger"
+                        type="button"
+                        disabled={busy}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          onDeleteSource(group.source.id);
+                        }}
+                      >
+                        删除 source
+                      </button>
+                    ) : null}
                   </span>
                 </summary>
                 <div className="skillhub-skill-list">
@@ -219,7 +236,7 @@ export function SkillHubSkillRow({
         {summaryExtra}
       </summary>
       <div className="skillhub-skill-body">
-        <p>{skill.description ?? "无描述"}</p>
+        <p>{skillHubSkillDescription(skill)}</p>
         {hasActions ? (
           <div className="card-actions">
             {onOpenSkill ? (
@@ -279,11 +296,28 @@ function skillHubSourceSummary(source: SkillHubSource): SkillHubSourceSummary {
 }
 
 function skillHubSkillDisplayName(skill: Pick<SkillHubSkill, "folderName" | "skillName">): string {
-  return skill.skillName?.trim() || skill.folderName;
+  const skillName = skill.skillName?.trim();
+  return skillName && !isGenericSkillHubSkillName(skillName) ? skillName : skill.folderName;
+}
+
+function skillHubSkillDescription(skill: Pick<SkillHubSkill, "folderName" | "skillName" | "description">): string {
+  const description = skill.description?.trim();
+  if (description) return description;
+  const skillName = skill.skillName?.trim();
+  if (skillName && !isGenericSkillHubSkillName(skillName) && skillName !== skill.folderName) return skillName;
+  return "无描述";
+}
+
+function isGenericSkillHubSkillName(name: string): boolean {
+  return name.trim().toLowerCase() === "skill instructions";
 }
 
 function canDeleteSkillHubSkill(skill: SkillHubSkill): boolean {
   return skill.sourceType !== "plugin" && skill.source?.type !== "plugin" && !skill.libraryRelativePath.startsWith("pluginhub/");
+}
+
+function canDeleteSkillHubSource(source: SkillHubSourceSummary): boolean {
+  return source.type !== "plugin";
 }
 
 export function ProjectSkillsPanel({
@@ -295,6 +329,8 @@ export function ProjectSkillsPanel({
   onLoadSkillTargets,
   onUpdateSkill,
   onUpdateLocalSkill,
+  onOpenSkillTarget,
+  onOpenLocalSkill,
   onPickDirectory,
   onMigrateLocalSkills
 }: {
@@ -304,8 +340,10 @@ export function ProjectSkillsPanel({
   lastResult: ProjectSkillUpdateResult | null;
   onClose: () => void;
   onLoadSkillTargets: () => void;
-  onUpdateSkill: (skillId: string, toolIds: ToolId[]) => void;
-  onUpdateLocalSkill: (skillId: string, toolIds: ToolId[]) => void;
+  onUpdateSkill: (skillId: string, toolIds: ProjectConfigTargetId[]) => void;
+  onUpdateLocalSkill: (skillId: string, toolIds: ProjectConfigTargetId[]) => void;
+  onOpenSkillTarget: (skillId: string, toolId: ProjectConfigTargetId, target: SkillHubOpenTarget) => void;
+  onOpenLocalSkill: (toolId: ProjectConfigTargetId, folderName: string, target: SkillHubOpenTarget) => void;
   onPickDirectory: () => Promise<string | null>;
   onMigrateLocalSkills: (skills: ProjectLocalSkillMigrationItem[], target: ProjectLocalSkillMigrationTarget) => void;
 }) {
@@ -350,12 +388,20 @@ export function ProjectSkillsPanel({
       </div>
 
       {activeTab === "skillhub" ? (
-        <ProjectSkillTabContent state={skillState} localSkillState={localSkillState} busy={busy} lastResult={lastResult} onUpdateSkill={onUpdateSkill} />
+        <ProjectSkillTabContent
+          state={skillState}
+          localSkillState={localSkillState}
+          busy={busy}
+          lastResult={lastResult}
+          onUpdateSkill={onUpdateSkill}
+          onOpenSkillTarget={onOpenSkillTarget}
+        />
       ) : (
         <ProjectLocalSkillTabContent
           state={localSkillState}
           busy={busy}
           onUpdateSkill={onUpdateLocalSkill}
+          onOpenLocalSkill={onOpenLocalSkill}
           onPickDirectory={onPickDirectory}
           onMigrateLocalSkills={onMigrateLocalSkills}
         />
@@ -369,13 +415,15 @@ function ProjectSkillTabContent({
   localSkillState,
   busy,
   lastResult,
-  onUpdateSkill
+  onUpdateSkill,
+  onOpenSkillTarget
 }: {
   state: ProjectSkillTargetsState | null;
   localSkillState: ProjectLocalSkillsState | null;
   busy: boolean;
   lastResult: ProjectSkillUpdateResult | null;
-  onUpdateSkill: (skillId: string, toolIds: ToolId[]) => void;
+  onUpdateSkill: (skillId: string, toolIds: ProjectConfigTargetId[]) => void;
+  onOpenSkillTarget: (skillId: string, toolId: ProjectConfigTargetId, target: SkillHubOpenTarget) => void;
 }) {
   const [query, setQuery] = useState("");
   const enabledToolTargets = useMemo(() => state?.toolTargets.filter((target) => target.enabled) ?? [], [state]);
@@ -429,12 +477,14 @@ function ProjectSkillTabContent({
                   </summary>
                   <div className="project-skill-source-body">
                     {group.skills.map((skill) => {
-                      const active = state.skillTargets.filter((target) => target.skillId === skill.id).map((target) => target.toolId);
+                      const activeTargets = state.skillTargets.filter((target) => target.skillId === skill.id);
+                      const active = activeTargets.map((target) => target.toolId);
                       const supportedEnabled = enabledToolTargets.filter((target) => target.supported).map((target) => target.toolId);
                       const checked = supportedEnabled.length > 0 && supportedEnabled.every((toolId) => active.includes(toolId));
                       const indeterminate = supportedEnabled.some((toolId) => active.includes(toolId)) && !checked;
                       const pluginOwned = pluginOwnedSkillIds.has(skill.id);
                       const displayName = skillHubSkillDisplayName(skill);
+                      const showFolderName = displayName !== skill.folderName;
                       return (
                         <details className="skill-target-row" key={skill.id}>
                           <summary>
@@ -444,11 +494,13 @@ function ProjectSkillTabContent({
                               disabled={busy || supportedEnabled.length === 0 || pluginOwned}
                               onChange={(next) => onUpdateSkill(skill.id, next ? supportedEnabled : [])}
                             />
-                            <span>{displayName}</span>
-                            {displayName !== skill.folderName ? <small>{skill.folderName}</small> : null}
+                            <span className="skill-target-title">
+                              <span>{displayName}</span>
+                              {showFolderName ? <small>{skill.folderName}</small> : null}
+                            </span>
                             {pluginOwned ? <span className="metric-pill warning">Plugin managed</span> : null}
                           </summary>
-                          <p>{skill.description ?? skill.skillName ?? "无描述"}</p>
+                          <p>{skillHubSkillDescription(skill)}</p>
                           {pluginOwned ? <div className="inline-warning">该技能由项目 Plugin 管理，请从 Plugin 入口卸载或同步。</div> : null}
                           <div className="tool-chip-list">
                             {enabledToolTargets.length === 0 ? <div className="empty-state compact">还没有项目使用工具</div> : null}
@@ -472,13 +524,28 @@ function ProjectSkillTabContent({
                                     const next = event.target.checked
                                       ? [...active, target.toolId]
                                       : active.filter((toolId) => toolId !== target.toolId);
-                                    onUpdateSkill(skill.id, uniqueToolIds(next));
+                                    onUpdateSkill(skill.id, uniqueProjectConfigTargetIds(next));
                                   }}
                                 />
                                 <span>{target.toolId}</span>
                               </label>
                             ))}
                           </div>
+                          {activeTargets.length ? (
+                            <div className="card-actions">
+                              {activeTargets.map((target) => (
+                                <button
+                                  className="secondary"
+                                  type="button"
+                                  disabled={busy}
+                                  key={`${skill.id}:${target.toolId}:open`}
+                                  onClick={() => onOpenSkillTarget(skill.id, target.toolId, "document")}
+                                >
+                                  打开 {target.toolId} 文件
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
                         </details>
                       );
                     })}
@@ -497,12 +564,14 @@ function ProjectLocalSkillTabContent({
   state,
   busy,
   onUpdateSkill,
+  onOpenLocalSkill,
   onPickDirectory,
   onMigrateLocalSkills
 }: {
   state: ProjectLocalSkillsState | null;
   busy: boolean;
-  onUpdateSkill: (skillId: string, toolIds: ToolId[]) => void;
+  onUpdateSkill: (skillId: string, toolIds: ProjectConfigTargetId[]) => void;
+  onOpenLocalSkill: (toolId: ProjectConfigTargetId, folderName: string, target: SkillHubOpenTarget) => void;
   onPickDirectory: () => Promise<string | null>;
   onMigrateLocalSkills: (skills: ProjectLocalSkillMigrationItem[], target: ProjectLocalSkillMigrationTarget) => void;
 }) {
@@ -567,6 +636,7 @@ function ProjectLocalSkillTabContent({
             toolTargets={state.toolTargets}
             busy={busy}
             onUpdateSkill={onUpdateSkill}
+            onOpenLocalSkill={onOpenLocalSkill}
           />
           <ProjectLocalSkillGroup
             title="Local"
@@ -575,6 +645,7 @@ function ProjectLocalSkillTabContent({
             selectedSkillKeys={selectedSkillKeys}
             migrationMode={migrationMode}
             onToggleSkill={toggleLocalSkill}
+            onOpenLocalSkill={onOpenLocalSkill}
             headerActions={
               <div className="project-local-skill-group-actions">
                 <button
@@ -602,10 +673,11 @@ function ProjectLocalSkillTabContent({
           <ProjectLocalSkillGroup
             title="Plugin"
             skills={pluginSkills}
-            busy={true}
+            busy={busy}
             selectedSkillKeys={[]}
             migrationMode={false}
             onToggleSkill={() => {}}
+            onOpenLocalSkill={onOpenLocalSkill}
           />
         </div>
       )}
@@ -617,12 +689,14 @@ function ProjectLocalSkillHubGroup({
   skills,
   toolTargets,
   busy,
-  onUpdateSkill
+  onUpdateSkill,
+  onOpenLocalSkill
 }: {
   skills: ProjectLocalSkill[];
   toolTargets: ProjectLocalSkillsState["toolTargets"];
   busy: boolean;
-  onUpdateSkill: (skillId: string, toolIds: ToolId[]) => void;
+  onUpdateSkill: (skillId: string, toolIds: ProjectConfigTargetId[]) => void;
+  onOpenLocalSkill: (toolId: ProjectConfigTargetId, folderName: string, target: SkillHubOpenTarget) => void;
 }) {
   const items = useMemo(() => {
     const bySkill = new Map<string, { skill: SkillHubSkill; rows: ProjectLocalSkill[] }>();
@@ -636,8 +710,8 @@ function ProjectLocalSkillHubGroup({
   }, [skills]);
   const toolTargetById = useMemo(() => new Map(toolTargets.map((target) => [target.toolId, target])), [toolTargets]);
 
-  function removeTool(skillId: string, activeToolIds: ToolId[], toolId: ToolId) {
-    onUpdateSkill(skillId, activeToolIds.filter((item) => item !== toolId));
+  function removeTool(skillId: string, activeProjectConfigTargetIds: ProjectConfigTargetId[], toolId: ProjectConfigTargetId) {
+    onUpdateSkill(skillId, activeProjectConfigTargetIds.filter((item) => item !== toolId));
   }
 
   return (
@@ -653,14 +727,14 @@ function ProjectLocalSkillHubGroup({
       ) : (
         <div className="project-local-skill-group-list">
           {items.map((item) => {
-            const activeToolIds = uniqueToolIds(item.rows.map((row) => row.toolId));
+            const activeProjectConfigTargetIds = uniqueProjectConfigTargetIds(item.rows.map((row) => row.toolId));
             return (
               <details className="skill-target-row" key={item.skill.id}>
                 <summary>
                   <input
                     aria-label={`取消 ${item.skill.folderName}`}
                     type="checkbox"
-                    checked={activeToolIds.length > 0}
+                    checked={activeProjectConfigTargetIds.length > 0}
                     disabled={busy}
                     onClick={(event) => event.stopPropagation()}
                     onChange={(event) => {
@@ -672,7 +746,7 @@ function ProjectLocalSkillHubGroup({
                 <p>{item.skill.description ?? item.skill.skillName ?? "无描述"}</p>
                 <small>{item.skill.libraryRelativePath}</small>
                 <div className="tool-chip-list">
-                  {activeToolIds.map((toolId) => {
+                  {activeProjectConfigTargetIds.map((toolId) => {
                     const toolTarget = toolTargetById.get(toolId);
                     return (
                       <label
@@ -685,13 +759,26 @@ function ProjectLocalSkillHubGroup({
                           checked={true}
                           disabled={busy}
                           onChange={(event) => {
-                            if (!event.target.checked) removeTool(item.skill.id, activeToolIds, toolId);
+                            if (!event.target.checked) removeTool(item.skill.id, activeProjectConfigTargetIds, toolId);
                           }}
                         />
                         <span>{toolId}</span>
                       </label>
                     );
                   })}
+                </div>
+                <div className="card-actions">
+                  {item.rows.map((row) => (
+                    <button
+                      className="secondary"
+                      type="button"
+                      disabled={busy}
+                      key={`${row.toolId}:${row.folderName}:open`}
+                      onClick={() => onOpenLocalSkill(row.toolId, row.folderName, "document")}
+                    >
+                      打开 {row.toolId} 文件
+                    </button>
+                  ))}
                 </div>
               </details>
             );
@@ -709,7 +796,8 @@ function ProjectLocalSkillGroup({
   migrationMode,
   selectedSkillKeys,
   headerActions,
-  onToggleSkill
+  onToggleSkill,
+  onOpenLocalSkill
 }: {
   title: string;
   skills: ProjectLocalSkill[];
@@ -718,6 +806,7 @@ function ProjectLocalSkillGroup({
   selectedSkillKeys: string[];
   headerActions?: React.ReactNode;
   onToggleSkill: (skill: ProjectLocalSkill, checked: boolean) => void;
+  onOpenLocalSkill: (toolId: ProjectConfigTargetId, folderName: string, target: SkillHubOpenTarget) => void;
 }) {
   return (
     <section className="project-local-skill-group" aria-label={`${title} 技能`}>
@@ -740,6 +829,7 @@ function ProjectLocalSkillGroup({
               selected={selectedSkillKeys.includes(localSkillKey(skill))}
               migrationMode={migrationMode}
               onToggleSkill={onToggleSkill}
+              onOpenLocalSkill={onOpenLocalSkill}
             />
           ))}
         </div>
@@ -753,13 +843,15 @@ function ProjectLocalSkillRow({
   busy,
   selected,
   migrationMode,
-  onToggleSkill
+  onToggleSkill,
+  onOpenLocalSkill
 }: {
   skill: ProjectLocalSkill;
   busy: boolean;
   selected: boolean;
   migrationMode: boolean;
   onToggleSkill: (skill: ProjectLocalSkill, checked: boolean) => void;
+  onOpenLocalSkill: (toolId: ProjectConfigTargetId, folderName: string, target: SkillHubOpenTarget) => void;
 }) {
   return (
     <details className="project-local-skill-row skillhub-skill-row">
@@ -787,6 +879,14 @@ function ProjectLocalSkillRow({
         </div>
         <small>{skill.skillHubSkill?.libraryRelativePath ?? skill.skillPath}</small>
         {!skill.migratable && skill.reason ? <div className="inline-warning">{skill.reason}</div> : null}
+        <div className="card-actions">
+          <button className="secondary" type="button" disabled={busy} onClick={() => onOpenLocalSkill(skill.toolId, skill.folderName, "document")}>
+            打开文件
+          </button>
+          <button className="secondary" type="button" disabled={busy} onClick={() => onOpenLocalSkill(skill.toolId, skill.folderName, "folder")}>
+            打开目录
+          </button>
+        </div>
       </div>
     </details>
   );
@@ -1075,6 +1175,6 @@ function IndeterminateCheckbox({
   return <input ref={ref} type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />;
 }
 
-function uniqueToolIds(toolIds: ToolId[]): ToolId[] {
+function uniqueProjectConfigTargetIds(toolIds: ProjectConfigTargetId[]): ProjectConfigTargetId[] {
   return [...new Set(toolIds)];
 }

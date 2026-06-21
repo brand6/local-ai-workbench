@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   AppConfig,
+  LocalOpenResponse,
   McpHubCleanupReport,
   McpHubImportFailure,
   McpHubImportResult,
@@ -20,9 +21,10 @@ import type {
   ProjectMcpState,
   ProjectMcpTarget,
   ProjectToolTarget,
-  ToolId
+  ProjectConfigTargetId
 } from "../../shared/types.js";
 import { isMcpHubTargetToolId } from "../../shared/types.js";
+import { openLocalPath } from "../core/localFilesystem.js";
 import { nowIso } from "../core/time.js";
 import type { AppDatabase } from "../storage/database.js";
 import { listProjectToolTargets } from "../skillhub/projectSkills.js";
@@ -33,7 +35,20 @@ interface ServerCandidate {
   complete: boolean;
 }
 
-const mcpTargetSortOrder: McpHubTargetToolId[] = ["claude", "codex", "opencode", "cursor", "antigravity"];
+const mcpTargetSortOrder: McpHubTargetToolId[] = [
+  "claude",
+  "codex",
+  "qwen",
+  "opencode",
+  "codebuddy",
+  "cursor",
+  "antigravity",
+  "kimi",
+  "zcode",
+  "workbuddy",
+  "trae-solo"
+];
+const traeSoloMcpUnsupportedReason = "TRAE Work 官方文档说明通过设置界面手动配置 MCP JSON，未提供项目级 MCP 配置文件路径";
 
 interface ExtractedServerCandidates {
   candidates: ServerCandidate[];
@@ -133,6 +148,19 @@ export function listProjectMcpState(database: AppDatabase, project: Project, con
   };
 }
 
+export function openProjectMcpTarget(
+  database: AppDatabase,
+  project: Project,
+  toolId: McpHubTargetToolId,
+  target: "document" | "folder",
+  config?: AppConfig
+): LocalOpenResponse {
+  const mcpTarget = mcpTargetsForRoot(project.rootPath, listProjectToolTargets(database, project, config)).find((item) => item.toolId === toolId);
+  if (!mcpTarget?.enabled) throw new Error("该工具未在项目中启用");
+  if (!mcpTarget.supported) throw new Error(mcpTarget.reason ?? "尚未支持");
+  return openLocalPath(target === "document" ? mcpTarget.configPath : path.dirname(mcpTarget.configPath));
+}
+
 export function applyProjectMcpServer(
   database: AppDatabase,
   project: Project,
@@ -151,7 +179,7 @@ export function applyProjectMcpServer(
   const appliedFingerprint = renderedFingerprint(rendered);
   const existingBinding = database.getProjectMcpBinding(project.id, project.rootPath, toolId, server.serverId);
   const current = readRenderedConfigEntry(target.configPath, toolId, server.serverId);
-  if (!existingBinding && current && current.fingerprint !== appliedFingerprint) {
+  if (!existingBinding && current && current.fingerprint !== appliedFingerprint && !isEquivalentLocalMcpEntry(toolId, server.serverId, current.value, server, project.rootPath)) {
     throw new Error("同名 MCP entry 已存在且不属于 McpHub，未覆盖本地配置");
   }
   ensureMcpBindingCurrent(database, target.configPath, existingBinding);
@@ -397,12 +425,14 @@ function readLocalConfig(
 
 function readJsonServerMap(
   configPath: string,
-  key: "mcpServers" | "mcp" | "servers",
+  key: JsonServerMapKey | "servers",
   source: McpHubTargetToolId
 ): Array<{ serverId: string; server: McpHubServer | null; reason: string | null }> {
   const root = parseLooseJson(fs.readFileSync(configPath, "utf8"));
-  if (!isRecord(root) || !isRecord(root[key])) return [];
-  return Object.entries(root[key]).map(([serverId, value]) => localItemFromFragment(serverId, value, source));
+  if (!isRecord(root)) return [];
+  const map = key === "servers" ? root[key] : getJsonServerMap(root, key);
+  if (!isRecord(map)) return [];
+  return Object.entries(map).map(([serverId, value]) => localItemFromFragment(serverId, value, source));
 }
 
 function readCodexConfig(configPath: string): Array<{ serverId: string; server: McpHubServer | null; reason: string | null }> {
@@ -580,11 +610,19 @@ function renderServerForTarget(server: McpHubServer, targetRootPath: string, too
   const rendered = renderCoreServer(server, targetRootPath);
   if (toolId === "claude") {
     if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
-    return compactObject({ url: rendered.url, headers: rendered.headers });
+    return compactObject({ type: "http", url: rendered.url, headers: rendered.headers });
   }
   if (toolId === "codex") {
     if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
-    return compactObject({ url: rendered.url, headers: rendered.headers });
+    return compactObject({ type: "http", url: rendered.url, headers: rendered.headers });
+  }
+  if (toolId === "qwen") {
+    if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
+    return compactObject({ httpUrl: rendered.url, headers: rendered.headers });
+  }
+  if (toolId === "codebuddy") {
+    if (rendered.transport === "stdio") return compactObject({ type: "stdio", command: rendered.command, args: rendered.args, env: rendered.env });
+    return compactObject({ type: "http", url: rendered.url, headers: rendered.headers });
   }
   if (toolId === "cursor") {
     if (rendered.transport === "stdio") {
@@ -595,6 +633,23 @@ function renderServerForTarget(server: McpHubServer, targetRootPath: string, too
   if (toolId === "antigravity") {
     if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
     return compactObject({ serverUrl: rendered.url, headers: rendered.headers });
+  }
+  if (toolId === "kimi") {
+    if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
+    return compactObject({ url: rendered.url, headers: rendered.headers });
+  }
+
+  if (toolId === "trae") {
+    if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
+    return compactObject({ type: "http", url: rendered.url, headers: rendered.headers });
+  }
+  if (toolId === "zcode") {
+    if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
+    return compactObject({ type: "http", url: rendered.url, headers: rendered.headers });
+  }
+  if (toolId === "workbuddy") {
+    if (rendered.transport === "stdio") return compactObject({ command: rendered.command, args: rendered.args, env: rendered.env });
+    return compactObject({ url: rendered.url, headers: rendered.headers });
   }
   if (rendered.transport === "stdio") {
     return compactObject({
@@ -607,7 +662,8 @@ function renderServerForTarget(server: McpHubServer, targetRootPath: string, too
 }
 
 function renderCoreServer(server: McpHubServer, targetRootPath: string): McpHubServer {
-  const expand = (value: string | null): string | null => (value === null ? null : value.replaceAll("${PROJECT_ROOT}", targetRootPath));
+  const appUrl = process.env.APP_RUNTIME_URL ?? "";
+  const expand = (value: string | null): string | null => (value === null ? null : value.replaceAll("${PROJECT_ROOT}", targetRootPath).replaceAll("${APP_URL}", appUrl));
   return {
     ...server,
     command: expand(server.command),
@@ -619,13 +675,13 @@ function renderCoreServer(server: McpHubServer, targetRootPath: string): McpHubS
 }
 
 function writeRenderedConfig(configPath: string, toolId: McpHubTargetToolId, serverId: string, rendered: unknown): void {
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  ensureMcpConfigDirectory(configPath);
   if (toolId !== "codex") {
     const key = jsonServerMapKey(toolId);
     const root = readJsonObjectFile(configPath);
-    const serverMap = isRecord(root[key]) ? { ...root[key] } : {};
+    const serverMap = { ...getJsonServerMap(root, key) };
     serverMap[serverId] = rendered;
-    writeJsonObjectFile(configPath, { ...root, [key]: serverMap });
+    writeJsonObjectFile(configPath, setJsonServerMap(root, key, serverMap));
     return;
   }
   writeCodexMcpSection(configPath, serverId, rendered);
@@ -663,13 +719,18 @@ function readRenderedConfigEntry(
   if (toolId !== "codex") {
     const key = jsonServerMapKey(toolId);
     const root = readJsonObjectFile(configPath);
-    const serverMap = root[key];
-    if (!isRecord(serverMap) || !(serverId in serverMap)) return null;
+    const serverMap = getJsonServerMap(root, key);
+    if (!(serverId in serverMap)) return null;
     const value = serverMap[serverId];
     return { value, fingerprint: renderedFingerprint(value) };
   }
   const section = parseCodexMcpSections(fs.readFileSync(configPath, "utf8")).find((item) => item.serverId === serverId);
   return section ? { value: section.value, fingerprint: renderedFingerprint(section.value) } : null;
+}
+
+function isEquivalentLocalMcpEntry(toolId: McpHubTargetToolId, serverId: string, value: unknown, server: McpHubServer, targetRootPath: string): boolean {
+  const existing = localItemFromFragment(serverId, value, toolId).server;
+  return Boolean(existing && existing.serverId === server.serverId && serversEquivalent(existing, renderCoreServer(server, targetRootPath)));
 }
 
 function renderedFingerprint(value: unknown): string {
@@ -693,18 +754,38 @@ function removeRenderedConfigEntry(configPath: string, toolId: McpHubTargetToolI
   if (toolId !== "codex") {
     const key = jsonServerMapKey(toolId);
     const root = readJsonObjectFile(configPath);
-    if (!isRecord(root[key]) || !(serverId in root[key])) return { modified: false, missing: false, reason: "entry 已不存在" };
-    const serverMap = { ...root[key] };
+    const currentMap = getJsonServerMap(root, key);
+    if (!(serverId in currentMap)) return { modified: false, missing: false, reason: "entry 已不存在" };
+    const serverMap = { ...currentMap };
     delete serverMap[serverId];
-    writeJsonObjectFile(configPath, { ...root, [key]: serverMap });
+    writeJsonObjectFile(configPath, setJsonServerMap(root, key, serverMap));
     return { modified: true, missing: false, reason: null };
   }
   return removeCodexMcpSection(configPath, serverId);
 }
 
-function jsonServerMapKey(toolId: Exclude<McpHubTargetToolId, "codex">): "mcpServers" | "mcp" {
+type JsonServerMapKey = "mcpServers" | "mcp" | "mcp.servers";
+
+function jsonServerMapKey(toolId: Exclude<McpHubTargetToolId, "codex">): JsonServerMapKey {
   if (toolId === "opencode") return "mcp";
+  if (toolId === "zcode") return "mcp.servers";
   return "mcpServers";
+}
+
+function getJsonServerMap(root: JsonRecord, key: JsonServerMapKey): JsonRecord {
+  if (key === "mcp.servers") {
+    const mcp = root.mcp;
+    return isRecord(mcp) && isRecord(mcp.servers) ? mcp.servers : {};
+  }
+  return isRecord(root[key]) ? root[key] : {};
+}
+
+function setJsonServerMap(root: JsonRecord, key: JsonServerMapKey, serverMap: JsonRecord): JsonRecord {
+  if (key === "mcp.servers") {
+    const mcp = isRecord(root.mcp) ? root.mcp : {};
+    return { ...root, mcp: { ...mcp, servers: serverMap } };
+  }
+  return { ...root, [key]: serverMap };
 }
 
 function readJsonObjectFile(configPath: string): JsonRecord {
@@ -715,7 +796,7 @@ function readJsonObjectFile(configPath: string): JsonRecord {
 }
 
 function writeJsonObjectFile(configPath: string, value: JsonRecord): void {
-  fs.writeFileSync(configPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  writeMcpConfigFile(configPath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function writeCodexMcpSection(configPath: string, serverId: string, rendered: unknown): void {
@@ -723,15 +804,42 @@ function writeCodexMcpSection(configPath: string, serverId: string, rendered: un
   const withoutSection = removeCodexSectionText(existing, serverId);
   const section = codexSectionText(serverId, rendered);
   const separator = withoutSection.trim().length > 0 ? "\n\n" : "";
-  fs.writeFileSync(configPath, `${withoutSection.trimEnd()}${separator}${section}\n`, "utf8");
+  writeMcpConfigFile(configPath, `${withoutSection.trimEnd()}${separator}${section}\n`);
 }
 
 function removeCodexMcpSection(configPath: string, serverId: string): { modified: boolean; missing: boolean; reason: string | null } {
   const existing = fs.readFileSync(configPath, "utf8");
   const next = removeCodexSectionText(existing, serverId);
   if (next === existing) return { modified: false, missing: false, reason: "entry 已不存在" };
-  fs.writeFileSync(configPath, next.trimEnd() ? `${next.trimEnd()}\n` : "", "utf8");
+  writeMcpConfigFile(configPath, next.trimEnd() ? `${next.trimEnd()}\n` : "");
   return { modified: true, missing: false, reason: null };
+}
+
+function ensureMcpConfigDirectory(configPath: string): void {
+  try {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  } catch (error) {
+    throwMcpConfigWriteError(path.dirname(configPath), error, "目录");
+  }
+}
+
+function writeMcpConfigFile(configPath: string, contents: string): void {
+  try {
+    fs.writeFileSync(configPath, contents, "utf8");
+  } catch (error) {
+    throwMcpConfigWriteError(configPath, error, "文件");
+  }
+}
+
+function throwMcpConfigWriteError(targetPath: string, error: unknown, kind: "文件" | "目录"): never {
+  if (isPermissionError(error)) {
+    throw new Error(`目标 MCP 配置${kind}不可写，请取消只读属性或检查权限后重试：${targetPath}`);
+  }
+  throw error;
+}
+
+function isPermissionError(error: unknown): boolean {
+  return ["EACCES", "EPERM"].includes(String((error as NodeJS.ErrnoException).code));
 }
 
 function removeCodexSectionText(input: string, serverId: string): string {
@@ -830,7 +938,7 @@ function mcpTargetsForRoot(rootPath: string, toolTargets: ProjectToolTarget[] = 
     .sort((left, right) => mcpToolSortKey(left.toolId).localeCompare(mcpToolSortKey(right.toolId)));
 }
 
-function mcpToolSortKey(toolId: ToolId): string {
+function mcpToolSortKey(toolId: ProjectConfigTargetId): string {
   const index = mcpTargetSortOrder.findIndex((item) => item === toolId);
   return `${index === -1 ? 999 : index}:${toolId}`;
 }
@@ -846,12 +954,26 @@ function mcpTargetForRoot(rootPath: string, toolId: McpHubTargetToolId, toolTarg
       return { ...base, toolId, label: "Claude Code", supported: true, configPath: path.join(rootPath, ".mcp.json"), reason: null };
     case "codex":
       return { ...base, toolId, label: "Codex", supported: true, configPath: path.join(rootPath, ".codex", "config.toml"), reason: null };
+    case "qwen":
+      return { ...base, toolId, label: "Qwen", supported: true, configPath: path.join(rootPath, ".qwen", "settings.json"), reason: null };
     case "opencode":
       return { ...base, toolId, label: "OpenCode", supported: true, configPath: path.join(rootPath, "opencode.json"), reason: null };
+    case "codebuddy":
+      return { ...base, toolId, label: "CodeBuddy Code", supported: true, configPath: path.join(rootPath, ".mcp.json"), reason: null };
     case "cursor":
       return { ...base, toolId, label: "Cursor", supported: true, configPath: path.join(rootPath, ".cursor", "mcp.json"), reason: null };
     case "antigravity":
       return { ...base, toolId, label: "Antigravity", supported: true, configPath: path.join(rootPath, ".agents", "mcp_config.json"), reason: null };
+    case "kimi":
+      return { ...base, toolId, label: "Kimi Code", supported: true, configPath: path.join(rootPath, ".kimi-code", "mcp.json"), reason: null };
+    case "zcode":
+      return { ...base, toolId, label: "ZCode", supported: true, configPath: path.join(rootPath, ".zcode", "config.json"), reason: null };
+    case "workbuddy":
+      return { ...base, toolId, label: "WorkBuddy", supported: true, configPath: path.join(rootPath, ".workbuddy", "mcp.json"), reason: null };
+    case "trae":
+      return { ...base, toolId, label: "TRAE CLI", supported: true, configPath: path.join(rootPath, ".trae", "mcp.json"), reason: null };
+    case "trae-solo":
+      return { ...base, toolId, label: "Trae Solo", supported: false, configPath: "", reason: traeSoloMcpUnsupportedReason };
   }
   const exhaustive: never = toolId;
   return { ...base, toolId: exhaustive, label: exhaustive, supported: false, configPath: rootPath, reason: "未知 MCP 目标" };
@@ -871,13 +993,18 @@ function projectMcpTargetForRoot(rootPath: string, toolTarget: ProjectToolTarget
   };
 }
 
-function toolLabel(toolId: ToolId): string {
+function toolLabel(toolId: ProjectConfigTargetId): string {
   if (toolId === "qwen") return "Qwen";
+  if (toolId === "kimi") return "Kimi Code";
   if (toolId === "qoder") return "Qoder";
   if (toolId === "opencode") return "OpenCode";
   if (toolId === "codebuddy") return "CodeBuddy Code";
   if (toolId === "deepcode") return "Deep Code";
   if (toolId === "reasonix") return "Reasonix";
+  if (toolId === "zcode") return "ZCode";
+  if (toolId === "workbuddy") return "WorkBuddy";
+  if (toolId === "trae") return "TRAE CLI";
+  if (toolId === "trae-solo") return "Trae Solo";
   return `${toolId.charAt(0).toUpperCase()}${toolId.slice(1)}`;
 }
 

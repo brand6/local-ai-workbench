@@ -10,6 +10,8 @@ Status: ready-for-agent
 
 用户希望打开一个项目后，立即看到该项目相关的 AI 工具、根目录/子项目会话分组、会话标题、最近更新时间、摘要，并能直接启动新会话或 resume 历史会话。用户也明确需要后续支持项目外部移动后的会话重新匹配，使历史会话仍能显示并恢复到新项目位置。
 
+项目也可能包含 ZCode 这类非 CLI/非会话型配置目标。它们可以被 SkillHub、McpHub 等 Hub 用来写项目侧配置，但不属于本 PRD 的会话打开、历史扫描或 Resume 范围。ZCode 官方文档描述的是桌面工作区任务列表和内置 Agent，并未提供可供本系统稳定扫描/恢复的本地会话索引格式。
+
 ## Solution
 
 构建一个本地运行的项目与 AI 会话管理系统。MVP-A 交付本地 Web UI 和 Node/TypeScript 后端，支持 Codex 与 Claude 的只读会话索引、项目添加、项目扫描、会话展示、新会话启动和历史会话恢复。
@@ -19,6 +21,8 @@ Status: ready-for-agent
 项目详情页按根目录和子项目分组展示会话。每个分组提供一个“新会话”按钮，点击后选择 Codex 或 Claude，并在对应 cwd 打开新终端启动 CLI。历史会话按工具分组，工具按会话数量倒序，工具内会话按最近更新时间倒序。每条会话显示标题、更新时间、已有摘要和恢复按钮。
 
 MVP-A 不直接修改或删除 Codex/Claude 原始会话文件。MVP-B 增加项目重定位和会话级 cwd 写回能力，并逐步接入 opencode、qwen、qoder、copilot 等工具。MVP-B 的每个新增工具必须完整支持新会话、历史扫描和 resume 后，才作为完整工具进入主项目页。
+
+非会话型 Project Config Target 不需要满足新会话、历史扫描和 resume 的完整工具准入条件。它们只应出现在对应 Hub 的项目配置流程中，不能因为支持 SkillHub 或 McpHub 写入就进入 CliHub、新会话选择器、Session Index 或历史会话恢复链路。
 
 ## User Stories
 
@@ -79,14 +83,14 @@ MVP-A 不直接修改或删除 Codex/Claude 原始会话文件。MVP-B 增加项
 55. As a local AI tool user, I want MVP-B to add copilot support only when it can start, scan, and resume sessions, so that tool behavior is consistent.
 56. As a developer of the manager, I want all tools implemented through adapters, so that adding future AI tools does not require rewriting core project logic.
 57. As a developer of the manager, I want parser versions recorded in the index, so that changed parsers can trigger rebuilds when needed.
-58. As a developer of the manager, I want API calls protected by a local token, so that unrelated browser pages cannot trigger local file or terminal operations.
+58. As a developer of the manager, I want local API calls to rely on localhost binding without startup-token validation, so that stale cached pages cannot block local workflows.
 59. As a developer of the manager, I want tests to verify launch command construction without starting real CLIs, so that automation remains deterministic.
 60. As a developer of the manager, I want real local Codex and Claude samples used in manual acceptance, so that the system proves it works on the target machine.
 
 ## Implementation Decisions
 
 - Build a local Web UI and a local Node/TypeScript backend, served through one user-facing command. Development may run frontend and backend separately, but normal use has one startup path.
-- The local backend listens only on localhost and uses a startup-generated API token that is transparent to the user.
+- The local backend listens only on localhost and does not require a startup-generated API token.
 - The first run initializes a user-selected data directory. A lightweight bootstrap configuration records the selected data directory and can be overridden with a startup argument.
 - SQLite is the primary index store. JSON configuration stores app settings and tool command paths. Configuration saves maintain a simple backup copy.
 - The index stores confirmed projects, session index entries, scan sources, scan runs, scan candidates, and parser warnings.
@@ -118,6 +122,7 @@ MVP-A 不直接修改或删除 Codex/Claude 原始会话文件。MVP-B 增加项
 - MVP-B adds project relocation and session-level cwd writeback. It requires user-specified old and new roots, a preview, backups, confirmation, and a post-write index rebuild.
 - MVP-B cwd writeback modifies only tool-format fields that represent the session working directory. It does not rewrite user messages, assistant messages, tool input, tool output, or arbitrary strings.
 - MVP-B adds future tool adapters one by one. A future tool only enters the primary project page when new session, historical scan, and resume all work for that tool.
+- Project Config Targets that do not support sessions are modeled separately from Session Tools. They may be used by Hub project configuration flows, but they do not participate in CliHub, launch, scan, Session Index, relocation, or Resume behavior.
 
 ## Testing Decisions
 
@@ -127,7 +132,7 @@ MVP-A 不直接修改或删除 Codex/Claude 原始会话文件。MVP-B 增加项
 - Path matching tests cover normalized case, trailing separators, Windows extended path prefixes, exact matching, include-subdirectories matching, and path-boundary safety.
 - Project management tests cover manual project add, project removal from the manager, parent-child auto-merge, child add under existing parent, batch candidate add, and candidate persistence.
 - Grouping tests cover root-first ordering, child group ordering by latest session, tool ordering by session count, and session ordering by updated time.
-- API tests cover projects, scan runs, candidates, tool status, project detail, session refresh, new-session launch requests, resume requests, settings, and token rejection.
+- API tests cover projects, scan runs, candidates, tool status, project detail, session refresh, new-session launch requests, resume requests, settings, and token-free local API access.
 - Launch tests build terminal commands without starting real terminals or CLIs.
 - UI tests cover first-run setup, empty project list, cached second launch, project child-count badges, project detail grouping, session card expansion, missing-summary rendering, disabled resume states, and parser warning display.
 - Manual acceptance must run against real local Codex and Claude histories on the target Windows machine.

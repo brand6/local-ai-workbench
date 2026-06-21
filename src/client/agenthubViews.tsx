@@ -220,6 +220,8 @@ export function ProjectAgentsPanel({
   onApplyAgent,
   onSyncBinding,
   onDisableBinding,
+  onOpenAgentBinding,
+  onOpenLocalAgent,
   onSyncAll,
   onMigrateLocalAgent
 }: {
@@ -232,6 +234,8 @@ export function ProjectAgentsPanel({
   onApplyAgent: (agentId: string, toolId: AgentHubToolId, conflictMode?: "overwrite" | "migrate-then-overwrite" | "replace-managed" | null) => void;
   onSyncBinding: (bindingId: string) => void;
   onDisableBinding: (bindingId: string, mode?: "keep-file" | "delete-with-backup" | null) => void;
+  onOpenAgentBinding: (bindingId: string, target: SkillHubOpenTarget) => void;
+  onOpenLocalAgent: (localAgent: ProjectLocalAgent, target: SkillHubOpenTarget) => void;
   onSyncAll: () => void;
   onMigrateLocalAgent: (localAgent: ProjectLocalAgent, target: ProjectLocalAgentMigrationTarget) => void;
 }) {
@@ -270,10 +274,17 @@ export function ProjectAgentsPanel({
           onApplyAgent={onApplyAgent}
           onSyncBinding={onSyncBinding}
           onDisableBinding={onDisableBinding}
+          onOpenAgentBinding={onOpenAgentBinding}
           onSyncAll={onSyncAll}
         />
       ) : (
-        <ProjectLocalAgentTab state={state} busy={busy} onDisableBinding={onDisableBinding} onMigrateLocalAgent={onMigrateLocalAgent} />
+        <ProjectLocalAgentTab
+          state={state}
+          busy={busy}
+          onDisableBinding={onDisableBinding}
+          onOpenLocalAgent={onOpenLocalAgent}
+          onMigrateLocalAgent={onMigrateLocalAgent}
+        />
       )}
     </aside>
   );
@@ -286,6 +297,7 @@ function ProjectAgentHubTab({
   onApplyAgent,
   onSyncBinding,
   onDisableBinding,
+  onOpenAgentBinding,
   onSyncAll
 }: {
   state: ProjectAgentState | null;
@@ -294,6 +306,7 @@ function ProjectAgentHubTab({
   onApplyAgent: (agentId: string, toolId: AgentHubToolId, conflictMode?: "overwrite" | "migrate-then-overwrite" | "replace-managed" | null) => void;
   onSyncBinding: (bindingId: string) => void;
   onDisableBinding: (bindingId: string, mode?: "keep-file" | "delete-with-backup" | null) => void;
+  onOpenAgentBinding: (bindingId: string, target: SkillHubOpenTarget) => void;
   onSyncAll: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -350,6 +363,7 @@ function ProjectAgentHubTab({
                     onApplyAgent={onApplyAgent}
                     onSyncBinding={onSyncBinding}
                     onDisableBinding={onDisableBinding}
+                    onOpenAgentBinding={onOpenAgentBinding}
                   />
                 ))}
               </div>
@@ -367,7 +381,8 @@ function ProjectAgentRow({
   busy,
   onApplyAgent,
   onSyncBinding,
-  onDisableBinding
+  onDisableBinding,
+  onOpenAgentBinding
 }: {
   agent: AgentHubAgent;
   targets: ProjectAgentTargetState[];
@@ -375,6 +390,7 @@ function ProjectAgentRow({
   onApplyAgent: (agentId: string, toolId: AgentHubToolId, conflictMode?: "overwrite" | "migrate-then-overwrite" | "replace-managed" | null) => void;
   onSyncBinding: (bindingId: string) => void;
   onDisableBinding: (bindingId: string, mode?: "keep-file" | "delete-with-backup" | null) => void;
+  onOpenAgentBinding: (bindingId: string, target: SkillHubOpenTarget) => void;
 }) {
   return (
     <details className="skill-target-row agent-target-row">
@@ -424,6 +440,9 @@ function ProjectAgentRow({
           .filter((target) => target.binding)
           .map((target) => (
             <React.Fragment key={`${target.toolId}:actions`}>
+              <button className="secondary" type="button" disabled={busy || !target.binding} onClick={() => target.binding && onOpenAgentBinding(target.binding.id, "document")}>
+                打开 {target.toolId} 文件
+              </button>
               <button className="secondary" type="button" disabled={busy || target.status !== "outdated" || !target.binding} onClick={() => target.binding && onSyncBinding(target.binding.id)}>
                 同步 {target.toolId}
               </button>
@@ -454,11 +473,13 @@ function ProjectLocalAgentTab({
   state,
   busy,
   onDisableBinding,
+  onOpenLocalAgent,
   onMigrateLocalAgent
 }: {
   state: ProjectAgentState | null;
   busy: boolean;
   onDisableBinding: (bindingId: string, mode?: "keep-file" | "delete-with-backup" | null) => void;
+  onOpenLocalAgent: (localAgent: ProjectLocalAgent, target: SkillHubOpenTarget) => void;
   onMigrateLocalAgent: (localAgent: ProjectLocalAgent, target: ProjectLocalAgentMigrationTarget) => void;
 }) {
   const [targetSourceId, setTargetSourceId] = useState("project-local-agents");
@@ -507,6 +528,12 @@ function ProjectLocalAgentTab({
                 <small>{localAgent.outputPath}</small>
                 {localAgent.reason ? <div className="inline-warning">{localAgent.reason}</div> : null}
                 <div className="card-actions">
+                  <button className="secondary" type="button" disabled={busy} onClick={() => onOpenLocalAgent(localAgent, "document")}>
+                    打开文件
+                  </button>
+                  <button className="secondary" type="button" disabled={busy} onClick={() => onOpenLocalAgent(localAgent, "folder")}>
+                    打开目录
+                  </button>
                   {localAgent.binding ? (
                     <button className="danger" type="button" disabled={busy} onClick={() => localAgent.binding && onDisableBinding(localAgent.binding.id)}>
                       禁用 {localAgent.toolId}
