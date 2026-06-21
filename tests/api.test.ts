@@ -442,8 +442,8 @@ describe("API", () => {
     expect(context.database().listSessions().map((session) => session.nativeSessionId).sort()).toEqual(["codex-first", "codex-second"]);
   });
 
-  it("deletes a JSONL-backed session and removes the source file", async () => {
-    directory = testDir("api-delete-jsonl-session");
+  it("does not expose destructive session deletion for indexed sessions", async () => {
+    directory = testDir("api-no-delete-jsonl-session");
     const projectRoot = path.join(directory, "repo");
     const sessionSource = path.join(directory, "sessions");
     const sourceFile = path.join(sessionSource, "codex-session.jsonl");
@@ -463,98 +463,20 @@ describe("API", () => {
     context.config().tools.claude.sessionSources = [path.join(directory, "missing-claude-sessions")];
     pointMvpBToolsAtMissingSources(context, directory);
     const app = await createHttpApp(context, { dev: false, serveClient: false });
-    const project = context.database().addProject(projectRoot, true).project;
+    context.database().addProject(projectRoot, true);
     await request(app).post("/api/sessions/refresh").expect(200);
 
     const session = context.database().listSessions()[0];
     expect(session?.id).toBe("codex:codex-delete-1");
 
-    const deleted = await request(app)
+    await request(app)
       .delete(`/api/sessions/${encodeURIComponent(session.id)}`)
-      .expect(200);
+      .expect(404);
 
-    expect(deleted.body).toMatchObject({
-      deleted: true,
-      sessionId: session.id,
-      sourceFile,
-      sourceFormat: "codex-jsonl",
-      deletedSourceFile: true,
-      deletedNativeSession: true,
-      removedIndexCount: 1
-    });
-    expect(fs.existsSync(sourceFile)).toBe(false);
-    expect(context.database().getSession(session.id)).toBeNull();
-
-    const detail = await request(app)
-      .get(`/api/projects/${project.id}/detail`)
-      .expect(200);
-    expect(detail.body.groups[0].sessionCount).toBe(0);
+    expect(fs.existsSync(sourceFile)).toBe(true);
+    expect(context.database().getSession(session.id)).toMatchObject({ id: session.id, sourceFile });
   });
 
-  it("deletes one OpenCode SQLite session without removing other sessions in the database", async () => {
-    directory = testDir("api-delete-opencode-session");
-    const projectRoot = path.join(directory, "opencode-game-studios");
-    const opencodeDb = path.join(directory, "opencode", "opencode.db");
-    fs.mkdirSync(projectRoot, { recursive: true });
-    createOpencodeDb(opencodeDb, [
-      {
-        id: "ses_keep",
-        directory: projectRoot,
-        title: "保留会话",
-        timeUpdated: 1780000001000,
-        parts: [{ type: "text", text: "keep" }]
-      },
-      {
-        id: "ses_delete",
-        directory: projectRoot,
-        title: "删除会话",
-        timeUpdated: 1780000002000,
-        parts: [{ type: "text", text: "delete" }]
-      }
-    ]);
-
-    context = new AppContext(directory);
-    context.config().tools.codex.sessionSources = [path.join(directory, "missing-codex-sessions")];
-    context.config().tools.claude.sessionSources = [path.join(directory, "missing-claude-sessions")];
-    context.config().tools.opencode.sessionSources = [opencodeDb];
-    context.config().tools.qwen.sessionSources = [path.join(directory, "missing-qwen-sessions")];
-    context.config().tools.qoder.sessionSources = [path.join(directory, "missing-qoder-sessions")];
-    context.config().tools.copilot.sessionSources = [path.join(directory, "missing-copilot-sessions")];
-    const app = await createHttpApp(context, { dev: false, serveClient: false });
-    const project = context.database().addProject(projectRoot, true).project;
-    await request(app).post("/api/sessions/refresh").expect(200);
-
-    const deleted = await request(app)
-      .delete(`/api/sessions/${encodeURIComponent("opencode:ses_delete")}`)
-      .expect(200);
-
-    expect(deleted.body).toMatchObject({
-      deleted: true,
-      sessionId: "opencode:ses_delete",
-      sourceFile: opencodeDb,
-      sourceFormat: "opencode-sqlite",
-      deletedSourceFile: false,
-      deletedNativeSession: true,
-      removedIndexCount: 1
-    });
-    expect(fs.existsSync(opencodeDb)).toBe(true);
-    expect(context.database().listSessions().map((session) => session.id)).toEqual(["opencode:ses_keep"]);
-
-    const raw = new DatabaseSync(opencodeDb, { readOnly: true });
-    try {
-      expect(raw.prepare("SELECT COUNT(*) AS count FROM session WHERE id = ?").get("ses_delete")?.count).toBe(0);
-      expect(raw.prepare("SELECT COUNT(*) AS count FROM session WHERE id = ?").get("ses_keep")?.count).toBe(1);
-      expect(raw.prepare("SELECT COUNT(*) AS count FROM part WHERE session_id = ?").get("ses_delete")?.count).toBe(0);
-    } finally {
-      raw.close();
-    }
-
-    const detail = await request(app)
-      .get(`/api/projects/${project.id}/detail`)
-      .expect(200);
-    expect(detail.body.groups[0].sessionCount).toBe(1);
-    expect(detail.body.groups[0].tools[0].sessions[0].id).toBe("opencode:ses_keep");
-  });
 
   it("can confirm zero-session scan candidates when requested", async () => {
     directory = testDir("api-scan-include-empty");

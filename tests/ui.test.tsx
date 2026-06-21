@@ -147,7 +147,6 @@ const clientMock = vi.hoisted(() => ({
   startScan: vi.fn(),
   addProject: vi.fn(),
   removeProject: vi.fn(),
-  deleteSession: vi.fn(),
   resume: vi.fn(),
   refreshProject: vi.fn(),
   refreshSessions: vi.fn(),
@@ -486,15 +485,6 @@ describe("HomePage", () => {
     clientMock.startScan.mockResolvedValue({ scanRunId: "scan-1", candidates: [] });
     clientMock.addProject.mockResolvedValue({ project: projectFixture("E:\\old"), mergedIntoParent: false, removedChildren: [] });
     clientMock.removeProject.mockResolvedValue({ removed: true });
-    clientMock.deleteSession.mockResolvedValue({
-      deleted: true,
-      sessionId: "claude:1",
-      sourceFile: "C:\\Users\\brand\\.claude\\projects\\E--new-ai-game\\1.jsonl",
-      sourceFormat: "claude-jsonl",
-      deletedSourceFile: true,
-      deletedNativeSession: true,
-      removedIndexCount: 1
-    });
     clientMock.refreshProject.mockResolvedValue(refreshResultFixture());
     clientMock.refreshSessions.mockResolvedValue(refreshResultFixture());
     clientMock.confirmCandidates.mockResolvedValue([]);
@@ -1602,7 +1592,6 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={vi.fn()}
         onResume={vi.fn()}
-        onDeleteSession={vi.fn()}
         repairCandidates={[]}
         onRepairProject={vi.fn()}
         onRelocateProject={onRelocateProject}
@@ -1638,7 +1627,6 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={vi.fn()}
         onResume={vi.fn()}
-        onDeleteSession={vi.fn()}
         repairCandidates={[]}
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
@@ -1672,7 +1660,6 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={vi.fn()}
         onResume={vi.fn()}
-        onDeleteSession={vi.fn()}
         repairCandidates={[]}
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
@@ -1733,7 +1720,6 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={vi.fn()}
         onResume={vi.fn()}
-        onDeleteSession={vi.fn()}
         repairCandidates={[]}
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
@@ -1768,7 +1754,6 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={onLaunch}
         onResume={vi.fn()}
-        onDeleteSession={vi.fn()}
         repairCandidates={[]}
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
@@ -1802,7 +1787,6 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={onLaunch}
         onResume={vi.fn()}
-        onDeleteSession={vi.fn()}
         repairCandidates={[]}
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
@@ -3036,7 +3020,6 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={vi.fn()}
         onResume={vi.fn()}
-        onDeleteSession={vi.fn()}
         onRepairProject={onRepairProject}
         onRelocateProject={vi.fn()}
       />
@@ -3071,7 +3054,6 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={vi.fn()}
         onResume={vi.fn()}
-        onDeleteSession={vi.fn()}
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
       />
@@ -3098,7 +3080,6 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={vi.fn()}
         onResume={onResume}
-        onDeleteSession={vi.fn()}
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
       />
@@ -3574,8 +3555,7 @@ describe("HomePage", () => {
     await waitFor(() => expect(clientMock.detail).toHaveBeenLastCalledWith(project.id, "骑士"));
   });
 
-  it("deletes a session from project detail after confirmation and refreshes detail", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("does not expose destructive session deletion from project detail", async () => {
     const project = { ...projectFixture("E:\\new-ai-game"), sessionCount: 1 };
     clientMock.projects.mockResolvedValue([project]);
     clientMock.detail.mockResolvedValue(detailWithSession(project));
@@ -3585,15 +3565,7 @@ describe("HomePage", () => {
     await screen.findByText("new-ai-game");
     fireEvent.click(screen.getByRole("button", { name: "打开" }));
     expect(await screen.findByText("开罗小游戏，主题是骑士对决")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "删除" }));
-
-    await waitFor(() => expect(clientMock.deleteSession).toHaveBeenCalledWith("claude:1"));
-    expect(confirmSpy).toHaveBeenCalled();
-    expect(await screen.findByText("会话已删除，原始记录已移除")).toBeInTheDocument();
-    expect(clientMock.projects).toHaveBeenCalledTimes(2);
-    await waitFor(() => expect(clientMock.detail).toHaveBeenLastCalledWith(project.id, ""));
-    confirmSpy.mockRestore();
+    expect(screen.queryByRole("button", { name: "删除" })).not.toBeInTheDocument();
   });
 
   it("renders tool groups collapsed until clicked", () => {
@@ -3610,7 +3582,6 @@ describe("HomePage", () => {
         setQuery={vi.fn()}
         onLaunch={vi.fn()}
         onResume={vi.fn()}
-        onDeleteSession={vi.fn()}
         onRepairProject={vi.fn()}
         onRelocateProject={vi.fn()}
       />

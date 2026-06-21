@@ -1212,7 +1212,6 @@ function App() {
           setQuery={setQuery}
           onLaunch={(toolId, cwd) => void runAction(() => launchNew(toolId, cwd, selectedProject.rootPath))}
           onResume={(sessionId) => void runAction(() => resumeSession(sessionId))}
-          onDeleteSession={(sessionId) => void runAction(() => deleteSession(sessionId))}
           onRepairProject={(targetProjectId, targetRootPath) => void runAction(() => repairProject(selectedProject.id, targetProjectId, targetRootPath))}
           onRelocateProject={() => void runAction(() => relocateProject(selectedProject.id), "relocate")}
           relocating={busyAction === "relocate"}
@@ -1417,18 +1416,6 @@ function App() {
     }
   }
 
-  async function deleteSession(sessionId: string) {
-    const confirmed = window.confirm("确定删除这个会话？这会删除原始会话记录，无法从该工具恢复。");
-    if (!confirmed) {
-      setMessage("已取消删除会话");
-      return;
-    }
-
-    const result = await client.deleteSession(sessionId);
-    setMessage(result.deletedNativeSession ? "会话已删除，原始记录已移除" : "会话索引已删除，原始记录已不存在");
-    await loadHome();
-    if (selectedProjectId) await loadDetail(selectedProjectId, query);
-  }
 
   async function relocateProject(projectId: string) {
     setMessage("正在选择新项目文件夹...");
@@ -3672,7 +3659,6 @@ function ProjectDetailView({
   setQuery,
   onLaunch,
   onResume,
-  onDeleteSession,
   onRepairProject,
   onRelocateProject,
   onUpdateProjectTools = () => {},
@@ -3706,7 +3692,6 @@ function ProjectDetailView({
   setQuery: (query: string) => void;
   onLaunch: (toolId: ToolId, cwd: string) => void;
   onResume: (sessionId: string) => void;
-  onDeleteSession: (sessionId: string) => void;
   onRepairProject: (targetProjectId: string, targetRootPath?: string) => void;
   onRelocateProject: () => void;
   onUpdateProjectTools?: (toolIds: ProjectConfigTargetId[]) => void;
@@ -3784,7 +3769,6 @@ function ProjectDetailView({
           busy={busy}
           onLaunch={onLaunch}
           onResume={onResume}
-          onDeleteSession={onDeleteSession}
           onOpenProjectCli={onOpenProjectCli}
           onToggleProjectRules={onToggleProjectRules}
           ruleSyncOpen={ruleSyncTargetRoot === group.fullPath}
@@ -4163,7 +4147,6 @@ function SessionGroup({
   busy,
   onLaunch,
   onResume,
-  onDeleteSession,
   onOpenProjectCli,
   onToggleProjectRules,
   ruleSyncOpen,
@@ -4186,7 +4169,6 @@ function SessionGroup({
   busy: boolean;
   onLaunch: (toolId: ToolId, cwd: string) => void;
   onResume: (sessionId: string) => void;
-  onDeleteSession: (sessionId: string) => void;
   onOpenProjectCli: (targetRootPath: string) => void;
   onToggleProjectRules: (targetRootPath: string) => void;
   ruleSyncOpen: boolean;
@@ -4316,9 +4298,6 @@ function SessionGroup({
                       onClick={() => onResume(session.id)}
                     >
                       {resumeActionLabel(session.resumeStatus)}
-                    </button>
-                    <button className="danger" type="button" onClick={() => onDeleteSession(session.id)}>
-                      删除
                     </button>
                   </div>
                 </details>

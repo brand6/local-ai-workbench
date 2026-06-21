@@ -9,7 +9,6 @@ import type {
   BootstrapState,
   CliHubCli,
   CliHubList,
-  DeleteSessionResult,
   DirectoryCreateResponse,
   DirectoryPickResponse,
   HookHubApplyMode,
@@ -452,7 +451,6 @@ export const client = {
   relocateProject: (id: string, newRoot: string) => apiPost<RelocationResult>(`/api/projects/${id}/relocate`, { newRoot }),
   refreshSessions: (toolIds?: string[], mode: RefreshMode = "incremental") =>
     apiPost<RefreshResult>("/api/sessions/refresh", { mode, ...(toolIds?.length ? { toolIds } : {}) }),
-  deleteSession: (sessionId: string) => apiDelete<DeleteSessionResult>(`/api/sessions/${encodeURIComponent(sessionId)}`),
   tools: () => apiGet<ToolStatus[]>("/api/tools/status"),
   startScan: (roots: string[], scope: "directory" | "drive" | "all-fixed" = "directory") =>
     apiPost<{ scanRunId: string; candidates: ScanCandidate[] }>("/api/scan-runs", { scope, roots }),

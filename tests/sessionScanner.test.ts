@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { deleteSession } from "../src/server/scanning/sessionDeletion.js";
 import { refreshAllSessions, refreshProjectSessions, refreshSessionFiles } from "../src/server/scanning/sessionScanner.js";
 import { AppDatabase } from "../src/server/storage/database.js";
 import type { AppConfig, SessionEntry, ToolId } from "../src/shared/types.js";
@@ -344,7 +343,6 @@ describe("session scanner", () => {
     const db = new AppDatabase(directory);
     const result = refreshAllSessions(db, configWithKiloSource(kiloDb, directory));
     const sessions = db.listSessions();
-    const deleted = deleteSession(db, "kilo:ses_kilo_1");
     db.close();
 
     expect(result.indexedCount).toBe(1);
@@ -358,7 +356,6 @@ describe("session scanner", () => {
       originalCwd: projectRoot,
       resumeStatus: "ready"
     });
-    expect(deleted).toMatchObject({ deletedSourceFile: false, deletedNativeSession: true, removedIndexCount: 1 });
     expect(fs.existsSync(kiloDb)).toBe(true);
   });
 
@@ -501,7 +498,6 @@ describe("session scanner", () => {
     const db = new AppDatabase(directory);
     const result = refreshAllSessions(db, configWithCursorAntigravitySources(path.join(directory, ".cursor", "chats"), path.join(directory, "missing-antigravity"), directory));
     const sessions = db.listSessions();
-    const deleted = deleteSession(db, "cursor:cursor-sqlite-1");
     db.close();
 
     expect(result.indexedCount).toBe(1);
@@ -513,7 +509,6 @@ describe("session scanner", () => {
       originalCwd: projectRoot,
       resumeStatus: "ready"
     });
-    expect(deleted).toMatchObject({ deletedSourceFile: false, deletedNativeSession: false, removedIndexCount: 1 });
     expect(fs.existsSync(cursorDb)).toBe(true);
   });
 
@@ -648,46 +643,6 @@ describe("session scanner", () => {
     });
   });
 
-  it("does not delete multi-session source files for index-backed sessions", () => {
-    directory = testDir("scanner-multi-session-delete");
-    const projectRoot = path.join(directory, "repo");
-    const kimiIndex = path.join(directory, ".kimi-code", "session_index.jsonl");
-    const deepcodeIndex = path.join(directory, ".deepcode", "projects", "repo", "sessions-index.json");
-    const clineDb = path.join(directory, ".cline", "data", "sessions", "history.db");
-    fs.mkdirSync(projectRoot, { recursive: true });
-    fs.mkdirSync(path.dirname(kimiIndex), { recursive: true });
-    fs.mkdirSync(path.dirname(deepcodeIndex), { recursive: true });
-    fs.mkdirSync(path.dirname(clineDb), { recursive: true });
-    fs.writeFileSync(kimiIndex, JSON.stringify({ session_id: "kimi-delete", workspaceRoot: projectRoot }));
-    fs.writeFileSync(deepcodeIndex, JSON.stringify({ version: 1, originalPath: projectRoot, entries: [{ id: "deepcode-delete" }] }));
-    fs.writeFileSync(clineDb, "sqlite placeholder");
-
-    const db = new AppDatabase(directory);
-    db.upsertSession({
-      ...session("kimi:kimi-delete", "Kimi", projectRoot, kimiIndex, "kimi"),
-      sourceFormat: "kimi-code-index"
-    });
-    db.upsertSession({
-      ...session("deepcode:deepcode-delete", "Deep Code", projectRoot, deepcodeIndex, "deepcode"),
-      sourceFormat: "deepcode-index"
-    });
-    db.upsertSession({
-      ...session("cline:cline-delete", "Cline", projectRoot, clineDb, "cline"),
-      sourceFormat: "cline-sqlite"
-    });
-
-    const kimiDeleted = deleteSession(db, "kimi:kimi-delete");
-    const deepcodeDeleted = deleteSession(db, "deepcode:deepcode-delete");
-    const clineDeleted = deleteSession(db, "cline:cline-delete");
-    db.close();
-
-    expect(kimiDeleted).toMatchObject({ deletedSourceFile: false, deletedNativeSession: false, removedIndexCount: 1 });
-    expect(deepcodeDeleted).toMatchObject({ deletedSourceFile: false, deletedNativeSession: false, removedIndexCount: 1 });
-    expect(clineDeleted).toMatchObject({ deletedSourceFile: false, deletedNativeSession: false, removedIndexCount: 1 });
-    expect(fs.existsSync(kimiIndex)).toBe(true);
-    expect(fs.existsSync(deepcodeIndex)).toBe(true);
-    expect(fs.existsSync(clineDb)).toBe(true);
-  });
 });
 
 function configWithClaudeSource(claudeProjects: string, directory: string): AppConfig {

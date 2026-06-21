@@ -35,7 +35,6 @@ import {
 } from "../../shared/types.js";
 import { adapterFor, listToolStatuses, sessionSourcesForAdapter, toolAdapters } from "../tools/adapters.js";
 import { refreshAllSessions, refreshProjectSessions, refreshSessionFiles } from "../scanning/sessionScanner.js";
-import { deleteSession as deleteIndexedSession } from "../scanning/sessionDeletion.js";
 import { confirmScanCandidates, scanProjectCandidates } from "../scanning/projectScanner.js";
 import { launchInTerminal, terminalWindowTarget } from "../launch/terminal.js";
 import { confirmRelocation, previewRelocation, relocateManagedProject } from "../relocation/relocation.js";
@@ -1765,19 +1764,6 @@ export function installApi(app: Express, context: AppContext): void {
 
     const result = context.sessionIndexer().runOnce("manual", toolIds ? { toolIds } : {});
     response.json(refreshResultFromIndexRun(context, result, toolIds));
-  });
-
-  app.delete("/api/sessions/:id", (request, response) => {
-    try {
-      const result = deleteIndexedSession(context.database(), request.params.id);
-      if (!result) {
-        response.status(404).json({ error: "session-not-found" });
-        return;
-      }
-      response.json(result);
-    } catch (error) {
-      response.status(400).json({ error: error instanceof Error ? error.message : "session-delete-failed" });
-    }
   });
 
   app.post("/api/relocations/preview", (request, response) => {

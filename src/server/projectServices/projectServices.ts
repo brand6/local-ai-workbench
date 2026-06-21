@@ -213,8 +213,11 @@ function workspacePackageTargets(project: Project, target: ProjectServiceTarget)
 function servicesForTarget(project: Project, target: ProjectServiceTarget): ProjectService[] {
   const packageJsonPath = path.join(target.targetRootPath, "package.json");
   const packageJson = readPackageJson(packageJsonPath);
-  if (!packageJson) return [];
+  const packageServices = packageJson ? packageServicesForTarget(project, target, packageJsonPath, packageJson) : [];
+  return packageServices.length > 0 ? packageServices : launcherServicesForTarget(project, target);
+}
 
+function packageServicesForTarget(project: Project, target: ProjectServiceTarget, packageJsonPath: string, packageJson: PackageJson): ProjectService[] {
   const scripts = packageScripts(packageJson);
   const scriptNames = startScriptNames(scripts);
   if (scriptNames.length === 0) return [];
@@ -224,13 +227,10 @@ function servicesForTarget(project: Project, target: ProjectServiceTarget): Proj
     const args = ["run", scriptName];
     const commandText = formatCommandLine([packageManager, ...args]);
     const packageName = typeof packageJson.name === "string" && packageJson.name.trim() ? packageJson.name.trim() : null;
-    return {
+    return projectService({
       serviceId: serviceId(project.id, target.targetRootPath, scriptName, packageJsonPath),
-      projectId: project.id,
-      projectLabel: rootProjectLabel(project),
-      projectRootPath: project.rootPath,
-      targetRootPath: target.targetRootPath,
-      targetLabel: target.targetLabel,
+      project,
+      target,
       packageName,
       packageJsonPath,
       scriptName,
@@ -238,15 +238,80 @@ function servicesForTarget(project: Project, target: ProjectServiceTarget): Proj
       packageManager,
       command: packageManager,
       args,
-      commandText,
-      cwd: target.targetRootPath,
-      status: "stopped",
-      pid: null,
-      startedAt: null,
-      stoppedAt: null,
-      exitCode: null
-    } satisfies ProjectService;
+      commandText
+    });
   });
+}
+
+function launcherServicesForTarget(project: Project, target: ProjectServiceTarget): ProjectService[] {
+  return ["start.bat", "start.cmd"].flatMap((fileName) => {
+    const launcherPath = path.join(target.targetRootPath, fileName);
+    if (!fs.existsSync(launcherPath)) return [];
+    const extension = path.extname(fileName).slice(1);
+    const packageManager = extension === "cmd" ? "cmd" : "bat";
+    return [
+      projectService({
+        serviceId: serviceId(project.id, target.targetRootPath, fileName, launcherPath),
+        project,
+        target,
+        packageName: null,
+        packageJsonPath: launcherPath,
+        scriptName: fileName,
+        scriptCommand: launcherCommandPreview(launcherPath),
+        packageManager,
+        command: "cmd.exe",
+        args: ["/c", fileName],
+        commandText: fileName
+      })
+    ];
+  });
+}
+
+function projectService(input: {
+  serviceId: string;
+  project: Project;
+  target: ProjectServiceTarget;
+  packageName: string | null;
+  packageJsonPath: string;
+  scriptName: string;
+  scriptCommand: string;
+  packageManager: ProjectService["packageManager"];
+  command: string;
+  args: string[];
+  commandText: string;
+}): ProjectService {
+  return {
+    serviceId: input.serviceId,
+    projectId: input.project.id,
+    projectLabel: rootProjectLabel(input.project),
+    projectRootPath: input.project.rootPath,
+    targetRootPath: input.target.targetRootPath,
+    targetLabel: input.target.targetLabel,
+    packageName: input.packageName,
+    packageJsonPath: input.packageJsonPath,
+    scriptName: input.scriptName,
+    scriptCommand: input.scriptCommand,
+    packageManager: input.packageManager,
+    command: input.command,
+    args: input.args,
+    commandText: input.commandText,
+    cwd: input.target.targetRootPath,
+    status: "stopped",
+    pid: null,
+    startedAt: null,
+    stoppedAt: null,
+    exitCode: null
+  };
+}
+
+function launcherCommandPreview(launcherPath: string): string {
+  try {
+    const lines = fs.readFileSync(launcherPath, "utf8").split(/\r?\n/);
+    const command = lines.map((line) => line.trim()).find((line) => line && !line.startsWith("@echo") && !line.toLowerCase().startsWith("cd ") && line.toLowerCase() !== "pause");
+    return command ?? path.basename(launcherPath);
+  } catch {
+    return path.basename(launcherPath);
+  }
 }
 
 function readPackageJson(packageJsonPath: string): PackageJson | null {

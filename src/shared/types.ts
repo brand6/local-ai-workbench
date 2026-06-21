@@ -301,7 +301,7 @@ export interface ProjectService {
   packageJsonPath: string;
   scriptName: string;
   scriptCommand: string;
-  packageManager: "npm" | "pnpm" | "yarn" | "bun";
+  packageManager: "npm" | "pnpm" | "yarn" | "bun" | "bat" | "cmd";
   command: string;
   args: string[];
   commandText: string;
@@ -1379,16 +1379,6 @@ export interface LaunchRequest {
 
 export interface ResumeRequest {
   sessionId: string;
-}
-
-export interface DeleteSessionResult {
-  deleted: boolean;
-  sessionId: string;
-  sourceFile: string;
-  sourceFormat: string;
-  deletedSourceFile: boolean;
-  deletedNativeSession: boolean;
-  removedIndexCount: number;
 }
 
 export interface LaunchResponse {

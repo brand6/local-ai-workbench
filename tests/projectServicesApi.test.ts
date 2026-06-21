@@ -104,4 +104,40 @@ describe("Project Services API", () => {
     const afterStop = await request(app).get("/api/project-services").expect(200);
     expect(afterStop.body.services.find((service: { serviceId: string }) => service.serviceId === rootService.serviceId)).toMatchObject({ status: "stopped" });
   });
+  it("lists project root batch launchers when no package script is available", async () => {
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), "project-services-bat-api-"));
+    const projectRoot = path.join(directory, "flask-app");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "app.py"), "print('hello')\n");
+    fs.writeFileSync(path.join(projectRoot, "start.bat"), '@echo off\r\ncd /d "%~dp0"\r\npython app.py\r\npause\r\n');
+
+    context = new AppContext(directory);
+    const app = await createHttpApp(context, { dev: false, serveClient: false });
+    await request(app)
+      .post("/api/projects")
+      .send({ rootPath: projectRoot, includeSubdirectories: false })
+      .expect(201);
+
+    const listed = await request(app).get("/api/project-services").expect(200);
+    expect(listed.body.services).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          packageName: null,
+          scriptName: "start.bat",
+          scriptCommand: "python app.py",
+          packageManager: "bat",
+          commandText: "start.bat",
+          cwd: projectRoot,
+          status: "stopped"
+        })
+      ])
+    );
+
+    const service = listed.body.services.find((candidate: { scriptName: string }) => candidate.scriptName === "start.bat");
+    const started = await request(app)
+      .post(`/api/project-services/${encodeURIComponent(service.serviceId)}/start`)
+      .send({ dryRun: true })
+      .expect(200);
+    expect(started.body.service).toMatchObject({ serviceId: service.serviceId, status: "running", commandText: "start.bat" });
+  });
 });
