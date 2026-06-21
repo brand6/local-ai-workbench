@@ -43,6 +43,7 @@ const mcpTargetSortOrder: McpHubTargetToolId[] = [
   "codebuddy",
   "cursor",
   "antigravity",
+  "trae",
   "kimi",
   "zcode",
   "workbuddy",

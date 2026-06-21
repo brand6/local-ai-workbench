@@ -714,8 +714,7 @@ function applyProjectPlugin(
   const nativePackageMode = nativePackagePlans.length > 0;
   const skillPlans = nativePackageMode ? [] : skillInstallPlans(database, plugin, toolTarget);
   const privatePlans = nativePackageMode ? [] : privateInstallPlans(project, plugin, toolTarget, existingBinding);
-  const nativeHookPlans =
-    nativePackageMode && toolTarget.toolId !== "codex" && toolTarget.toolId !== "qwen" ? [] : nativeHookInstallPlans(database, project, plugin, toolTarget, existingBinding);
+  const nativeHookPlans = nativePackageMode && toolTarget.toolId !== "codex" ? [] : nativeHookInstallPlans(database, project, plugin, toolTarget, existingBinding);
   const mcpPlans = nativePackageMode ? [] : mcpInstallPlans(database, project, plugin, toolTarget);
   const agentPlans = nativePackageMode && toolTarget.toolId !== "codex" ? [] : agentInstallPlans(database, project, plugin, toolTarget);
   const preview = previewProjectPluginPreflight(
@@ -1706,7 +1705,7 @@ function nativePackageInstallPlans(
   toolTarget: SessionProjectToolTarget,
   existingBinding: ProjectPluginBinding | null
 ): NativePackageInstallPlan[] {
-  if (toolTarget.toolId !== "claude" && toolTarget.toolId !== "codex" && toolTarget.toolId !== "qwen") return [];
+  if (toolTarget.toolId !== "claude" && toolTarget.toolId !== "codex") return [];
   const toolId = toolTarget.toolId;
   const pluginName = safeName(plugin.name);
   const ownerId = stableId("pluginhub-native-plugin", plugin.id, toolId);
@@ -1718,7 +1717,7 @@ function nativePackageInstallPlans(
       ownerId,
       pluginName,
       packageRoot,
-      marketplacePath: toolId === "qwen" ? path.join(packageRoot, "qwen-extension.json") : nativePluginMarketplacePath(project.rootPath, toolId),
+      marketplacePath: nativePluginMarketplacePath(project.rootPath, toolId),
       settingsPath: toolId === "claude" ? path.join(project.rootPath, ".claude", "settings.json") : null,
       marketplaceName: "pluginhub",
       previousPackageRoot: previous?.targetPath ?? null,
@@ -2226,7 +2225,7 @@ function isPluginNativeManifest(file: PluginHubPrivateFile, relativePath: string
 function pluginHookRuntimeRoot(projectRoot: string, pluginName: string, toolId: ToolId): string {
   if (toolId === "codex") return nativePluginPackageRoot(projectRoot, "codex", safeName(pluginName));
   if (toolId === "claude") return nativePluginPackageRoot(projectRoot, "claude", safeName(pluginName));
-  if (toolId === "qwen") return nativePluginPackageRoot(projectRoot, "qwen", safeName(pluginName));
+  if (toolId === "qwen") return safeJoin(projectRoot, path.join(".agents", "plugins", safeName(pluginName)));
   return safeJoin(projectRoot, path.join(".agents", "plugins", safeName(pluginName)));
 }
 
@@ -2658,6 +2657,7 @@ function pluginMcpConfigPath(projectRoot: string, toolId: PluginMcpTargetToolId)
   if (toolId === "codebuddy") return path.join(projectRoot, ".mcp.json");
   if (toolId === "cursor") return path.join(projectRoot, ".cursor", "mcp.json");
   if (toolId === "antigravity") return path.join(projectRoot, ".agents", "mcp_config.json");
+  if (toolId === "trae") return path.join(projectRoot, ".trae", "mcp.json");
   if (toolId === "qwen") return path.join(projectRoot, ".qwen", "settings.json");
   return path.join(projectRoot, ".kimi-code", "mcp.json");
 }
@@ -2690,7 +2690,7 @@ function pluginHookConfigPath(projectRoot: string, toolId: ToolId): string {
 
 function pluginHookConfigCandidates(projectRoot: string, toolId: ToolId): string[] {
   if (toolId === "claude") return [path.join(projectRoot, ".claude", "settings.local.json"), path.join(projectRoot, ".claude", "settings.json")];
-  if (toolId === "qwen") return [path.join(projectRoot, ".qwen", "settings.local.json"), path.join(projectRoot, ".qwen", "settings.json")];
+  if (toolId === "qwen") return [pluginHookDefaultConfigPath(projectRoot, toolId)];
   if (toolId === "qoder") return [path.join(projectRoot, ".qoder", "settings.local.json"), path.join(projectRoot, ".qoder", "settings.json")];
   if (toolId === "codebuddy") return [path.join(projectRoot, ".codebuddy", "settings.local.json"), path.join(projectRoot, ".codebuddy", "settings.json")];
   if (toolId === "kimi") return [pluginHookDefaultConfigPath(projectRoot, toolId)];
@@ -3167,7 +3167,7 @@ function pluginHarnessSupport(plugin: Pick<PluginHubPlugin, "name" | "componentR
   return {
     codex: canMaterializeNativePluginPackage(plugin, "codex") ? "native" : "unsupported",
     claude: canMaterializeNativePluginPackage(plugin, "claude") ? "native" : "unsupported",
-    qwen: canMaterializeNativePluginPackage(plugin, "qwen") ? "native" : "unsupported",
+    qwen: canInstallQwenPluginComponents(plugin) ? "component-only" : "unsupported",
     kimi: canInstallKimiPluginComponents(plugin) ? "component-only" : "unsupported",
     cursor: hasNativePackagePrefix(plugin, ".cursor-plugin/") || hasNativePackagePrefix(plugin, ".claude-plugin/") ? "planned" : "unsupported",
     opencode: hasNativePackagePrefix(plugin, ".opencode/") ? "planned" : canInstallComponentOnlyPlugin(plugin, "opencode") ? "component-only" : "unsupported",
@@ -3205,6 +3205,10 @@ function isComponentOnlyRefSupported(toolId: ToolId, ref: PluginHubComponentRef)
 
 function canInstallKimiPluginComponents(plugin: Pick<PluginHubPlugin, "name" | "componentRefs" | "privateFiles"> & { source?: PluginHubSource | null }): boolean {
   return canInstallComponentOnlyPlugin(plugin, "kimi") || plugin.privateFiles.some(isKimiProjectPrivateFile);
+}
+
+function canInstallQwenPluginComponents(plugin: Pick<PluginHubPlugin, "name" | "componentRefs" | "privateFiles"> & { source?: PluginHubSource | null }): boolean {
+  return canInstallComponentOnlyPlugin(plugin, "qwen") || nativeHookPayloadForTool(null, plugin, "qwen") !== null;
 }
 
 function isKimiProjectPrivateFile(file: Pick<PluginHubPrivateFile, "targetRelativePath">): boolean {

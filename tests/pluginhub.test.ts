@@ -239,7 +239,7 @@ describe("PluginHub", () => {
     expect(pythonPlugin?.privateFiles.find((file) => file.sourceRelativePath.endsWith(".claude-plugin/plugin.json"))?.role).toBe("native-manifest");
     expect(pythonPlugin?.privateFiles.find((file) => file.sourceRelativePath.endsWith("hooks/hooks.json"))?.role).toBe("native-hook");
     expect(pythonPlugin?.harnessSupport).toMatchObject({ codex: "native", claude: "native", cursor: "planned", opencode: "planned" });
-    expect(pythonPlugin?.harnessSupport.qwen ?? "unsupported").toBe("native");
+    expect(pythonPlugin?.harnessSupport.qwen ?? "unsupported").toBe("component-only");
     writeBomSkill(path.join(library, "plugins", "python-development", "skills", "compose-editor-tool"), "compose-editor-tool", "编写 Unity 编辑器工具");
     writeBareMetadataSkill(path.join(library, "plugins", "python-development", "skills", "compose-imgui"), "compose-imgui", "编写 IMGUI 编辑器界面");
     const bareMetadataImport = importPluginHubLocalSource(db, config, directory, library);
@@ -597,7 +597,7 @@ describe("PluginHub", () => {
     expect(plugin.privateFiles.find((file) => file.sourceRelativePath.endsWith("qwen-extension.json"))?.role).toBe("native-manifest");
     expect(plugin.privateFiles.find((file) => file.sourceRelativePath.endsWith("commands/review.md"))?.role).toBe("native-command");
     expect(plugin.componentRefs).toEqual(expect.arrayContaining([expect.objectContaining({ type: "mcp", componentId: "qwen-docs" })]));
-    expect(plugin.harnessSupport.qwen).toBe("native");
+    expect(plugin.harnessSupport.qwen).toBe("component-only");
     expect(db.getMcpHubServer("qwen-docs")).toMatchObject({ command: "node", args: ["server.js"] });
     db.close();
   });
@@ -821,7 +821,7 @@ describe("PluginHub", () => {
   });
 
 
-  it("installs custom plugin components into Qwen extension packages", () => {
+  it("installs custom plugin components into Qwen project targets", () => {
     directory = testDir("pluginhub-custom-qwen-components");
     const db = new AppDatabase(directory);
     const config = configFixture(directory);
@@ -889,23 +889,24 @@ describe("PluginHub", () => {
     updateProjectToolTargets(db, project, ["qwen"]);
 
     const installed = installProjectPlugin(db, project, custom.id, "qwen", directory);
-    const packageRoot = path.join(projectRoot, ".qwen", "extensions", "qwen-workflow");
-    const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "qwen-extension.json"), "utf8"));
-    const hooksConfig = JSON.parse(fs.readFileSync(path.join(projectRoot, ".qwen", "settings.json"), "utf8"));
+    const qwenSettingsPath = path.join(projectRoot, ".qwen", "settings.json");
+    const qwenSettings = JSON.parse(fs.readFileSync(qwenSettingsPath, "utf8"));
 
-    expect(installed).toMatchObject({ requiresConfirmation: false, binding: { managedComponentCount: 4, privateFileCount: 1 } });
-    expect(listProjectPluginState(db, project).plugins.find((plugin) => plugin.id === custom.id)?.harnessSupport.qwen).toBe("native");
-    expect(fs.existsSync(path.join(packageRoot, "skills", "review", "SKILL.md"))).toBe(true);
-    expect(fs.readFileSync(path.join(packageRoot, "agents", "code-reviewer.md"), "utf8")).toContain("Review changes.");
-    expect(manifest).toMatchObject({ name: "qwen-workflow", mcpServers: { docs: { command: "node", args: ["server.js"] } } });
-    expect(manifest.mcpServers.docs.transport).toBeUndefined();
-    expect(hooksConfig.hooks.PreToolUse[0].matcher).toBe("Bash");
-    expect(hooksConfig.hooks.PreToolUse[0].hooks[0].command).toBe("npm test");
-    expect(db.listProjectMcpBindings(project.id, project.rootPath)).toEqual([]);
+    expect(installed).toMatchObject({ requiresConfirmation: false, binding: { managedComponentCount: 4, privateFileCount: 0 } });
+    expect(listProjectPluginState(db, project).plugins.find((plugin) => plugin.id === custom.id)?.harnessSupport.qwen).toBe("component-only");
+    expect(fs.existsSync(path.join(projectRoot, ".qwen", "skills", "review", "SKILL.md"))).toBe(true);
+    expect(fs.readFileSync(path.join(projectRoot, ".qwen", "agents", "code-reviewer.md"), "utf8")).toContain("Review changes.");
+    expect(qwenSettings).toMatchObject({
+      mcpServers: { docs: { command: "node", args: ["server.js"] } },
+      hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "npm test" }] }] }
+    });
+    expect(qwenSettings.mcpServers.docs.transport).toBeUndefined();
+    expect(db.listProjectMcpBindings(project.id, project.rootPath)).toEqual([expect.objectContaining({ toolId: "qwen", serverId: "docs" })]);
 
     uninstallProjectPluginBinding(db, project, installed.binding?.id ?? "");
-    expect(fs.existsSync(packageRoot)).toBe(false);
-    expect(fs.existsSync(path.join(projectRoot, ".qwen", "settings.json"))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, ".qwen", "skills", "review"))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, ".qwen", "agents", "code-reviewer.md"))).toBe(false);
+    expect(fs.existsSync(qwenSettingsPath)).toBe(false);
     expect(db.listProjectMcpBindings(project.id, project.rootPath)).toEqual([]);
     expect(db.listProjectAgentTargets(project.id, project.rootPath)).toEqual([]);
     db.close();

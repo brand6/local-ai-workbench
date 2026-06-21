@@ -4524,7 +4524,7 @@ function pluginHubPluginFixture(overrides: Partial<PluginHubList["plugins"][numb
         required: true
       }
     ],
-    harnessSupport: { codex: "native", claude: "planned", qwen: "native" },
+    harnessSupport: { codex: "native", claude: "planned", qwen: "component-only" },
     createdAt: "2026-06-01T00:00:00Z",
     updatedAt: "2026-06-01T00:00:00Z",
     source,

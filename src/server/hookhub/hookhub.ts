@@ -687,8 +687,8 @@ function hookConfigPath(rootPath: string, toolId: HookHubSupportedToolId): strin
 }
 
 function hookConfigCandidates(rootPath: string, toolId: HookHubSupportedToolId): string[] {
-  if (toolId === "codex" || toolId === "kimi") return [hookConfigPath(rootPath, toolId)];
-  const dir = toolId === "claude" ? ".claude" : toolId === "qwen" ? ".qwen" : toolId === "codebuddy" ? ".codebuddy" : ".qoder";
+  if (toolId === "codex" || toolId === "kimi" || toolId === "qwen") return [hookConfigPath(rootPath, toolId)];
+  const dir = toolId === "claude" ? ".claude" : toolId === "codebuddy" ? ".codebuddy" : ".qoder";
   return [path.join(rootPath, dir, "settings.local.json"), path.join(rootPath, dir, "settings.json")];
 }
 

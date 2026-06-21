@@ -198,6 +198,9 @@ describe("HookHub", () => {
     });
     expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".qwen", "settings.local.json"), "utf8"))).toMatchObject({
       keep: true,
+      hooks: { pre: [{ command: "old" }] }
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".qwen", "settings.json"), "utf8"))).toMatchObject({
       hooks: suite.payloads.qwen
     });
     expect(JSON.parse(fs.readFileSync(path.join(projectRoot, ".qoder", "settings.json"), "utf8")).hooks).toEqual(suite.payloads.qoder);

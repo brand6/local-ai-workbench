@@ -13,7 +13,7 @@ import {
   toolAdapters,
   type ProjectSkillDirectoryOption
 } from "../tools/adapters.js";
-import type { SkillTargetOptions } from "../tools/toolAdapter.js";
+import type { SkillTargetOptions, ToolAdapter } from "../tools/toolAdapter.js";
 
 interface ProjectConfigTargetSkillTarget {
   supported: boolean;
@@ -95,7 +95,17 @@ export function projectConfigTargetSkillTarget(
     }
     return { supported: true, directory: path.join(projectRoot, directoryName, "skills"), reason: null };
   }
-  return toolAdapters[targetId].skillTarget(projectRoot, options);
+  if (isToolId(targetId)) {
+    const adapter = (toolAdapters as Partial<Record<ToolId, ToolAdapter>>)[targetId];
+    if (adapter) return adapter.skillTarget(projectRoot, options);
+    const directoryOptions = projectSkillDirectoryOptions(targetId, projectRoot);
+    if (directoryOptions.length > 0) {
+      const preferredKind = options.directoryPreference ?? "private";
+      const target = directoryOptions.find((item) => item.kind === preferredKind) ?? directoryOptions[0]!;
+      return { supported: true, directory: target.directory, reason: null };
+    }
+  }
+  return { supported: false, directory: null, reason: `${projectConfigTargetLabel(targetId)} 暂未提供项目技能目录 adapter` };
 }
 
 export function projectConfigTargetSkillDirectoryOptions(
